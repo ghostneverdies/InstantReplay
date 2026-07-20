@@ -1,0 +1,53 @@
+TERMS AND CONDITIONS FOR INSTANT REPLAY
+========================================
+
+Last Updated: July 2026
+
+PLEASE READ THESE TERMS AND CONDITIONS CAREFULLY BEFORE INSTALLING OR USING THIS SOFTWARE.
+
+1. DEFINITION
+"Instant Replay" refers to the desktop application software, including all associated files, libraries, and components installed by this installer.
+
+2. OPEN SOURCE NOTICE
+Instant Replay is free and open-source software. The full source code is publicly available on GitHub. You are welcome to view, audit, and learn from the source code at any time.
+
+3. LICENSE GRANT
+Subject to the terms of this agreement, you are granted a non-exclusive, worldwide, royalty-free license to use, copy, and run Instant Replay on your personal devices.
+
+4. MODIFICATION AND PERSONAL USE
+You may modify the source code of Instant Replay for your own personal use. However, redistribution of modified versions of the software to third parties — whether for commercial or non-commercial purposes — is not permitted without explicit written permission from the original author. Distributing modified builds that impersonate or misrepresent the original software is strictly prohibited.
+
+5. DISTRIBUTION
+You may share the unmodified, original installer or binaries of Instant Replay with others, provided that all original files, this license, and attribution remain intact. You may not sell, sublicense, or bundle this software with other products without permission.
+
+6. THIRD-PARTY DEPENDENCIES
+This installer may download and install the following third-party components required for Instant Replay to function:
+  - FFmpeg (https://ffmpeg.org/) — Licensed under LGPL/GPL. Used for video and audio processing.
+  - Virtual Audio Capturer (https://github.com/rdp/screen-capture-recorder-to-video-windows-free/) — Licensed under GNU General Public License v2. Used for desktop audio capture.
+
+These dependencies are the intellectual property of their respective authors and are subject to their own licenses.
+
+7. SYSTEM CHANGES
+During installation, this installer may make the following changes to your system:
+  - Add files to the installation directory you select.
+  - Add an entry to the Windows system PATH environment variable (for FFmpeg).
+  - Add a Windows Defender exclusion for the installed application.
+  - Add a Controlled Folder Access exclusion to allow the application to save files.
+  - Register an entry in Windows "Add or Remove Programs" for uninstallation.
+
+8. DATA AND PRIVACY
+Instant Replay does not collect, transmit, or share any personal data. All recordings and settings are stored locally on your device. No telemetry or analytics data is gathered.
+
+9. DISCLAIMER OF WARRANTY
+THIS SOFTWARE IS PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE. THE ENTIRE RISK AS TO THE QUALITY AND PERFORMANCE OF THE SOFTWARE IS WITH YOU. SHOULD THE SOFTWARE PROVE DEFECTIVE, YOU ASSUME THE COST OF ALL NECESSARY SERVICING, REPAIR, OR CORRECTION.
+
+10. LIMITATION OF LIABILITY
+IN NO EVENT SHALL THE AUTHOR OR COPYRIGHT HOLDERS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+11. TERMINATION
+This license is effective until terminated. Your rights under this license will terminate automatically if you fail to comply with any of its terms. Upon termination, you must cease all use of the software and destroy all copies.
+
+12. GOVERNING LAW
+This agreement shall be governed by and construed in accordance with the laws of your jurisdiction.
+
+By checking the box "I accept the terms and conditions" and proceeding with the installation, you acknowledge that you have read, understood, and agree to be bound by these terms and conditions.
