@@ -1,3 +1,4 @@
+using System.Linq;
 using Microsoft.UI.Xaml;
 
 namespace InstantReplay;
@@ -17,7 +18,10 @@ public partial class App : Application
 
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {
-        _window = new MainWindow();
+        bool startMinimized = System.Environment.GetCommandLineArgs()
+            .Any(a => string.Equals(a, "--tray", System.StringComparison.OrdinalIgnoreCase));
+
+        _window = new MainWindow(startMinimized);
         _window.Activate();
     }
 }

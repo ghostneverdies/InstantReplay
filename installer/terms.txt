@@ -9,7 +9,10 @@ PLEASE READ THESE TERMS AND CONDITIONS CAREFULLY BEFORE INSTALLING OR USING THIS
 "Instant Replay" refers to the desktop application software, including all associated files, libraries, and components installed by this installer.
 
 2. OPEN SOURCE NOTICE
-Instant Replay is free and open-source software. The full source code is publicly available on GitHub. You are welcome to view, audit, and learn from the source code at any time.
+Instant Replay is free and open-source software. The full source code is publicly available on GitHub:
+https://github.com/ghostneverdies/InstantReplay.git
+
+You are welcome to view, audit, and learn from the source code at any time.
 
 3. LICENSE GRANT
 Subject to the terms of this agreement, you are granted a non-exclusive, worldwide, royalty-free license to use, copy, and run Instant Replay on your personal devices.

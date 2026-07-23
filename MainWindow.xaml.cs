@@ -78,6 +78,7 @@ public partial class MainWindow : Window
     private bool? _lastBufferHealthy;
     private int _highMemStreak;
     private bool _leakWarningActive;
+    private readonly bool _startMinimized;
     private bool _lastBalloonWasLeakWarning;
 
     private List<string> _knownMics = new();
@@ -98,8 +99,9 @@ public partial class MainWindow : Window
     private WndProcDelegate? _wndProcDelegate;
     private IntPtr _originalWndProc;
 
-    public MainWindow()
+    public MainWindow(bool startMinimized = false)
     {
+        _startMinimized = startMinimized;
         InitializeComponent();
 
         Title = "Instant Replay";
@@ -178,6 +180,16 @@ public partial class MainWindow : Window
         Closed += Window_ClosedRequested;
         RootGrid.KeyDown += Window_PreviewKeyDown;
         RootGrid.KeyUp += Window_PreviewKeyUp;
+
+        if (_startMinimized)
+        {
+            _dq.TryEnqueue(() =>
+            {
+                if (_appWindow.Presenter is OverlappedPresenter presenter) presenter.Minimize();
+                ShowWindow(_hwnd, SwHide);
+                _isHidden = true;
+            });
+        }
     }
 
     private void SetInitialWindowSizeAndIcon()
