@@ -12,7 +12,7 @@ SetCompressor /SOLID lzma
 ; 1. Definitions
 ; --------------------------------
 !define MyAppName "Instant Replay"
-!define MyAppVersion "1.0"
+!define MyAppVersion "1.1"
 !define MyAppPublisher "InstantReplay"
 !define MyAppExeName "InstantReplay.exe"
 !define MyAppAssocName "${MyAppName} File"
