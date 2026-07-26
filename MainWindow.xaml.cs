@@ -87,6 +87,7 @@ public partial class MainWindow : Window
     private uint _pendingHotkeyModifier;
 
     private bool _initializing = true;
+    private bool _syncingStartupToggle;
     private bool _dirty;
     private string _settingsSnapshot = "";
 
@@ -328,6 +329,9 @@ public partial class MainWindow : Window
     {
         if (args.WindowActivationState == WindowActivationState.Deactivated && _capturingHotkey)
             EndHotkeyCapture();
+
+        if (args.WindowActivationState != WindowActivationState.Deactivated)
+            RefreshStartupToggleState();
     }
 
     private void NavToggleButton_Click(object sender, RoutedEventArgs e)
@@ -374,6 +378,10 @@ public partial class MainWindow : Window
     private void NavigateTo(FrameworkElement newPage)
     {
         if (ReferenceEquals(newPage, _currentPage)) return;
+
+        if (ReferenceEquals(newPage, SettingsPage))
+            RefreshStartupToggleState();
+
         var oldPage = _currentPage;
         _currentPage = newPage;
 
@@ -471,12 +479,19 @@ public partial class MainWindow : Window
         _trayIcon.BalloonClicked += () => { if (_lastBalloonWasLeakWarning) RestartApplication(); };
     }
 
+    /// <summary>
+    /// Called by App when a second launch attempt was detected and silently redirected here
+    /// instead of opening a duplicate window (see App.xaml.cs single-instance guard).
+    /// </summary>
+    public void BringToFront() => ShowFromTray();
+
     private void ShowFromTray()
     {
         ShowWindow(_hwnd, SwShow);
         _isHidden = false;
         if (_appWindow.Presenter is OverlappedPresenter presenter) presenter.Restore();
         Activate();
+        RefreshStartupToggleState();
     }
 
     private void RestartApplication()
@@ -641,7 +656,7 @@ public partial class MainWindow : Window
         if (result.Success && _engine.IsRunning)
         {
             Logger.Info("SaveReplay succeeded - starting a fresh buffer.");
-            bool restarted = await Task.Run(() => _engine.Restart(_tempDir));
+            bool restarted = await Task.Run(() => _engine.Restart(_tempDir, wipeSegments: false));
             if (!restarted) Logger.Error("Failed to restart capture after save; buffer may be stale.");
         }
     }
@@ -906,9 +921,26 @@ public partial class MainWindow : Window
 
     private void StartupToggle_Changed(object sender, RoutedEventArgs e)
     {
-        if (_initializing) return;
+        if (_initializing || _syncingStartupToggle) return;
         bool enabled = StartupToggle.IsOn;
         StartupManager.SetEnabled(enabled);
+    }
+
+    /// <summary>
+    /// Re-reads the actual "Start with Windows" registry state and syncs the toggle to match.
+    /// The toggle was previously only set once at window construction, so anything that changed
+    /// the registry value out from under the running app (manual deletion via regedit/PowerShell,
+    /// the legacy-key cleanup in StartupManager, another process, etc.) left it showing stale state
+    /// indefinitely. Called whenever the window regains focus or the Settings page is opened.
+    /// </summary>
+    private void RefreshStartupToggleState()
+    {
+        bool actuallyEnabled = StartupManager.IsEnabled();
+        if (StartupToggle.IsOn == actuallyEnabled) return;
+
+        _syncingStartupToggle = true;
+        StartupToggle.IsOn = actuallyEnabled;
+        _syncingStartupToggle = false;
     }
 
     private void DebugToggle_Changed(object sender, RoutedEventArgs e)
@@ -1022,7 +1054,7 @@ public partial class MainWindow : Window
         _settings.Save();
 
         bool ok = true;
-        if (_engine.IsRunning) ok = await Task.Run(() => _engine.Restart(_tempDir));
+        if (_engine.IsRunning) ok = await Task.Run(() => _engine.Restart(_tempDir, wipeSegments: true));
         if (!ok) Logger.Warn("Apply: capture failed to restart with the new settings (see log).");
 
         SetRunningVisual(_engine.IsRunning);
@@ -1053,7 +1085,7 @@ public partial class MainWindow : Window
             if (result == ContentDialogResult.Primary)
             {
                 _settings.Save();
-                if (_engine.IsRunning) _engine.Restart(_tempDir);
+                if (_engine.IsRunning) _engine.Restart(_tempDir, wipeSegments: true);
             }
         }
 

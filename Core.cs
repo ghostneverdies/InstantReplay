@@ -145,7 +145,7 @@ public static class WindowsTheme
 
 public sealed class Settings
 {
-    public string FFmpegPath { get; set; } = "ffmpeg.exe";
+    public string FFmpegPath { get; set; } = @"C:\ffmpeg\ffmpeg.exe";
     public string Microphone { get; set; } = "";
     public int ReplayDurationSeconds { get; set; } = 60;
     public int FrameRate { get; set; } = 30;
@@ -417,7 +417,7 @@ public sealed class RecorderEngine : IDisposable
         _ => ("ultrafast", 23),
     };
 
-    public bool Start(string tempDir)
+    public bool Start(string tempDir, bool wipeSegments = true)
     {
         lock (_opLock)
         {
@@ -432,7 +432,7 @@ public sealed class RecorderEngine : IDisposable
 
             string segmentDir = tempDir;
             Directory.CreateDirectory(segmentDir);
-            DeleteOldSegments(segmentDir);
+            if (wipeSegments) DeleteOldSegments(segmentDir);
 
             int segmentWrapCount = Math.Max(_settings.ReplayDurationSeconds / SegmentSeconds, 1);
 
@@ -579,10 +579,10 @@ public sealed class RecorderEngine : IDisposable
         }
     }
 
-    public bool Restart(string tempDir)
+    public bool Restart(string tempDir, bool wipeSegments = false)
     {
         Stop();
-        return Start(tempDir);
+        return Start(tempDir, wipeSegments);
     }
 
     private void StartWatchdog(string tempDir)
@@ -841,10 +841,20 @@ public sealed class RecorderEngine : IDisposable
 public static class StartupManager
 {
     private const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
-    private const string ValueName = "InstantReplay";
+
+    // Must match the value name the installer writes (installer.nsi uses ${MyAppName} = "Instant Replay").
+    // NOTE: this used to be "InstantReplay" (no space), which did NOT match the installer's "Instant Replay"
+    // (with space). That mismatch let both values exist side by side in the Run key at once, causing the
+    // app to be launched twice at login (two separate windows). Keep this in sync with installer.nsi.
+    private const string ValueName = "Instant Replay";
+
+    // Old/incorrect value name from before the mismatch fix. Cleaned up automatically so existing
+    // installs that ended up with both keys self-heal without requiring a manual registry edit.
+    private const string LegacyValueName = "InstantReplay";
 
     public static bool IsEnabled()
     {
+        CleanupLegacyKey();
         try
         {
             using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: false);
@@ -860,6 +870,7 @@ public static class StartupManager
 
     public static void SetEnabled(bool enabled)
     {
+        CleanupLegacyKey();
         try
         {
             using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: true)
@@ -873,6 +884,27 @@ public static class StartupManager
         catch (Exception ex)
         {
             Logger.Error("StartupManager.SetEnabled failed", ex);
+        }
+    }
+
+    /// <summary>
+    /// Removes the old mismatched "InstantReplay" (no space) Run value if present, so machines that
+    /// picked up both the installer's key and the app's old key end up with exactly one, going forward.
+    /// </summary>
+    private static void CleanupLegacyKey()
+    {
+        try
+        {
+            using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: true);
+            if (key?.GetValue(LegacyValueName) != null)
+            {
+                key.DeleteValue(LegacyValueName, throwOnMissingValue: false);
+                Logger.Info($"Removed legacy duplicate startup registry value \"{LegacyValueName}\".");
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"StartupManager.CleanupLegacyKey failed: {ex.Message}");
         }
     }
 

@@ -31,14 +31,17 @@ Download `InstantReplaySetup.exe` and run it. The installer will:
 1. Install the app to `Program Files\Instant Replay`
 2. Download and install [FFmpeg](https://ffmpeg.org/) to `C:\ffmpeg` (if not already installed)
 3. Download and install [Virtual Audio Capturer](https://github.com/rdp/screen-capture-recorder-to-video-windows-free) for desktop audio capture (if not already installed)
-4. Add FFmpeg to the system PATH
-5. Configure Windows Defender and Controlled Folder Access exclusions
+4. Download and install [Java Runtime](https://adoptium.net/) (required by Virtual Audio Capturer, if not already installed)
 
 ### Option 2: Build from Source
 
 ```bash
+git clone https://github.com/Anonymi69/InstantReplay.git
+cd InstantReplay
 dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -p:WindowsPackageType=None -o publish
 ```
+
+The published output contains only the .NET runtime, Windows App SDK, and the application code — all of which can be inspected in the repository.
 
 The app can also run as an MSIX package by setting `WindowsPackageType` to `MSIX` in the project file.
 
@@ -76,6 +79,14 @@ A DirectShow virtual audio device that routes system audio into FFmpeg for recor
 - Installed from [screen-capture-recorder-to-video-windows-free](https://github.com/rdp/screen-capture-recorder-to-video-windows-free)
 - Required only if you want to capture desktop/system audio
 - The installer handles download and silent installation
+
+### Java Runtime (Required by Virtual Audio Capturer)
+
+The Virtual Audio Capturer depends on Java Runtime to function.
+
+- Installed from [Eclipse Adoptium (Temurin)](https://adoptium.net/) (JDK 21)
+- Detected by running `java --version` and checking for known Java installation paths
+- The installer handles download and silent installation if not already present
 
 ### .NET 8 Runtime (Bundled)
 

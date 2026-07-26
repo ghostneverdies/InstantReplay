@@ -33,9 +33,7 @@ These dependencies are the intellectual property of their respective authors and
 7. SYSTEM CHANGES
 During installation, this installer may make the following changes to your system:
   - Add files to the installation directory you select.
-  - Add an entry to the Windows system PATH environment variable (for FFmpeg).
-  - Add a Windows Defender exclusion for the installed application.
-  - Add a Controlled Folder Access exclusion to allow the application to save files.
+  - Install FFmpeg to C:\ffmpeg.
   - Register an entry in Windows "Add or Remove Programs" for uninstallation.
 
 8. DATA AND PRIVACY
