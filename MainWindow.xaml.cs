@@ -197,7 +197,7 @@ public partial class MainWindow : Window
     {
         uint dpi = GetDpiForWindow(_hwnd);
         double scale = dpi / 96.0;
-        _appWindow.ResizeClient(new SizeInt32((int)(941 * scale), (int)(806 * scale)));
+        _appWindow.ResizeClient(new SizeInt32((int)(760 * scale), (int)(700 * scale)));
         try { _appWindow.SetIcon("icon.ico"); }
         catch (Exception ex) { Logger.Warn($"Could not set window icon: {ex.Message}"); }
 
@@ -235,7 +235,7 @@ public partial class MainWindow : Window
     {
         if (enabled)
         {
-            SystemBackdrop = new MicaBackdrop { Kind = MicaKind.Base };
+            SystemBackdrop = new DesktopAcrylicBackdrop();
             RootGrid.Background = new SolidColorBrush(Colors.Transparent);
             NavSidebar.Background = new SolidColorBrush(Colors.Transparent);
         }
@@ -243,7 +243,7 @@ public partial class MainWindow : Window
         {
             SystemBackdrop = null;
             RootGrid.Background = GetThemedBrush("BgBrush");
-            NavSidebar.Background = GetThemedBrush("SurfaceBrush");
+            NavSidebar.Background = GetThemedBrush("BgBrush");
         }
     }
 
@@ -479,10 +479,6 @@ public partial class MainWindow : Window
         _trayIcon.BalloonClicked += () => { if (_lastBalloonWasLeakWarning) RestartApplication(); };
     }
 
-    /// <summary>
-    /// Called by App when a second launch attempt was detected and silently redirected here
-    /// instead of opening a duplicate window (see App.xaml.cs single-instance guard).
-    /// </summary>
     public void BringToFront() => ShowFromTray();
 
     private void ShowFromTray()
@@ -736,19 +732,13 @@ public partial class MainWindow : Window
 
     private void InitDurationSegments()
     {
-        var target = _settings.ReplayDurationSeconds switch { 30 => Duration30, 120 => Duration120, _ => Duration60 };
-        target.IsChecked = true;
+        DurationCombo.SelectedIndex = _settings.ReplayDurationSeconds switch { 30 => 0, 120 => 2, _ => 1 };
     }
 
-    private void DurationSegment_Checked(object sender, RoutedEventArgs e)
+    private void DurationCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_initializing) return;
-        int seconds = sender switch
-        {
-            _ when ReferenceEquals(sender, Duration30) => 30,
-            _ when ReferenceEquals(sender, Duration120) => 120,
-            _ => 60,
-        };
+        int seconds = DurationCombo.SelectedIndex switch { 0 => 30, 2 => 120, _ => 60 };
         if (seconds == _settings.ReplayDurationSeconds) return;
         _settings.ReplayDurationSeconds = seconds;
         CheckDirty();
@@ -756,19 +746,13 @@ public partial class MainWindow : Window
 
     private void InitFpsSegments()
     {
-        var target = _settings.FrameRate switch { 60 => Fps60, 120 => Fps120, _ => Fps30 };
-        target.IsChecked = true;
+        FpsCombo.SelectedIndex = _settings.FrameRate switch { 60 => 1, 120 => 2, _ => 0 };
     }
 
-    private void FpsSegment_Checked(object sender, RoutedEventArgs e)
+    private void FpsCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_initializing) return;
-        int fps = sender switch
-        {
-            _ when ReferenceEquals(sender, Fps60) => 60,
-            _ when ReferenceEquals(sender, Fps120) => 120,
-            _ => 30,
-        };
+        int fps = FpsCombo.SelectedIndex switch { 1 => 60, 2 => 120, _ => 30 };
         if (fps == _settings.FrameRate) return;
         _settings.FrameRate = fps;
         CheckDirty();
@@ -776,19 +760,13 @@ public partial class MainWindow : Window
 
     private void InitQualitySegments()
     {
-        var target = _settings.QualityPreset switch { "Balanced" => QualityBalanced, "Quality" => QualityHigh, _ => QualityFast };
-        target.IsChecked = true;
+        QualityCombo.SelectedIndex = _settings.QualityPreset switch { "Balanced" => 1, "Quality" => 2, _ => 0 };
     }
 
-    private void QualitySegment_Checked(object sender, RoutedEventArgs e)
+    private void QualityCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_initializing) return;
-        string preset = sender switch
-        {
-            _ when ReferenceEquals(sender, QualityBalanced) => "Balanced",
-            _ when ReferenceEquals(sender, QualityHigh) => "Quality",
-            _ => "Fast",
-        };
+        string preset = QualityCombo.SelectedIndex switch { 1 => "Balanced", 2 => "Quality", _ => "Fast" };
         if (preset == _settings.QualityPreset) return;
         _settings.QualityPreset = preset;
         CheckDirty();
@@ -926,13 +904,6 @@ public partial class MainWindow : Window
         StartupManager.SetEnabled(enabled);
     }
 
-    /// <summary>
-    /// Re-reads the actual "Start with Windows" registry state and syncs the toggle to match.
-    /// The toggle was previously only set once at window construction, so anything that changed
-    /// the registry value out from under the running app (manual deletion via regedit/PowerShell,
-    /// the legacy-key cleanup in StartupManager, another process, etc.) left it showing stale state
-    /// indefinitely. Called whenever the window regains focus or the Settings page is opened.
-    /// </summary>
     private void RefreshStartupToggleState()
     {
         bool actuallyEnabled = StartupManager.IsEnabled();

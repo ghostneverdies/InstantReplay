@@ -8,12 +8,9 @@ namespace InstantReplay;
 
 public partial class App : Application
 {
-    // Single, well-known names for the mutex/event used to detect and coordinate with a second
-    // launch attempt. "Global\" makes these visible across user sessions on the same machine.
     private const string SingleInstanceMutexName = "Global\\InstantReplay_SingleInstance_Mutex";
     private const string ShowWindowEventName = "Global\\InstantReplay_ShowWindow_Event";
 
-    // How often the watchdog re-checks for stray duplicate processes.
     private static readonly TimeSpan WatchdogInterval = TimeSpan.FromSeconds(15);
 
     private Window? _window;
@@ -31,11 +28,6 @@ public partial class App : Application
 
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {
-        // --- Single-instance guard -------------------------------------------------------
-        // If another Instant Replay process already holds the mutex, this is a duplicate
-        // launch (stale/duplicate startup registry entry, user double-clicking the exe while
-        // it's already running in the tray, etc). Signal the existing instance to show its
-        // window, then quietly exit instead of creating a second window.
         _singleInstanceMutex = new Mutex(initiallyOwned: true, SingleInstanceMutexName, out bool createdNew);
 
         if (!createdNew)
@@ -65,10 +57,6 @@ public partial class App : Application
         StartWatchdog();
     }
 
-    /// <summary>
-    /// Listens for a second launch attempt signaling us (via a named event) and brings the
-    /// existing window to front instead of the duplicate process creating its own window.
-    /// </summary>
     private void StartShowWindowListener()
     {
         _showWindowEvent = new EventWaitHandle(initialState: false, EventResetMode.AutoReset, ShowWindowEventName);
@@ -90,12 +78,6 @@ public partial class App : Application
         listenerThread.Start();
     }
 
-    /// <summary>
-    /// Belt-and-suspenders safety net: even with the mutex guard above, a narrow race at startup
-    /// (e.g. two processes launched within the same instant, before either claims the mutex) could
-    /// theoretically let more than one instance slip through. This periodically checks for stray
-    /// duplicate processes and terminates every extra one, keeping only the current process alive.
-    /// </summary>
     private static void StartWatchdog()
     {
         int currentPid = Environment.ProcessId;

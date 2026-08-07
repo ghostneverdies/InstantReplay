@@ -842,14 +842,8 @@ public static class StartupManager
 {
     private const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
 
-    // Must match the value name the installer writes (installer.nsi uses ${MyAppName} = "Instant Replay").
-    // NOTE: this used to be "InstantReplay" (no space), which did NOT match the installer's "Instant Replay"
-    // (with space). That mismatch let both values exist side by side in the Run key at once, causing the
-    // app to be launched twice at login (two separate windows). Keep this in sync with installer.nsi.
     private const string ValueName = "Instant Replay";
 
-    // Old/incorrect value name from before the mismatch fix. Cleaned up automatically so existing
-    // installs that ended up with both keys self-heal without requiring a manual registry edit.
     private const string LegacyValueName = "InstantReplay";
 
     public static bool IsEnabled()
@@ -887,10 +881,6 @@ public static class StartupManager
         }
     }
 
-    /// <summary>
-    /// Removes the old mismatched "InstantReplay" (no space) Run value if present, so machines that
-    /// picked up both the installer's key and the app's old key end up with exactly one, going forward.
-    /// </summary>
     private static void CleanupLegacyKey()
     {
         try
