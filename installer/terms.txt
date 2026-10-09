@@ -1,7 +1,7 @@
 TERMS AND CONDITIONS FOR INSTANT REPLAY
 ========================================
 
-Last Updated: July 2026
+Last Updated: October 2026
 
 PLEASE READ THESE TERMS AND CONDITIONS CAREFULLY BEFORE INSTALLING OR USING THIS SOFTWARE.
 
@@ -24,20 +24,21 @@ You may modify the source code of Instant Replay for your own personal use. Howe
 You may share the unmodified, original installer or binaries of Instant Replay with others, provided that all original files, this license, and attribution remain intact. You may not sell, sublicense, or bundle this software with other products without permission.
 
 6. THIRD-PARTY DEPENDENCIES
-This installer may download and install the following third-party components required for Instant Replay to function:
-  - FFmpeg (https://ffmpeg.org/) — Licensed under LGPL/GPL. Used for video and audio processing.
-  - Virtual Audio Capturer (https://github.com/rdp/screen-capture-recorder-to-video-windows-free/) — Licensed under GNU General Public License v2. Used for desktop audio capture.
-
-These dependencies are the intellectual property of their respective authors and are subject to their own licenses.
+This installer does not download or install any third-party software over the network. The Windows App SDK / WinUI runtime used by Instant Replay is bundled directly with the application and is licensed under the MIT License, in accordance with its upstream license terms. The .NET 8 Desktop Runtime and the WebView2 Runtime are required and are not installed by this installer. The video color-conversion shaders are taken unmodified from mmozeiko/wcap (Unlicense), and the capture library windows-capture is vendored in the source repository under its own license.
 
 7. SYSTEM CHANGES
 During installation, this installer may make the following changes to your system:
   - Add files to the installation directory you select.
-  - Install FFmpeg to C:\ffmpeg.
   - Register an entry in Windows "Add or Remove Programs" for uninstallation.
+  - Register the ".ir" file type for Instant Replay (machine-wide).
+  - Add a per-user "start with Windows" entry that launches Instant Replay minimized to the system tray. This can be turned off in Settings.
+  - Create Start Menu and, if selected, desktop shortcuts.
+  - Open the Instant Replay GitHub page in your browser after a fresh installation.
+
+The uninstaller stops Instant Replay, removes the above entries, shortcuts and installed files, and, only if you select it, deletes the recordings in the default "Pictures\Instant Replay" folder. It does not remove your settings in "%APPDATA%\InstantReplay".
 
 8. DATA AND PRIVACY
-Instant Replay does not collect, transmit, or share any personal data. All recordings and settings are stored locally on your device. No telemetry or analytics data is gathered.
+Instant Replay records your screen and audio (system audio and, if enabled, your microphone) and keeps the most recent footage in memory. Footage is written to disk only when you save a replay. Instant Replay does not collect, transmit, or share any personal data and contains no network code. All recordings, settings and logs are stored locally on your device. No telemetry or analytics data is gathered. You are responsible for complying with applicable laws and the consent of others when recording.
 
 9. DISCLAIMER OF WARRANTY
 THIS SOFTWARE IS PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE. THE ENTIRE RISK AS TO THE QUALITY AND PERFORMANCE OF THE SOFTWARE IS WITH YOU. SHOULD THE SOFTWARE PROVE DEFECTIVE, YOU ASSUME THE COST OF ALL NECESSARY SERVICING, REPAIR, OR CORRECTION.

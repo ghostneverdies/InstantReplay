@@ -4,295 +4,1074 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:local="using:InstantReplay">
 
-    <Grid x:Name="RootGrid" Background="{ThemeResource BgBrush}">
-        <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="Auto"/>
-            <ColumnDefinition Width="*"/>
-        </Grid.ColumnDefinitions>
+    <Grid x:Name="RootGrid"
+            Background="{ThemeResource BgBrush}">
         <Grid.RowDefinitions>
-            <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
 
-        <Border x:Name="NavSidebar" Grid.Column="0" Grid.Row="0" Grid.RowSpan="2" Width="185"
-                Background="{ThemeResource BgBrush}" BorderThickness="0" CornerRadius="0,0,0,8">
-            <Grid Margin="8,10,8,14">
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="*"/>
-                    <RowDefinition Height="Auto"/>
-                </Grid.RowDefinitions>
-
-                <Button x:Name="NavToggleButton" Grid.Row="0" Width="40" Height="38"
-                        HorizontalAlignment="Left" Margin="0,0,0,12" Click="NavToggleButton_Click"
-                        Style="{StaticResource BaseButtonStyle}" Background="Transparent">
-                    <FontIcon Glyph="&#xE700;" FontFamily="{ThemeResource SymbolThemeFontFamily}" FontSize="20" Foreground="{ThemeResource TextPrimaryBrush}"/>
+        <Grid x:Name="TitleBarHost"
+                Grid.Row="0"
+                Height="32"
+                Background="Transparent">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <StackPanel x:Name="TitleBarButtonsPanel"
+                    Grid.Column="1"
+                    Orientation="Horizontal"
+                    Margin="0,0,8,0">
+                <Border x:Name="StatusPill"
+                        VerticalAlignment="Center"
+                        Margin="0,0,10,0"
+                        Padding="10,3"
+                        Background="{ThemeResource SurfaceBrush}"
+                        BorderBrush="{ThemeResource SurfaceBorderBrush}"
+                        BorderThickness="1"
+                        CornerRadius="12">
+                    <StackPanel Orientation="Horizontal">
+                        <Ellipse x:Name="RecDot"
+                                Width="8"
+                                Height="8"
+                                Fill="{ThemeResource TextMutedBrush}"
+                                 VerticalAlignment="Center"
+                                Margin="0,0,10,0"/>
+                        <TextBlock x:Name="StatusHeadline"
+                                Text="STOPPED"
+                                Style="{StaticResource Caption}"
+                                   Foreground="{ThemeResource TextPrimaryBrush}"
+                                VerticalAlignment="Center"/>
+                    </StackPanel>
+                </Border>
+                <Button x:Name="DonateTitleButton"
+                        Width="44"
+                        Style="{StaticResource TitleBarIconButtonStyle}"
+                        IsTabStop="False"
+                        Click="DonateTitleButton_Click"
+                        ToolTipService.ToolTip="Donate">
+                    <TextBlock Text="&#x1F496;"
+                            FontFamily="Segoe UI Emoji"
+                            FontSize="16"
+                               IsTextScaleFactorEnabled="False"
+                            HorizontalAlignment="Center"
+                            VerticalAlignment="Center"/>
                 </Button>
-
-                <StackPanel Grid.Row="1" Spacing="2">
-                    <RadioButton x:Name="NavHome" GroupName="Nav" Style="{StaticResource NavItemStyle}"
-                                 Checked="Nav_Checked" IsChecked="True">
-                        <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="24"/>
-                                <ColumnDefinition Width="*"/>
-                            </Grid.ColumnDefinitions>
-                            <FontIcon Grid.Column="0" Glyph="&#xE80F;" FontFamily="{ThemeResource SymbolThemeFontFamily}"
-                                      FontSize="15" HorizontalAlignment="Center"/>
-                            <TextBlock x:Name="NavHomeLabel" Grid.Column="1" Text="Home" Margin="10,0,0,0" VerticalAlignment="Center"/>
-                        </Grid>
-                    </RadioButton>
-                    <RadioButton x:Name="NavSettings" GroupName="Nav" Style="{StaticResource NavItemStyle}" Checked="Nav_Checked">
-                        <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="24"/>
-                                <ColumnDefinition Width="*"/>
-                            </Grid.ColumnDefinitions>
-                            <FontIcon Grid.Column="0" Glyph="&#xE713;" FontFamily="{ThemeResource SymbolThemeFontFamily}"
-                                      FontSize="15" HorizontalAlignment="Center"/>
-                            <TextBlock x:Name="NavSettingsLabel" Grid.Column="1" Text="Settings" Margin="10,0,0,0" VerticalAlignment="Center"/>
-                        </Grid>
-                    </RadioButton>
-                    <RadioButton x:Name="NavAdvanced" GroupName="Nav" Style="{StaticResource NavItemStyle}" Checked="Nav_Checked">
-                        <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="24"/>
-                                <ColumnDefinition Width="*"/>
-                            </Grid.ColumnDefinitions>
-                            <FontIcon Grid.Column="0" Glyph="&#xE7BA;" FontFamily="{ThemeResource SymbolThemeFontFamily}"
-                                      FontSize="15" HorizontalAlignment="Center" Foreground="{ThemeResource ErrorBrush}"/>
-                            <TextBlock x:Name="NavAdvancedLabel" Grid.Column="1" Text="Advanced" Margin="10,0,0,0" VerticalAlignment="Center"/>
-                        </Grid>
-                    </RadioButton>
-                </StackPanel>
-
-                <RadioButton x:Name="NavDonate" Grid.Row="2" GroupName="Nav" Style="{StaticResource NavItemStyle}" Checked="Nav_Checked">
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="24"/>
-                            <ColumnDefinition Width="*"/>
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Grid.Column="0" Text="&#x2665;" FontSize="18" Foreground="{ThemeResource HeartRedBrush}"
-                                   HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                        <TextBlock x:Name="NavDonateLabel" Grid.Column="1" Text="Donate" Margin="10,0,0,0" VerticalAlignment="Center"/>
-                    </Grid>
-                </RadioButton>
-            </Grid>
-        </Border>
-
-        <Grid Grid.Column="1" Grid.Row="0" Margin="{StaticResource ContentFrameMargin}">
-
-            <Grid x:Name="HomePage" Visibility="Visible">
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="14"/>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="10"/>
-                    <RowDefinition Height="Auto"/>
-                </Grid.RowDefinitions>
-
-                <Grid Grid.Row="0">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="Auto"/>
-                    </Grid.ColumnDefinitions>
-                    <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
-                        <Border Width="4" Height="26" Background="{ThemeResource AccentBrush}" Margin="0,0,10,0"/>
-                        <TextBlock Text="I N S T A N T   R E P L A Y" FontFamily="Segoe UI Variable" FontSize="19"
-                                   Foreground="{ThemeResource TextPrimaryBrush}" VerticalAlignment="Center"/>
-                    </StackPanel>
-                    <Border Grid.Column="1" Background="{ThemeResource SurfaceBrush}"
-                            BorderBrush="{ThemeResource SurfaceBorderBrush}" BorderThickness="1"
-                            CornerRadius="12" Padding="10,5">
-                        <StackPanel Orientation="Horizontal">
-                            <Ellipse x:Name="RecDot" Width="8" Height="8" Fill="{ThemeResource TextMutedBrush}"
-                                     VerticalAlignment="Center" Margin="0,0,14,0"/>
-                            <TextBlock x:Name="StatusHeadline" Text="STOPPED" Style="{StaticResource Caption}"
-                                       Foreground="{ThemeResource TextPrimaryBrush}" VerticalAlignment="Center"/>
-                        </StackPanel>
-                    </Border>
-                </Grid>
-
-                <Border Grid.Row="2" Style="{StaticResource Card}">
-                    <StackPanel>
-                        <TextBlock Text="CURRENT SESSION" Style="{StaticResource Caption}" Margin="0,0,0,12"/>
-                        <Grid Margin="0,0,0,10">
-                            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0" Text="Microphone" Style="{StaticResource Mono}"/>
-                            <TextBlock x:Name="SessionMicText" Grid.Column="1" Text="—" Style="{StaticResource Mono}"
-                                       Foreground="{ThemeResource TextPrimaryBrush}" TextTrimming="CharacterEllipsis" MaxWidth="300"/>
-                        </Grid>
-                        <Grid Margin="0,0,0,10">
-                            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0" Text="Replay duration" Style="{StaticResource Mono}"/>
-                            <TextBlock x:Name="SessionDurationText" Grid.Column="1" Text="—" Style="{StaticResource Mono}" Foreground="{ThemeResource TextPrimaryBrush}"/>
-                        </Grid>
-                        <Grid Margin="0,0,0,10">
-                            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0" Text="Frame rate" Style="{StaticResource Mono}"/>
-                            <TextBlock x:Name="SessionFpsText" Grid.Column="1" Text="—" Style="{StaticResource Mono}" Foreground="{ThemeResource TextPrimaryBrush}"/>
-                        </Grid>
-                        <Grid Margin="0,0,0,10">
-                            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0" Text="Quality" Style="{StaticResource Mono}"/>
-                            <TextBlock x:Name="SessionQualityText" Grid.Column="1" Text="—" Style="{StaticResource Mono}" Foreground="{ThemeResource TextPrimaryBrush}"/>
-                        </Grid>
-                        <Grid>
-                            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0" Text="Save replay hotkey" Style="{StaticResource Mono}"/>
-                            <TextBlock x:Name="SessionHotkeyText" Grid.Column="1" Text="—" Style="{StaticResource Mono}" Foreground="{ThemeResource AccentBrush}"/>
-                        </Grid>
-                    </StackPanel>
-                </Border>
-
-                <Grid Grid.Row="4">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="Auto"/>
-                        <ColumnDefinition Width="10"/>
-                        <ColumnDefinition Width="*"/>
-                    </Grid.ColumnDefinitions>
-                    <Button x:Name="StartStopButton" Grid.Column="0" Content="STOP" Width="100"
-                            Style="{StaticResource BaseButtonStyle}" Click="StartStopButton_Click"/>
-                    <Button x:Name="SaveReplayButton" Grid.Column="2" Content="SAVE REPLAY" HorizontalAlignment="Stretch"
-                            Style="{StaticResource AccentButtonStyle}" Click="SaveReplayButton_Click"/>
-                </Grid>
-            </Grid>
-
-            <StackPanel x:Name="SettingsPage" Visibility="Collapsed">
-                    <Border Style="{StaticResource Card}">
-                        <StackPanel>
-                            <TextBlock Text="MICROPHONE" Style="{StaticResource Caption}" Margin="0,0,0,8"/>
-                            <ComboBox x:Name="MicCombo" HorizontalAlignment="Stretch"
-                                      SelectionChanged="MicCombo_SelectionChanged" Margin="0,0,0,12"/>
-
-                            <TextBlock Text="REPLAY DURATION" Style="{StaticResource Caption}" Margin="0,0,0,8"/>
-                            <ComboBox x:Name="DurationCombo" HorizontalAlignment="Stretch" Margin="0,0,0,12"
-                                      SelectionChanged="DurationCombo_SelectionChanged">
-                                <ComboBoxItem Content="30 seconds"/>
-                                <ComboBoxItem Content="60 seconds"/>
-                                <ComboBoxItem Content="120 seconds"/>
-                            </ComboBox>
-
-                            <TextBlock Text="FRAME RATE" Style="{StaticResource Caption}" Margin="0,0,0,8"/>
-                            <ComboBox x:Name="FpsCombo" HorizontalAlignment="Stretch" Margin="0,0,0,12"
-                                      SelectionChanged="FpsCombo_SelectionChanged">
-                                <ComboBoxItem Content="30 FPS"/>
-                                <ComboBoxItem Content="60 FPS"/>
-                                <ComboBoxItem Content="120 FPS"/>
-                            </ComboBox>
-
-                            <TextBlock Text="QUALITY" Style="{StaticResource Caption}" Margin="0,0,0,8"/>
-                            <ComboBox x:Name="QualityCombo" HorizontalAlignment="Stretch" Margin="0,0,0,4"
-                                      SelectionChanged="QualityCombo_SelectionChanged">
-                                <ComboBoxItem Content="Fast"/>
-                                <ComboBoxItem Content="Balanced"/>
-                                <ComboBoxItem Content="Quality"/>
-                            </ComboBox>
-                            <TextBlock Text="Higher quality uses more CPU while recording." Style="{StaticResource Mono}" FontSize="12" Margin="0,0,0,12"/>
-
-                            <TextBlock Text="SAVE LOCATION" Style="{StaticResource Caption}" Margin="0,0,0,8"/>
-                            <Grid Margin="0,0,0,12">
-                                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="8"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                                <TextBox x:Name="SaveLocationBox" Grid.Column="0" TextChanged="SaveLocationBox_TextChanged"/>
-                                <Button x:Name="BrowseSaveLocationButton" Grid.Column="2" Content="BROWSE" Style="{StaticResource BaseButtonStyle}" Click="BrowseSaveLocationButton_Click"/>
-                            </Grid>
-
-                            <local:SettingRow Label="SAVE REPLAY HOTKEY">
-                                <Button x:Name="HotkeyCaptureButton" Content="CTRL + *" Width="140" Style="{StaticResource BaseButtonStyle}" Click="HotkeyCaptureButton_Click"/>
-                            </local:SettingRow>
-
-                            <local:SettingRow Label="START WITH WINDOWS" Margin="0,0,0,4">
-                                <ToggleSwitch x:Name="StartupToggle" OnContent="" OffContent="" Toggled="StartupToggle_Changed"/>
-                            </local:SettingRow>
-
-                            <local:SettingRow Label="TRANSPARENCY EFFECTS" Margin="0,0,0,4">
-                                <ToggleSwitch x:Name="TransparencyToggle" OnContent="" OffContent="" Toggled="TransparencyToggle_Changed"/>
-                            </local:SettingRow>
-
-                            <local:SettingRow Label="DARK MODE" Margin="0">
-                                <ToggleSwitch x:Name="ThemeToggle" OnContent="" OffContent="" Toggled="ThemeToggle_Changed"/>
-                            </local:SettingRow>
-                        </StackPanel>
-                    </Border>
+                <Button x:Name="GitHubTitleButton"
+                        Width="44"
+                        Style="{StaticResource TitleBarIconButtonStyle}"
+                        IsTabStop="False"
+                        Click="GitHubTitleButton_Click"
+                        ToolTipService.ToolTip="View on GitHub">
+                    <Image Source="{ThemeResource GitHubLogoSource}"
+                            Width="18"
+                            Height="18"/>
+                </Button>
+                <Button x:Name="MinimizeTitleButton"
+                        Width="46"
+                        Margin="8,0,0,0"
+                        Style="{StaticResource TitleBarIconButtonStyle}"
+                        IsTabStop="False"
+                        Click="MinimizeTitleButton_Click"
+                        ToolTipService.ToolTip="Minimize">
+                    <FontIcon Glyph="&#xE921;"
+                            FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                            FontSize="10"/>
+                </Button>
+                <Button x:Name="CloseTitleButton"
+                        Width="46"
+                        Style="{StaticResource TitleBarCloseButtonStyle}"
+                        IsTabStop="False"
+                        Click="CloseTitleButton_Click"
+                        ToolTipService.ToolTip="Close">
+                    <FontIcon Glyph="&#xE8BB;"
+                            FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                            FontSize="10"/>
+                </Button>
             </StackPanel>
-
-            <StackPanel x:Name="AdvancedPage" Visibility="Collapsed">
-                <Border Style="{StaticResource Card}">
-                    <StackPanel>
-                        <TextBlock Text="ADVANCED" Style="{StaticResource Caption}" Foreground="{ThemeResource ErrorBrush}" Margin="0,0,0,6"/>
-                        <TextBlock Text="Only change these if you know what they do — most people never need to."
-                                   Style="{StaticResource Mono}" FontSize="12" TextWrapping="Wrap" Margin="0,0,0,12"/>
-
-                        <TextBlock Text="FFMPEG PATH" Style="{StaticResource Caption}" Margin="0,0,0,8"/>
-                        <Grid Margin="0,0,0,12">
-                            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="8"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                            <TextBox x:Name="FFmpegPathBox" Grid.Column="0" TextChanged="FFmpegPathBox_TextChanged"/>
-                            <Button x:Name="BrowseFFmpegButton" Grid.Column="2" Content="BROWSE" Style="{StaticResource BaseButtonStyle}" Click="BrowseFFmpegButton_Click"/>
-                        </Grid>
-
-                        <StackPanel Orientation="Horizontal" Margin="0,0,0,8" Spacing="6">
-                            <TextBlock Text="AUDIO SYNC OFFSETS" Style="{StaticResource Caption}" VerticalAlignment="Center"/>
-                            <Border Width="15" Height="15" CornerRadius="8" Background="{ThemeResource SurfaceBorderBrush}" VerticalAlignment="Center"
-                                    ToolTipService.ToolTip="Shifts this audio track earlier or later relative to the video, in milliseconds. A positive value delays it; a negative value makes it play earlier (in advance).">
-                                <TextBlock Text="?" FontSize="11" FontFamily="Segoe UI Variable" HorizontalAlignment="Center" VerticalAlignment="Center"
-                                           Margin="0,-1,0,0" Foreground="{ThemeResource TextPrimaryBrush}"/>
-                            </Border>
-                        </StackPanel>
-
-                        <local:SettingRow Label="SYSTEM AUDIO OFFSET">
-                            <StackPanel Orientation="Horizontal" Spacing="8">
-                                <Button x:Name="SysOffsetMinus" Content="&#x2212;" Style="{StaticResource StepperButtonStyle}" Click="SysOffsetMinus_Click"/>
-                                <TextBlock x:Name="SysOffsetValue" Text="+0 ms" Style="{StaticResource Mono}" Width="60" TextAlignment="Center"
-                                           VerticalAlignment="Center" Foreground="{ThemeResource TextPrimaryBrush}"/>
-                                <Button x:Name="SysOffsetPlus" Content="+" Style="{StaticResource StepperButtonStyle}" Click="SysOffsetPlus_Click"/>
-                            </StackPanel>
-                        </local:SettingRow>
-
-                        <local:SettingRow Label="MIC OFFSET">
-                            <StackPanel Orientation="Horizontal" Spacing="8">
-                                <Button x:Name="MicOffsetMinus" Content="&#x2212;" Style="{StaticResource StepperButtonStyle}" Click="MicOffsetMinus_Click"/>
-                                <TextBlock x:Name="MicOffsetValue" Text="+0 ms" Style="{StaticResource Mono}" Width="60" TextAlignment="Center"
-                                           VerticalAlignment="Center" Foreground="{ThemeResource TextPrimaryBrush}"/>
-                                <Button x:Name="MicOffsetPlus" Content="+" Style="{StaticResource StepperButtonStyle}" Click="MicOffsetPlus_Click"/>
-                            </StackPanel>
-                        </local:SettingRow>
-
-                        <local:SettingRow Label="DEBUG LOGGING" Margin="0">
-                            <ToggleSwitch x:Name="DebugToggle" OnContent="" OffContent="" Toggled="DebugToggle_Changed"/>
-                        </local:SettingRow>
-                    </StackPanel>
-                </Border>
-            </StackPanel>
-
-            <StackPanel x:Name="DonatePage" Visibility="Collapsed" VerticalAlignment="Center">
-                <Border Style="{StaticResource Card}">
-                    <StackPanel>
-                        <TextBlock Text="&#x2665;" FontSize="32" Foreground="{ThemeResource HeartRedBrush}" HorizontalAlignment="Center" Margin="0,0,0,10"/>
-                        <TextBlock Text="Support Instant Replay" FontFamily="Segoe UI Variable" FontSize="16"
-                                   Foreground="{ThemeResource TextPrimaryBrush}" HorizontalAlignment="Center" Margin="0,0,0,10"/>
-                        <TextBlock Style="{StaticResource Mono}" TextWrapping="Wrap" TextAlignment="Center" Margin="10,0,10,14" LineHeight="17">
-                            <Run Text="Thank you so much for using Instant Replay — genuinely, it means a lot that you're here."/>
-                            <LineBreak/><LineBreak/>
-                            <Run Text="This app is free and built in my spare time. If it's been useful to you and you'd like to help keep it going, a small donation is always appreciated. No pressure at all — just send it if you're able and want to."/>
-                        </TextBlock>
-
-                        <TextBlock Text="USDT &#x00B7; TRC-20" Style="{StaticResource Caption}" Foreground="{ThemeResource DonateBrush}" HorizontalAlignment="Center" Margin="0,0,0,8"/>
-                        <Border Background="{ThemeResource BgBrush}" BorderBrush="{ThemeResource SurfaceBorderBrush}"
-                                BorderThickness="1" CornerRadius="8" Padding="10,6" Margin="0,0,0,12">
-                            <TextBlock x:Name="WalletAddressText" Text="TBLWg9dJtimMijGJtSKGX61DtmZbYaDbkD"
-                                       Style="{StaticResource Mono}" Foreground="{ThemeResource TextPrimaryBrush}"
-                                       TextWrapping="Wrap" TextAlignment="Center" FontSize="12"/>
-                        </Border>
-                        <Button x:Name="CopyAddressButton" Content="COPY ADDRESS" Style="{StaticResource AccentButtonStyle}"
-                                HorizontalAlignment="Stretch" Click="CopyAddressButton_Click"/>
-                    </StackPanel>
-                </Border>
-            </StackPanel>
-
         </Grid>
 
-        <Button x:Name="ApplyButton" Grid.Column="1" Grid.Row="1" Content="NO CHANGES PENDING" IsEnabled="False"
-                Style="{StaticResource BaseButtonStyle}" HorizontalAlignment="Stretch"
-                Margin="{StaticResource ApplyButtonMargin}" Click="ApplyButton_Click"/>
+        <NavigationView x:Name="NavView"
+                Grid.Row="1"
+                        PaneDisplayMode="Left"
+                        IsBackButtonVisible="Collapsed"
+                        IsSettingsVisible="False"
+                        OpenPaneLength="220"
+                        IsTitleBarAutoPaddingEnabled="False"
+                        SelectionChanged="NavView_SelectionChanged"
+                        ItemInvoked="NavView_ItemInvoked">
+            <NavigationView.Resources>
+                <Thickness x:Key="NavigationViewContentGridBorderThickness">0</Thickness>
+                <Thickness x:Key="NavigationViewBorderThickness">0</Thickness>
+            </NavigationView.Resources>
+            <NavigationView.MenuItems>
+                <NavigationViewItem x:Name="NavHomeItem"
+                        ElementSoundMode="Off"
+                        Tag="Home"
+                        Content="Home">
+                    <NavigationViewItem.Icon>
+                        <SymbolIcon Symbol="Home"/>
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+                <NavigationViewItem x:Name="NavGalleryItem"
+                        ElementSoundMode="Off"
+                        Tag="Gallery"
+                        Content="Gallery">
+                    <NavigationViewItem.Icon>
+                        <SymbolIcon Symbol="Pictures"/>
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+                <NavigationViewItem x:Name="NavSettingsItem"
+                        ElementSoundMode="Off"
+                        Tag="Settings"
+                        Content="Settings">
+                    <NavigationViewItem.Icon>
+                        <SymbolIcon Symbol="Setting"/>
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+            </NavigationView.MenuItems>
+
+            <Grid>
+                <Grid x:Name="PagesHost"
+                        Margin="{StaticResource ContentFrameMargin}">
+
+                    <Grid x:Name="HomePage"
+                            Visibility="Visible">
+                        <StackPanel MaxWidth="980"
+                                VerticalAlignment="Center">
+                            <Border x:Name="HeroCard"
+                                    Background="{ThemeResource HeroBackgroundBrush}"
+                                    CornerRadius="18"
+                                    Padding="44,36">
+                                <Grid ColumnSpacing="40">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="240"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+
+                                    <Grid x:Name="HeroArt"
+                                            Width="240"
+                                            Height="240"
+                                            VerticalAlignment="Center">
+                                        <Ellipse x:Name="HeroRingA"
+                                                Width="170"
+                                                Height="170"
+                                                Opacity="0"
+                                                 Stroke="{ThemeResource AccentBrush}"
+                                                StrokeThickness="2"
+                                                 RenderTransformOrigin="0.5,0.5"/>
+                                        <Ellipse x:Name="HeroRingB"
+                                                Width="170"
+                                                Height="170"
+                                                Opacity="0"
+                                                 Stroke="{ThemeResource AccentBrush}"
+                                                StrokeThickness="2"
+                                                 RenderTransformOrigin="0.5,0.5"/>
+                                        <Ellipse x:Name="HeroGlow"
+                                                Width="150"
+                                                Height="150"
+                                                Opacity="0.22"
+                                                 Fill="{ThemeResource AccentBrush}"
+                                                RenderTransformOrigin="0.5,0.5"/>
+                                        <Canvas x:Name="ParticleCanvas"
+                                                Width="240"
+                                                Height="240"
+                                                IsHitTestVisible="False"/>
+                                        <TextBlock x:Name="HeroIcon"
+                                                Text="&#x1F3AC;"
+                                                FontFamily="Segoe UI Emoji"
+                                                FontSize="104"
+                                                   IsTextScaleFactorEnabled="False"
+                                                   HorizontalAlignment="Center"
+                                                VerticalAlignment="Center"
+                                                   RenderTransformOrigin="0.5,0.5"/>
+                                    </Grid>
+
+                                    <StackPanel Grid.Column="1"
+                                            VerticalAlignment="Center">
+                                        <TextBlock x:Name="HeroTitle"
+                                                FontSize="42"
+                                                FontWeight="SemiBold"
+                                                LineHeight="48"
+                                                   Foreground="{ThemeResource TextPrimaryBrush}">
+                                        <Run Text="NEVER MISS"/><LineBreak/><Run Text="THE "/><Run Text="MOMENT"
+                                                    Foreground="{ThemeResource AccentBrush}"/>
+                                        </TextBlock>
+                                        <TextBlock x:Name="HeroSubtitle"
+                                                Style="{StaticResource Mono}"
+                                                FontSize="16"
+                                                   TextWrapping="Wrap"
+                                                MaxWidth="440"
+                                                Margin="0,14,0,0"
+                                                   Text="Instant Replay keeps the last seconds of your screen ready. Hit your hotkey right after a great play and the moment is saved."/>
+                                        <StackPanel x:Name="HeroActions"
+                                                Orientation="Horizontal"
+                                                Spacing="12"
+                                                Margin="0,28,0,0">
+                                            <Button x:Name="SaveReplayButton"
+                                                    Visibility="Collapsed"
+                                                    Style="{StaticResource AccentButtonStyle}"
+                                                    Background="{ThemeResource AccentGradientBrush}"
+                                                    Height="52"
+                                                    MinWidth="200"
+                                                    Padding="24,0"
+                                                    CornerRadius="12"
+                                                    Click="SaveReplayButton_Click">
+                                                <StackPanel Orientation="Horizontal"
+                                                        Spacing="10">
+                                                    <FontIcon Glyph="&#xE74E;"
+                                                            FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                                                            FontSize="16"
+                                                              Foreground="{Binding Foreground, ElementName=SaveReplayButton}"/>
+                                                    <TextBlock Text="SAVE REPLAY"
+                                                            FontWeight="SemiBold"
+                                                            VerticalAlignment="Center"
+                                                               Foreground="{Binding Foreground, ElementName=SaveReplayButton}"/>
+                                                </StackPanel>
+                                            </Button>
+                                            <Button x:Name="StartStopButton"
+                                                    ElementSoundMode="Off"
+                                                    Style="{StaticResource AccentButtonStyle}"
+                                                    Background="{ThemeResource AccentGradientBrush}"
+                                                    Height="52"
+                                                    MinWidth="240"
+                                                    Padding="24,0"
+                                                    CornerRadius="12"
+                                                    Click="StartStopButton_Click">
+                                                <StackPanel Orientation="Horizontal"
+                                                        Spacing="10">
+                                                    <FontIcon x:Name="StartStopIcon"
+                                                            Glyph="&#xE768;"
+                                                            FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                                                            FontSize="16"
+                                                              Foreground="{Binding Foreground, ElementName=StartStopButton}"/>
+                                                    <TextBlock x:Name="StartStopText"
+                                                            Text="START REPLAY"
+                                                            FontWeight="SemiBold"
+                                                            VerticalAlignment="Center"
+                                                               Foreground="{Binding Foreground, ElementName=StartStopButton}"/>
+                                                </StackPanel>
+                                            </Button>
+                                        </StackPanel>
+                                    </StackPanel>
+                                </Grid>
+                            </Border>
+
+                            <Grid x:Name="StatsRow"
+                                    Margin="0,16,0,0"
+                                    ColumnSpacing="16">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+
+                                <Border x:Name="CpuCard"
+                                        Style="{StaticResource Card}">
+                                    <Grid ColumnSpacing="14">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <Border x:Name="CpuIconBg"
+                                                Width="44"
+                                                Height="44"
+                                                CornerRadius="12"
+                                                Background="{ThemeResource AccentGradientBrush}">
+                                            <Canvas Width="20"
+                                                    Height="20"
+                                                    HorizontalAlignment="Center"
+                                                    VerticalAlignment="Center">
+                                                <Line X1="6.5"
+                                                        Y1="1"
+                                                        X2="6.5"
+                                                        Y2="4.5"
+                                                        Stroke="White"
+                                                        StrokeThickness="1.4"
+                                                        StrokeStartLineCap="Round"
+                                                        StrokeEndLineCap="Round"/>
+                                                <Line X1="10"
+                                                        Y1="1"
+                                                        X2="10"
+                                                        Y2="4.5"
+                                                        Stroke="White"
+                                                        StrokeThickness="1.4"
+                                                        StrokeStartLineCap="Round"
+                                                        StrokeEndLineCap="Round"/>
+                                                <Line X1="13.5"
+                                                        Y1="1"
+                                                        X2="13.5"
+                                                        Y2="4.5"
+                                                        Stroke="White"
+                                                        StrokeThickness="1.4"
+                                                        StrokeStartLineCap="Round"
+                                                        StrokeEndLineCap="Round"/>
+                                                <Line X1="6.5"
+                                                        Y1="15.5"
+                                                        X2="6.5"
+                                                        Y2="19"
+                                                        Stroke="White"
+                                                        StrokeThickness="1.4"
+                                                        StrokeStartLineCap="Round"
+                                                        StrokeEndLineCap="Round"/>
+                                                <Line X1="10"
+                                                        Y1="15.5"
+                                                        X2="10"
+                                                        Y2="19"
+                                                        Stroke="White"
+                                                        StrokeThickness="1.4"
+                                                        StrokeStartLineCap="Round"
+                                                        StrokeEndLineCap="Round"/>
+                                                <Line X1="13.5"
+                                                        Y1="15.5"
+                                                        X2="13.5"
+                                                        Y2="19"
+                                                        Stroke="White"
+                                                        StrokeThickness="1.4"
+                                                        StrokeStartLineCap="Round"
+                                                        StrokeEndLineCap="Round"/>
+                                                <Line X1="1"
+                                                        Y1="6.5"
+                                                        X2="4.5"
+                                                        Y2="6.5"
+                                                        Stroke="White"
+                                                        StrokeThickness="1.4"
+                                                        StrokeStartLineCap="Round"
+                                                        StrokeEndLineCap="Round"/>
+                                                <Line X1="1"
+                                                        Y1="10"
+                                                        X2="4.5"
+                                                        Y2="10"
+                                                        Stroke="White"
+                                                        StrokeThickness="1.4"
+                                                        StrokeStartLineCap="Round"
+                                                        StrokeEndLineCap="Round"/>
+                                                <Line X1="1"
+                                                        Y1="13.5"
+                                                        X2="4.5"
+                                                        Y2="13.5"
+                                                        Stroke="White"
+                                                        StrokeThickness="1.4"
+                                                        StrokeStartLineCap="Round"
+                                                        StrokeEndLineCap="Round"/>
+                                                <Line X1="15.5"
+                                                        Y1="6.5"
+                                                        X2="19"
+                                                        Y2="6.5"
+                                                        Stroke="White"
+                                                        StrokeThickness="1.4"
+                                                        StrokeStartLineCap="Round"
+                                                        StrokeEndLineCap="Round"/>
+                                                <Line X1="15.5"
+                                                        Y1="10"
+                                                        X2="19"
+                                                        Y2="10"
+                                                        Stroke="White"
+                                                        StrokeThickness="1.4"
+                                                        StrokeStartLineCap="Round"
+                                                        StrokeEndLineCap="Round"/>
+                                                <Line X1="15.5"
+                                                        Y1="13.5"
+                                                        X2="19"
+                                                        Y2="13.5"
+                                                        Stroke="White"
+                                                        StrokeThickness="1.4"
+                                                        StrokeStartLineCap="Round"
+                                                        StrokeEndLineCap="Round"/>
+                                                <Rectangle Width="11"
+                                                        Height="11"
+                                                        Canvas.Left="4.5"
+                                                        Canvas.Top="4.5"
+                                                           Stroke="White"
+                                                        StrokeThickness="1.5"
+                                                        RadiusX="2"
+                                                        RadiusY="2"/>
+                                                <Rectangle Width="5"
+                                                        Height="5"
+                                                        Canvas.Left="7.5"
+                                                        Canvas.Top="7.5"
+                                                           Fill="White"
+                                                        RadiusX="1"
+                                                        RadiusY="1"/>
+                                            </Canvas>
+                                        </Border>
+                                        <StackPanel Grid.Column="1"
+                                                VerticalAlignment="Center"
+                                                Spacing="3">
+                                            <TextBlock Text="SYSTEM CPU"
+                                                    Style="{StaticResource Mono}"
+                                                       FontSize="11"
+                                                    CharacterSpacing="60"/>
+                                            <StackPanel Orientation="Horizontal"
+                                                    Spacing="8">
+                                                <TextBlock x:Name="CpuValueText"
+                                                        Text="&#x2014;"
+                                                        FontSize="22"
+                                                           FontWeight="SemiBold"
+                                                        VerticalAlignment="Bottom"
+                                                           Foreground="{ThemeResource TextPrimaryBrush}"/>
+                                                <TextBlock x:Name="CpuHintText"
+                                                        Text="overall usage"
+                                                        FontSize="12"
+                                                           VerticalAlignment="Bottom"
+                                                        Margin="0,0,0,3"
+                                                           Foreground="{ThemeResource SettingsAreaMutedBrush}"/>
+                                            </StackPanel>
+                                        </StackPanel>
+                                    </Grid>
+                                </Border>
+
+                                <Border x:Name="RamCard"
+                                        Grid.Column="1"
+                                        Style="{StaticResource Card}">
+                                    <Grid ColumnSpacing="14">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <Border x:Name="RamIconBg"
+                                                Width="44"
+                                                Height="44"
+                                                CornerRadius="12"
+                                                Background="{ThemeResource AccentGradientBrush}">
+                                            <Canvas Width="22"
+                                                    Height="20"
+                                                    HorizontalAlignment="Center"
+                                                    VerticalAlignment="Center">
+                                                <Rectangle Width="20"
+                                                        Height="11"
+                                                        Canvas.Left="1"
+                                                        Canvas.Top="3"
+                                                           Stroke="White"
+                                                        StrokeThickness="1.5"
+                                                        RadiusX="2"
+                                                        RadiusY="2"/>
+                                                <Rectangle Width="4"
+                                                        Height="5"
+                                                        Canvas.Left="3.5"
+                                                        Canvas.Top="6"
+                                                           Fill="White"
+                                                        RadiusX="0.8"
+                                                        RadiusY="0.8"/>
+                                                <Rectangle Width="4"
+                                                        Height="5"
+                                                        Canvas.Left="9"
+                                                        Canvas.Top="6"
+                                                           Fill="White"
+                                                        RadiusX="0.8"
+                                                        RadiusY="0.8"/>
+                                                <Rectangle Width="4"
+                                                        Height="5"
+                                                        Canvas.Left="14.5"
+                                                        Canvas.Top="6"
+                                                           Fill="White"
+                                                        RadiusX="0.8"
+                                                        RadiusY="0.8"/>
+                                                <Line X1="5"
+                                                        Y1="14.5"
+                                                        X2="5"
+                                                        Y2="18.5"
+                                                        Stroke="White"
+                                                        StrokeThickness="1.4"
+                                                        StrokeStartLineCap="Round"
+                                                        StrokeEndLineCap="Round"/>
+                                                <Line X1="8"
+                                                        Y1="14.5"
+                                                        X2="8"
+                                                        Y2="18.5"
+                                                        Stroke="White"
+                                                        StrokeThickness="1.4"
+                                                        StrokeStartLineCap="Round"
+                                                        StrokeEndLineCap="Round"/>
+                                                <Line X1="11"
+                                                        Y1="14.5"
+                                                        X2="11"
+                                                        Y2="18.5"
+                                                        Stroke="White"
+                                                        StrokeThickness="1.4"
+                                                        StrokeStartLineCap="Round"
+                                                        StrokeEndLineCap="Round"/>
+                                                <Line X1="14"
+                                                        Y1="14.5"
+                                                        X2="14"
+                                                        Y2="18.5"
+                                                        Stroke="White"
+                                                        StrokeThickness="1.4"
+                                                        StrokeStartLineCap="Round"
+                                                        StrokeEndLineCap="Round"/>
+                                                <Line X1="17"
+                                                        Y1="14.5"
+                                                        X2="17"
+                                                        Y2="18.5"
+                                                        Stroke="White"
+                                                        StrokeThickness="1.4"
+                                                        StrokeStartLineCap="Round"
+                                                        StrokeEndLineCap="Round"/>
+                                            </Canvas>
+                                        </Border>
+                                        <StackPanel Grid.Column="1"
+                                                VerticalAlignment="Center"
+                                                Spacing="3">
+                                            <TextBlock Text="SYSTEM MEMORY"
+                                                    Style="{StaticResource Mono}"
+                                                       FontSize="11"
+                                                    CharacterSpacing="60"/>
+                                            <StackPanel Orientation="Horizontal"
+                                                    Spacing="8">
+                                                <TextBlock x:Name="RamValueText"
+                                                        Text="&#x2014;"
+                                                        FontSize="22"
+                                                           FontWeight="SemiBold"
+                                                        VerticalAlignment="Bottom"
+                                                           Foreground="{ThemeResource TextPrimaryBrush}"/>
+                                                <TextBlock x:Name="RamHintText"
+                                                        Text="memory in use"
+                                                        FontSize="12"
+                                                           VerticalAlignment="Bottom"
+                                                        Margin="0,0,0,3"
+                                                           Foreground="{ThemeResource SettingsAreaMutedBrush}"/>
+                                            </StackPanel>
+                                        </StackPanel>
+                                    </Grid>
+                                </Border>
+                            </Grid>
+                        </StackPanel>
+                    </Grid>
+
+                    <Grid x:Name="GalleryPage"
+                            Visibility="Collapsed">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+
+                        <Grid x:Name="GalleryHeader"
+                                Margin="0,0,0,14">
+                            <TextBlock Text="Gallery"
+                                    Style="{StaticResource Title}"
+                                    VerticalAlignment="Center"/>
+                            <TextBlock x:Name="GalleryCountText"
+                                    Style="{StaticResource Caption}"
+                                       HorizontalAlignment="Right"
+                                    VerticalAlignment="Center"/>
+                        </Grid>
+
+                        <Grid x:Name="GalleryBody"
+                                Grid.Row="1">
+                            <GridView x:Name="GalleryGrid"
+                                    SelectionMode="None"
+                                    IsItemClickEnabled="True"
+                                      ItemClick="GalleryGrid_ItemClick"
+                                    Padding="8,8,10,8">
+                                <GridView.ItemContainerStyle>
+                                    <Style TargetType="GridViewItem">
+                                        <Setter Property="Margin"
+                                                Value="0,0,14,14"/>
+                                        <Setter Property="Padding"
+                                                Value="0"/>
+                                        <Setter Property="CornerRadius"
+                                                Value="10"/>
+                                        <Setter Property="ElementSoundMode"
+                                                Value="Off"/>
+                                    </Style>
+                                </GridView.ItemContainerStyle>
+                                <GridView.ItemTemplate>
+                                    <DataTemplate x:DataType="local:ReplayItem">
+                                        <Grid Width="252"
+                                                Height="142"
+                                                CornerRadius="10"
+                                              Background="{ThemeResource SettingsAreaBrush}"
+                                              BorderBrush="{ThemeResource SurfaceBorderBrush}"
+                                                BorderThickness="1">
+                                            <Border Background="{ThemeResource HoverBrush}"
+                                                    CornerRadius="10">
+                                                <FontIcon Glyph="&#xE714;"
+                                                        FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                                                          FontSize="28"
+                                                        Opacity="0.35"/>
+                                            </Border>
+                                            <Border x:Name="ThumbImage"
+                                                    CornerRadius="10">
+                                                <Border.Background>
+                                                    <ImageBrush ImageSource="{x:Bind Thumbnail, Mode=OneWay}"
+                                                            Stretch="UniformToFill"/>
+                                                </Border.Background>
+                                            </Border>
+                                            <Border Width="44"
+                                                    Height="44"
+                                                    CornerRadius="22"
+                                                    Background="#80000000"
+                                                    HorizontalAlignment="Center"
+                                                    VerticalAlignment="Center">
+                                                <FontIcon Glyph="&#xE768;"
+                                                        FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                                                          FontSize="16"
+                                                        Foreground="White"/>
+                                            </Border>
+
+                                            <Border Background="#99000000"
+                                                    CornerRadius="6"
+                                                    Padding="6,2"
+                                                    Margin="8"
+                                                    HorizontalAlignment="Left"
+                                                    VerticalAlignment="Top">
+                                                <TextBlock Text="{x:Bind SizeText, Mode=OneWay}"
+                                                        FontSize="12"
+                                                        Foreground="White"/>
+                                            </Border>
+
+                                            <Border Background="#99000000"
+                                                    CornerRadius="6"
+                                                    Padding="6,2"
+                                                    Margin="8"
+                                                    HorizontalAlignment="Right"
+                                                    VerticalAlignment="Top">
+                                                <TextBlock Text="{x:Bind Fps, Mode=OneWay}"
+                                                        FontSize="12"
+                                                        Foreground="White"/>
+                                            </Border>
+
+                                            <Border Background="#99000000"
+                                                    CornerRadius="6"
+                                                    Padding="6,2"
+                                                    Margin="8"
+                                                    HorizontalAlignment="Right"
+                                                    VerticalAlignment="Bottom">
+                                                <TextBlock Text="{x:Bind DurationText, Mode=OneWay}"
+                                                        FontSize="12"
+                                                        Foreground="White"/>
+                                            </Border>
+
+                                            <Button x:Name="CardDeleteButton"
+                                                    Style="{StaticResource BaseButtonStyle}"
+                                                    Width="34"
+                                                    Height="34"
+                                                    Padding="0"
+                                                    CornerRadius="17"
+                                                    Background="#A6000000"
+                                                    Foreground="White"
+                                                    Margin="8"
+                                                    HorizontalAlignment="Left"
+                                                    VerticalAlignment="Bottom"
+                                                    ToolTipService.ToolTip="Delete"
+                                                    Click="CardDeleteButton_Click">
+                                                <FontIcon Glyph="&#xE74D;"
+                                                        FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                                                        FontSize="14"/>
+                                            </Button>
+                                        </Grid>
+                                    </DataTemplate>
+                                </GridView.ItemTemplate>
+                            </GridView>
+
+                            <StackPanel x:Name="GalleryEmptyState"
+                                    Visibility="Collapsed"
+                                        HorizontalAlignment="Center"
+                                    VerticalAlignment="Center"
+                                    Spacing="10">
+                                <TextBlock Text="&#x1F3AC;"
+                                        FontFamily="Segoe UI Emoji"
+                                        FontSize="64"
+                                           IsTextScaleFactorEnabled="False"
+                                        HorizontalAlignment="Center"/>
+                                <TextBlock Text="NO REPLAYS YET"
+                                        Style="{StaticResource Title}"
+                                        HorizontalAlignment="Center"/>
+                                <TextBlock Text="Start recording, then save a replay to see it here."
+                                           Style="{StaticResource Mono}"
+                                        HorizontalAlignment="Center"/>
+                                <Button x:Name="EmptyGoHomeButton"
+                                        Style="{StaticResource AccentButtonStyle}"
+                                        Background="{ThemeResource AccentGradientBrush}"
+                                        HorizontalAlignment="Center"
+                                        Margin="0,8,0,0"
+                                        Height="40"
+                                        Padding="22,0"
+                                        Click="EmptyGoHomeButton_Click">
+                                    <StackPanel Orientation="Horizontal"
+                                            Spacing="8">
+                                        <FontIcon Glyph="&#xE768;"
+                                                FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                                                FontSize="14"
+                                                  Foreground="{Binding Foreground, ElementName=EmptyGoHomeButton}"/>
+                                        <TextBlock Text="GO TO HOME"
+                                                FontWeight="SemiBold"
+                                                   Foreground="{Binding Foreground, ElementName=EmptyGoHomeButton}"/>
+                                    </StackPanel>
+                                </Button>
+                            </StackPanel>
+                        </Grid>
+                    </Grid>
+
+                    <Grid x:Name="ViewerPage"
+                            Visibility="Collapsed">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+
+                        <Button x:Name="ViewerBackButton"
+                                ElementSoundMode="Off"
+                                Style="{StaticResource BaseButtonStyle}"
+                                Height="36"
+                                Padding="14,0"
+                                Margin="0,0,0,14"
+                                HorizontalAlignment="Left"
+                                Click="ViewerBackButton_Click">
+                            <StackPanel Orientation="Horizontal"
+                                    Spacing="8"
+                                    VerticalAlignment="Center">
+                                <FontIcon Glyph="&#xE72B;"
+                                        FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                                        FontSize="14"
+                                          Foreground="{Binding Foreground, ElementName=ViewerBackButton}"/>
+                                <TextBlock Text="Back to gallery"
+                                        VerticalAlignment="Center"
+                                           Foreground="{Binding Foreground, ElementName=ViewerBackButton}"/>
+                            </StackPanel>
+                        </Button>
+
+                        <Grid Grid.Row="1"
+                                ColumnSpacing="16">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+
+                            <Border x:Name="PlayerCard"
+                                    Background="Black"
+                                    CornerRadius="12"
+                                    VerticalAlignment="Stretch">
+                                <Image x:Name="ViewerPoster"
+                                        Stretch="Uniform"
+                                        IsHitTestVisible="False"/>
+                            </Border>
+                        </Grid>
+                    </Grid>
+
+                    <ScrollViewer x:Name="SettingsPage"
+                            Visibility="Collapsed"
+                                  VerticalScrollBarVisibility="Auto"
+                            Padding="0,0,12,0">
+                        <StackPanel x:Name="SettingsContent"
+                                Spacing="12">
+
+                            <Border Style="{StaticResource SettingsCard}">
+                                <StackPanel>
+                                    <StackPanel Orientation="Horizontal"
+                                            Spacing="10"
+                                            Margin="0,0,0,14">
+                                        <FontIcon Glyph="&#xE713;"
+                                                FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                                                FontSize="16"
+                                                  Foreground="{ThemeResource AccentBrush}"/>
+                                        <TextBlock Text="General"
+                                                FontSize="14"
+                                                FontWeight="SemiBold"
+                                                   Foreground="{ThemeResource SettingsAreaTextBrush}"/>
+                                    </StackPanel>
+
+                                    <TextBlock Text="Microphone"
+                                            Style="{StaticResource Mono}"
+                                            Margin="0,0,0,8"/>
+                                    <ComboBox x:Name="MicCombo"
+                                            HorizontalAlignment="Stretch"
+                                              SelectionChanged="MicCombo_SelectionChanged"
+                                            Margin="0,0,0,14"/>
+
+                                    <local:SettingRow Label="Record microphone"
+                                            Margin="0,0,0,8">
+                                        <ToggleSwitch x:Name="MicToggle"
+                                                OnContent=""
+                                                OffContent=""
+                                                Toggled="MicToggle_Changed"/>
+                                    </local:SettingRow>
+                                    <local:SettingRow Label="Record system audio"
+                                            Margin="0,0,0,8">
+                                        <ToggleSwitch x:Name="SysAudioToggle"
+                                                OnContent=""
+                                                OffContent=""
+                                                Toggled="SysAudioToggle_Changed"/>
+                                    </local:SettingRow>
+                                    <local:SettingRow Label="Replay duration"
+                                            Margin="0,0,0,8">
+                                        <ComboBox x:Name="DurationCombo"
+                                                HorizontalAlignment="Stretch"
+                                                SelectionChanged="DurationCombo_SelectionChanged">
+                                            <ComboBoxItem Content="30 seconds"/>
+                                            <ComboBoxItem Content="60 seconds"/>
+                                            <ComboBoxItem Content="120 seconds"/>
+                                        </ComboBox>
+                                    </local:SettingRow>
+                                    <local:SettingRow Label="Frame rate"
+                                            Margin="0,0,0,8">
+                                        <ComboBox x:Name="FpsCombo"
+                                                HorizontalAlignment="Stretch"
+                                                SelectionChanged="FpsCombo_SelectionChanged">
+                                            <ComboBoxItem Content="30 FPS"/>
+                                            <ComboBoxItem Content="60 FPS"/>
+                                            <ComboBoxItem Content="120 FPS"/>
+                                        </ComboBox>
+                                    </local:SettingRow>
+                                    <local:SettingRow Label="Quality"
+                                            Margin="0">
+                                        <ComboBox x:Name="QualityCombo"
+                                                HorizontalAlignment="Stretch"
+                                                SelectionChanged="QualityCombo_SelectionChanged">
+                                            <ComboBoxItem Content="Fast"/>
+                                            <ComboBoxItem Content="Balanced"/>
+                                            <ComboBoxItem Content="Quality"/>
+                                        </ComboBox>
+                                    </local:SettingRow>
+                                </StackPanel>
+                            </Border>
+
+                            <Border Style="{StaticResource SettingsCard}">
+                                <StackPanel>
+                                    <StackPanel Orientation="Horizontal"
+                                            Spacing="10"
+                                            Margin="0,0,0,14">
+                                        <FontIcon Glyph="&#xE8B7;"
+                                                FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                                                FontSize="16"
+                                                  Foreground="{ThemeResource AccentBrush}"/>
+                                        <TextBlock Text="Storage and hotkeys"
+                                                FontSize="14"
+                                                FontWeight="SemiBold"
+                                                   Foreground="{ThemeResource SettingsAreaTextBrush}"/>
+                                    </StackPanel>
+
+                                    <TextBlock Text="Save location"
+                                            Style="{StaticResource Mono}"
+                                            Margin="0,0,0,8"/>
+                                    <Grid Margin="0,0,0,14">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="8"/>
+                                            <ColumnDefinition Width="200"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBox x:Name="SaveLocationBox"
+                                                Grid.Column="0"
+                                                Height="32"
+                                                VerticalContentAlignment="Center"
+                                                TextChanged="SaveLocationBox_TextChanged"/>
+                                        <Button x:Name="BrowseSaveLocationButton"
+                                                Grid.Column="2"
+                                                Height="32"
+                                                Padding="16,0"
+                                                HorizontalAlignment="Stretch"
+                                                Style="{StaticResource BaseButtonStyle}"
+                                                Click="BrowseSaveLocationButton_Click">
+                                            <StackPanel Orientation="Horizontal"
+                                                    Spacing="8"
+                                                    VerticalAlignment="Center">
+                                                <FontIcon Glyph="&#xE838;"
+                                                        FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                                                        FontSize="14"
+                                                        Foreground="{Binding Foreground, ElementName=BrowseSaveLocationButton}"/>
+                                                <TextBlock Text="BROWSE"
+                                                        VerticalAlignment="Center"
+                                                        Foreground="{Binding Foreground, ElementName=BrowseSaveLocationButton}"/>
+                                            </StackPanel>
+                                        </Button>
+                                    </Grid>
+
+                                    <local:SettingRow Label="Save replay hotkey"
+                                            Margin="0">
+                                        <Button x:Name="HotkeyCaptureButton"
+                                                Height="32"
+                                                Padding="16,0"
+                                                HorizontalAlignment="Stretch"
+                                                Style="{StaticResource BaseButtonStyle}"
+                                                Click="HotkeyCaptureButton_Click">
+                                            <StackPanel Orientation="Horizontal"
+                                                    Spacing="8"
+                                                    VerticalAlignment="Center">
+                                                <FontIcon Glyph="&#xE765;"
+                                                        FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                                                        FontSize="14"
+                                                        Foreground="{Binding Foreground, ElementName=HotkeyCaptureButton}"/>
+                                                <TextBlock x:Name="HotkeyCaptureText"
+                                                        Text="CTRL + *"
+                                                        VerticalAlignment="Center"
+                                                        Foreground="{Binding Foreground, ElementName=HotkeyCaptureButton}"/>
+                                            </StackPanel>
+                                        </Button>
+                                    </local:SettingRow>
+                                </StackPanel>
+                            </Border>
+
+                            <Border Style="{StaticResource SettingsCard}">
+                                <StackPanel>
+                                    <StackPanel Orientation="Horizontal"
+                                            Spacing="10"
+                                            Margin="0,0,0,14">
+                                        <FontIcon Glyph="&#xE771;"
+                                                FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                                                FontSize="16"
+                                                  Foreground="{ThemeResource AccentBrush}"/>
+                                        <TextBlock Text="App"
+                                                FontSize="14"
+                                                FontWeight="SemiBold"
+                                                   Foreground="{ThemeResource SettingsAreaTextBrush}"/>
+                                    </StackPanel>
+
+                                    <local:SettingRow Label="Start with Windows"
+                                            Margin="0,0,0,8">
+                                        <ToggleSwitch x:Name="StartupToggle"
+                                                OnContent=""
+                                                OffContent=""
+                                                Toggled="StartupToggle_Changed"/>
+                                    </local:SettingRow>
+                                    <local:SettingRow Label="Backdrop type"
+                                            Margin="0,0,0,8">
+                                        <ComboBox x:Name="BackdropCombo"
+                                                HorizontalAlignment="Stretch"
+                                                SelectionChanged="BackdropCombo_SelectionChanged">
+                                            <ComboBoxItem Content="Acrylic"/>
+                                            <ComboBoxItem Content="Mica"/>
+                                        </ComboBox>
+                                    </local:SettingRow>
+                                    <local:SettingRow Label="Dark mode"
+                                            Margin="0">
+                                        <ToggleSwitch x:Name="ThemeToggle"
+                                                OnContent=""
+                                                OffContent=""
+                                                Toggled="ThemeToggle_Changed"/>
+                                    </local:SettingRow>
+                                </StackPanel>
+                            </Border>
+
+                            <Border Style="{StaticResource SettingsCard}">
+                                <StackPanel>
+                                    <StackPanel Orientation="Horizontal"
+                                            Spacing="10"
+                                            Margin="0,0,0,12">
+                                        <FontIcon Glyph="&#xE90F;"
+                                                FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                                                FontSize="16"
+                                                  Foreground="{ThemeResource ErrorBrush}"/>
+                                        <TextBlock Text="Advanced"
+                                                FontSize="14"
+                                                FontWeight="SemiBold"
+                                                   Foreground="{ThemeResource SettingsAreaTextBrush}"/>
+                                    </StackPanel>
+
+                                    <InfoBar IsOpen="True"
+                                            IsClosable="False"
+                                            Severity="Warning"
+                                             Title="Change with care"
+                                             Message="These settings can affect performance and compatibility. Only change them if you know what they do."
+                                             Margin="0,0,0,14"/>
+
+                                    <local:SettingRow Label="Debug logging"
+                                            Margin="0,0,0,8">
+                                        <ToggleSwitch x:Name="DebugToggle"
+                                                OnContent=""
+                                                OffContent=""
+                                                Toggled="DebugToggle_Changed"/>
+                                    </local:SettingRow>
+                                    <local:SettingRow Label="Video encoder"
+                                            Margin="0,0,0,8">
+                                        <ComboBox x:Name="EncoderCombo"
+                                                HorizontalAlignment="Stretch"
+                                                SelectionChanged="EncoderCombo_SelectionChanged">
+                                            <ComboBoxItem Content="Auto"/>
+                                            <ComboBoxItem Content="Hardware"/>
+                                            <ComboBoxItem Content="Software"/>
+                                        </ComboBox>
+                                    </local:SettingRow>
+                                    <local:SettingRow Label="Capture method"
+                                            Margin="0,0,0,6">
+                                        <ComboBox x:Name="CaptureMethodCombo"
+                                                HorizontalAlignment="Stretch"
+                                                SelectionChanged="CaptureMethodCombo_SelectionChanged">
+                                            <ComboBoxItem x:Name="CaptureWgcItem"
+                                                    Content="Windows Graphics Capture"/>
+                                            <ComboBoxItem x:Name="CaptureDxgiItem"
+                                                    Content="DXGI Desktop Duplication"/>
+                                        </ComboBox>
+                                    </local:SettingRow>
+
+                                </StackPanel>
+                            </Border>
+
+                        </StackPanel>
+                    </ScrollViewer>
+                </Grid>
+
+                <InfoBar x:Name="StatusInfoBar"
+                         Canvas.ZIndex="20"
+                         HorizontalAlignment="Stretch"
+                        VerticalAlignment="Bottom"
+                         Margin="20,0,20,12"
+                         IsOpen="False"
+                        IsClosable="True"
+                        Severity="Informational"
+                         Title=""
+                        Message="">
+                    <InfoBar.ActionButton>
+                        <Button Content=""
+                                Visibility="Collapsed"/>
+                    </InfoBar.ActionButton>
+                </InfoBar>
+
+                <Border x:Name="PendingChangesFlyout"
+                        Canvas.ZIndex="10"
+                        Style="{StaticResource PendingChangesBar}"
+                        HorizontalAlignment="Center"
+                        VerticalAlignment="Top"
+                        Margin="0,10,0,0"
+                        Visibility="Collapsed"
+                        Opacity="0"
+                        RenderTransformOrigin="0.5,0.5">
+                    <Border.RenderTransform>
+                        <TranslateTransform x:Name="PendingFlyoutSlide"
+                                Y="-6"/>
+                    </Border.RenderTransform>
+                    <StackPanel Orientation="Horizontal"
+                            VerticalAlignment="Center">
+                        <FontIcon Glyph="&#xE7BA;"
+                                FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                                  FontSize="14"
+                                Foreground="{ThemeResource AccentBrush}"
+                                  VerticalAlignment="Center"
+                                Margin="0,0,8,0"/>
+                        <TextBlock Text="Unsaved changes"
+                                Style="{StaticResource Caption}"
+                                   Foreground="{ThemeResource TextPrimaryBrush}"
+                                   VerticalAlignment="Center"
+                                Margin="0,0,12,0"/>
+                        <Button x:Name="PendingSaveButton"
+                                Style="{StaticResource AccentButtonStyle}"
+                                VerticalAlignment="Center"
+                                Margin="0,0,8,0"
+                                Click="PendingSaveButton_Click"
+                                ToolTipService.ToolTip="Save your changes and restart the capture engine">
+                            <StackPanel Orientation="Horizontal">
+                                <FontIcon Glyph="&#xE74E;"
+                                        FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                                          FontSize="14"
+                                        Margin="0,0,6,0"/>
+                                <TextBlock Text="SAVE"/>
+                            </StackPanel>
+                        </Button>
+                        <Button x:Name="PendingDiscardButton"
+                                ElementSoundMode="Off"
+                                Style="{StaticResource BaseButtonStyle}"
+                                VerticalAlignment="Center"
+                                Click="PendingDiscardButton_Click"
+                                ToolTipService.ToolTip="Discard your changes and restore the previous values">
+                            <StackPanel Orientation="Horizontal">
+                                <FontIcon Glyph="&#xE74D;"
+                                        FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                                          FontSize="14"
+                                        Margin="0,0,6,0"/>
+                                <TextBlock Text="DISCARD"/>
+                            </StackPanel>
+                        </Button>
+                    </StackPanel>
+                </Border>
+            </Grid>
+        </NavigationView>
     </Grid>
 </Window>

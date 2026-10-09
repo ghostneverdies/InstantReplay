@@ -1,25 +1,20 @@
-using System;
-using System.Collections.Generic;
-using System.Diagnostics;
-using System.Text.Json;
-using System.IO;
-using System.Linq;
+using System.Globalization;
+using System.Numerics;
 using System.Runtime.InteropServices;
-using System.Threading.Tasks;
+using System.Text.Json;
 using Microsoft.UI;
-using Microsoft.UI.Composition.SystemBackdrops;
+using Microsoft.UI.Composition;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Animation;
-using Windows.ApplicationModel.DataTransfer;
 using Windows.Graphics;
 using Windows.System;
+using Windows.UI;
 using WinRT.Interop;
 using Brush = Microsoft.UI.Xaml.Media.Brush;
-using Color = Windows.UI.Color;
 
 namespace InstantReplay;
 
@@ -31,6 +26,40 @@ public partial class MainWindow : Window
     [DllImport("user32.dll")] private static extern IntPtr CallWindowProc(IntPtr lpPrevWndFunc, IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
     [DllImport("user32.dll")] private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
     [DllImport("user32.dll")] private static extern uint GetDpiForWindow(IntPtr hWnd);
+    [DllImport("user32.dll")] private static extern int GetSystemMetrics(int nIndex);
+    [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] private static extern bool DestroyIcon(IntPtr hIcon);
+    [DllImport("user32.dll")] private static extern bool EnableWindow(IntPtr hWnd, bool bEnable);
+    [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr hWnd);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern uint RegisterWindowMessage(string lpString);
+    [DllImport("kernel32.dll")] private static extern bool GetSystemTimes(out FILETIME lpIdleTime, out FILETIME lpKernelTime, out FILETIME lpUserTime);
+    [DllImport("kernel32.dll")] private static extern bool GlobalMemoryStatusEx(ref MEMORYSTATUSEX lpBuffer);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct FILETIME
+    {
+        public uint dwLowDateTime;
+        public uint dwHighDateTime;
+        public ulong Ticks => ((ulong)dwHighDateTime << 32) | dwLowDateTime;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MEMORYSTATUSEX
+    {
+        public uint dwLength;
+        public uint dwMemoryLoad;
+        public ulong ullTotalPhys;
+        public ulong ullAvailPhys;
+        public ulong ullTotalPageFile;
+        public ulong ullAvailPageFile;
+        public ulong ullTotalVirtual;
+        public ulong ullAvailVirtual;
+        public ulong ullAvailExtendedVirtual;
+    }
+    private static readonly uint s_taskbarButtonCreated = RegisterWindowMessage("TaskbarButtonCreated");
+
+    private const int SmCyFullscreen = 17;
+    private const int SwMinimize = 6;
 
     private delegate IntPtr WndProcDelegate(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
 
@@ -44,10 +73,6 @@ public partial class MainWindow : Window
     internal const uint ModControl = 0x0002;
     internal const uint ModShift = 0x0004;
     internal const uint ModWin = 0x0008;
-
-    private const int OffsetStepMs = 10;
-    private const int OffsetMinMs = -2000;
-    private const int OffsetMaxMs = 2000;
 
     private static readonly TimeSpan SaveCooldown = TimeSpan.FromSeconds(10);
     private DateTime _lastSaveAcceptedUtc = DateTime.MinValue;
@@ -68,6 +93,9 @@ public partial class MainWindow : Window
     private DispatcherTimer? _bufferHealthTimer;
     private DispatcherTimer? _micRefreshTimer;
     private DispatcherTimer? _deviceChangeDebounceTimer;
+    private DispatcherTimer? _statsTimer;
+    private ulong _lastIdleTicks, _lastKernelTicks, _lastUserTicks;
+    private bool _statsBaselineTaken;
     private AudioDeviceWatcher? _audioWatcher;
     private DispatcherTimer? _leakReminderTimer;
     private DispatcherTimer? _recDotPulseTimer;
@@ -82,20 +110,52 @@ public partial class MainWindow : Window
     private bool _lastBalloonWasLeakWarning;
 
     private List<string> _knownMics = new();
+    private bool _micMissing = false;
+
+    private const double DefaultWindowWidthDips = 1120;
+    private const double DefaultWindowHeightDips = 720;
+    private bool _windowPlaced;
+
+    private ReplayLibrary _library = null!;
+    private DispatcherTimer? _infoBarTimer;
+    private ReplayItem? _viewerItem;
+    private bool _galleryRefreshing;
+    private bool _galleryRefreshAgain;
+
+    private PlayerFullScreenWindow? _fsWindow;
+
+    private Storyboard? _heroStoryboard;
+
+    private Compositor? _hoverCompositor;
+    private SpringVector3NaturalMotionAnimation? _hoverGrowAnim;
+    private SpringVector3NaturalMotionAnimation? _hoverShrinkAnim;
+    private readonly HashSet<GridViewItem> _hoverWired = new();
+    private bool _heroBuilt;
 
     private bool _capturingHotkey;
     private uint _pendingHotkeyModifier;
 
     private bool _initializing = true;
     private bool _syncingStartupToggle;
+    private bool _syncingMicCombo;
+    private bool _syncingAudioToggles;
     private bool _dirty;
-    private string _settingsSnapshot = "";
+    private bool _savingChanges;
+    private PendingSettings _baseline;
+
+    private string? _lastSavedReplayPath;
+    private Action? _infoBarAction;
 
     private FrameworkElement? _currentPage;
 
-    private bool _navCollapsed;
-    private const double NavExpandedWidth = 185;
-    private const double NavCollapsedWidth = 56;
+    private Storyboard? _gearStoryboard;
+
+    private TaskbarBadge? _taskbarBadge;
+    private BadgeKind _badgeKind = BadgeKind.None;
+    private IntPtr _badgeIcon;
+    private IntPtr _trayBadgeIcon;
+    private bool _hasErrored;
+    private bool _flyoutShown;
 
     private WndProcDelegate? _wndProcDelegate;
     private IntPtr _originalWndProc;
@@ -104,49 +164,82 @@ public partial class MainWindow : Window
     {
         _startMinimized = startMinimized;
         InitializeComponent();
+        NavView.SelectedItem = NavHomeItem;
+
+        StatusInfoBar.ActionButton.Click += (_, _) =>
+        {
+            Action? action = _infoBarAction;
+            _infoBarAction = null;
+            action?.Invoke();
+        };
 
         Title = "Instant Replay";
         _hwnd = WindowNative.GetWindowHandle(this);
         _appWindow = AppWindow.GetFromWindowId(Win32Interop.GetWindowIdFromWindow(_hwnd));
         _dq = Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread();
+        _library = new ReplayLibrary(_dq);
+        ElementSoundPlayer.State = ElementSoundPlayerState.On;
 
         SetInitialWindowSizeAndIcon();
+        SetupCustomTitleBar();
         SubclassWndProc();
 
         _settings = Settings.Load();
         Logger.Init(_settings.DebugLogging);
-        _settingsSnapshot = SnapshotJson();
+        _baseline = CapturePending();
 
         _tempDir = Path.Combine(Path.GetTempPath(), "instant replay");
         _engine = new RecorderEngine(_settings);
 
         _currentPage = HomePage;
 
+        RootGrid.Loaded += (_, _) => InitAudioToggles();
+
         RefreshMicrophonesInBackground();
         InitDurationSegments();
         InitFpsSegments();
         InitQualitySegments();
-        InitOffsetDisplays();
+        InitEncoderSegments();
+        InitCaptureSegments();
         UpdateHotkeyButtonDisplay();
-        UpdateSessionInfoDisplay();
 
         StartupToggle.IsOn = StartupManager.IsEnabled();
         DebugToggle.IsOn = _settings.DebugLogging;
-        TransparencyToggle.IsOn = _settings.WindowTransparency;
+        BackdropCombo.SelectedIndex = _settings.Backdrop switch { BackdropKind.Mica => 1, _ => 0 };
         ThemeToggle.IsOn = _settings.DarkMode;
-        FFmpegPathBox.Text = _settings.FFmpegPath;
         SaveLocationBox.Text = _settings.GetEffectiveSaveDestination();
 
         _initializing = false;
+
+        GalleryGrid.ItemsSource = _library.Items;
+        GalleryGrid.ContainerContentChanging += GalleryGrid_ContainerContentChanging;
+        _library.Items.CollectionChanged += (_, _) => UpdateGalleryChrome();
+        _library.FolderChanged += () =>
+        {
+            if (ReferenceEquals(_currentPage, GalleryPage)) _ = RefreshGalleryAsync();
+        };
+        UpdateGalleryChrome();
+
+        Closed += (_, _) =>
+        {
+            if (_fsWindow != null) { var fs = _fsWindow; _fsWindow = null; try { fs.Shutdown(); } catch { } }
+        };
+
+        _dq.TryEnqueue(() =>
+        {
+            FitWindowToPage(HomePage);
+            PlayPageEntrance(HomePage);
+            StartHeroAnimations();
+        });
 
         if (!RegisterHotKey(_hwnd, HotkeyId, _settings.HotkeyModifiers, _settings.HotkeyVk))
             Logger.Warn($"Could not register global hotkey {HotkeyDisplay.Format(_settings.HotkeyModifiers, _settings.HotkeyVk)} (may already be in use).");
 
         ApplyAppTheme(_settings.DarkMode);
-        ApplyBackdrop(_settings.WindowTransparency);
-        SyncTransparencyToggle();
-
+        ApplyBackdrop();
+        SetupSettingsGear();
         SetupTrayIcon();
+        RefreshAppBadge();
 
         _debugStatsTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(30) };
         _debugStatsTimer.Tick += (_, _) => { LogDebugStats(); CheckForMemoryLeak(); };
@@ -155,6 +248,11 @@ public partial class MainWindow : Window
         _bufferHealthTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
         _bufferHealthTimer.Tick += (_, _) => CheckBufferHealth();
         _bufferHealthTimer.Start();
+
+        _statsTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
+        _statsTimer.Tick += (_, _) => UpdateSystemStats();
+        _statsTimer.Start();
+        UpdateSystemStats();
 
         _micRefreshTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(60) };
         _micRefreshTimer.Tick += (_, _) => RefreshMicrophonesInBackground();
@@ -188,7 +286,8 @@ public partial class MainWindow : Window
             {
                 if (_appWindow.Presenter is OverlappedPresenter presenter) presenter.Minimize();
                 ShowWindow(_hwnd, SwHide);
-                _isHidden = true;
+                _isHidden = true; StopHeroAnimations();
+                NotifyRunningInBackground();
             });
         }
     }
@@ -197,8 +296,8 @@ public partial class MainWindow : Window
     {
         uint dpi = GetDpiForWindow(_hwnd);
         double scale = dpi / 96.0;
-        _appWindow.ResizeClient(new SizeInt32((int)(760 * scale), (int)(700 * scale)));
-        try { _appWindow.SetIcon("icon.ico"); }
+        _appWindow.ResizeClient(new SizeInt32((int)(760 * scale), (int)(480 * scale)));
+        try { _appWindow.SetIcon(ResolveIconPath()); }
         catch (Exception ex) { Logger.Warn($"Could not set window icon: {ex.Message}"); }
 
         if (_appWindow.Presenter is OverlappedPresenter presenter)
@@ -206,6 +305,71 @@ public partial class MainWindow : Window
             presenter.IsResizable = false;
             presenter.IsMaximizable = false;
             presenter.IsMinimizable = true;
+        }
+    }
+
+    private void SetupCustomTitleBar()
+    {
+        var tb = _appWindow.TitleBar;
+
+        try { tb.ExtendsContentIntoTitleBar = true; }
+        catch (Exception ex) { Logger.Warn($"Could not extend title bar: {ex.Message}"); return; }
+
+        try
+        {
+            tb.PreferredHeightOption = TitleBarHeightOption.Collapsed;
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"Could not collapse the title bar: {ex.Message}");
+        }
+
+        double scale = GetDpiForWindow(_hwnd) / 96.0;
+
+        double stripDips = tb.Height > 0 ? tb.Height : 32;
+        TitleBarHost.Height = stripDips;
+
+        TitleBarButtonsPanel.Margin = new Thickness(0, 0, 8, 0);
+
+        try
+        {
+            int stripPx = (int)Math.Round(stripDips * scale);
+            double buttonsDips = 44 + 44 + 46 + 46 + 8;
+            int buttonsPx = (int)Math.Round(buttonsDips * scale);
+            int wPx = _appWindow.ClientSize.Width - buttonsPx;
+            if (wPx > 0 && stripPx > 0)
+                tb.SetDragRectangles(new[] { new RectInt32(0, 0, wPx, stripPx) });
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"Could not set title bar drag region: {ex.Message}");
+        }
+
+        TitleBarButtons.InstallNoCaptionFrame(_hwnd);
+    }
+
+    private void DonateTitleButton_Click(object sender, RoutedEventArgs e)
+    {
+        DonateWindow.Show(_hwnd, _settings);
+    }
+
+    private void MinimizeTitleButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_appWindow.Presenter is OverlappedPresenter presenter) presenter.Minimize();
+        else ShowWindow(_hwnd, SwMinimize);
+    }
+
+    private void CloseTitleButton_Click(object sender, RoutedEventArgs e) => Close();
+
+    private async void GitHubTitleButton_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            await Windows.System.Launcher.LaunchUriAsync(new Uri("https://github.com/ghostneverdies/InstantReplay"));
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"Could not open GitHub page: {ex.Message}");
         }
     }
 
@@ -223,6 +387,11 @@ public partial class MainWindow : Window
             _ = SaveReplayAsync();
             return IntPtr.Zero;
         }
+        if (msg == s_taskbarButtonCreated && s_taskbarButtonCreated != 0)
+        {
+            _taskbarBadge?.Reset();
+            _dq.TryEnqueue(() => RefreshAppBadge());
+        }
         if (msg == TrayIcon.WM_TRAYICON)
         {
             _trayIcon?.HandleMessage(lParam);
@@ -231,20 +400,24 @@ public partial class MainWindow : Window
         return CallWindowProc(_originalWndProc, hWnd, msg, wParam, lParam);
     }
 
-    private void ApplyBackdrop(bool enabled)
+    private void ApplyBackdrop()
     {
-        if (enabled)
-        {
-            SystemBackdrop = new DesktopAcrylicBackdrop();
-            RootGrid.Background = new SolidColorBrush(Colors.Transparent);
-            NavSidebar.Background = new SolidColorBrush(Colors.Transparent);
-        }
-        else
-        {
-            SystemBackdrop = null;
-            RootGrid.Background = GetThemedBrush("BgBrush");
-            NavSidebar.Background = GetThemedBrush("BgBrush");
-        }
+        Chrome.ApplyBackdrop(this, _settings.Backdrop);
+
+        Brush transparent = new SolidColorBrush(Colors.Transparent);
+
+        RootGrid.Background = transparent;
+        TitleBarHost.Background = transparent;
+
+        NavView.Resources["NavigationViewDefaultPaneBackground"] = transparent;
+        NavView.Resources["NavigationViewContentBackground"] = transparent;
+        NavView.Resources["NavigationViewExpandedPaneBackground"] = transparent;
+        NavView.Resources["NavigationViewCollapsedPaneBackground"] = transparent;
+
+        var theme = _settings.DarkMode ? ElementTheme.Dark : ElementTheme.Light;
+        var other = theme == ElementTheme.Dark ? ElementTheme.Light : ElementTheme.Dark;
+        NavView.RequestedTheme = other;
+        NavView.RequestedTheme = theme;
     }
 
     private void ApplyAppTheme(bool dark)
@@ -253,6 +426,8 @@ public partial class MainWindow : Window
 
         if (_appWindow.TitleBar != null)
             _appWindow.TitleBar.PreferredTheme = dark ? TitleBarTheme.Dark : TitleBarTheme.Light;
+
+        TitleBarButtons.Apply(_appWindow.TitleBar, dark);
     }
 
     private void ApplySystemAccent() { }
@@ -260,20 +435,7 @@ public partial class MainWindow : Window
     private void SystemEvents_UserPreferenceChanged(object? sender, Microsoft.Win32.UserPreferenceChangedEventArgs e)
     {
         if (e.Category is Microsoft.Win32.UserPreferenceCategory.General or Microsoft.Win32.UserPreferenceCategory.Color)
-            _dq.TryEnqueue(() => { ApplySystemAccent(); SyncTransparencyToggle(); });
-    }
-
-    private void SyncTransparencyToggle()
-    {
-        bool osOk = WindowsTheme.IsTransparencyEnabled();
-        TransparencyToggle.IsEnabled = osOk;
-        if (!osOk && _settings.WindowTransparency)
-        {
-            TransparencyToggle.IsOn = false;
-            _settings.WindowTransparency = false;
-            _settings.Save();
-            ApplyBackdrop(false);
-        }
+            _dq.TryEnqueue(() => ApplySystemAccent());
     }
 
     private Brush GetThemedBrush(string key)
@@ -288,19 +450,52 @@ public partial class MainWindow : Window
         return (Brush)Application.Current.Resources[key];
     }
 
-    private string SnapshotJson() => System.Text.Json.JsonSerializer.Serialize(new
-    {
+    private readonly record struct PendingSettings(
+        int ReplayDurationSeconds,
+        int FrameRate,
+        string QualityPreset,
+        string EncoderChoice,
+        string CaptureMethod,
+        string Microphone,
+        string SaveDestination,
+        bool RecordSystemAudio,
+        bool RecordMicrophone);
+
+    private PendingSettings CapturePending() => new(
         _settings.ReplayDurationSeconds,
         _settings.FrameRate,
         _settings.QualityPreset,
+        _settings.EncoderChoice,
+        _settings.CaptureMethod,
         _settings.Microphone,
         _settings.SaveDestination,
-        _settings.FFmpegPath,
-        _settings.SystemAudioOffsetMs,
-        _settings.MicOffsetMs,
-        _settings.HotkeyModifiers,
-        _settings.HotkeyVk
-    });
+        _settings.RecordSystemAudio,
+        _settings.RecordMicrophone);
+
+    private static void PlayButtonSound() => Microsoft.UI.Xaml.ElementSoundPlayer.Play(Microsoft.UI.Xaml.ElementSoundKind.Invoke);
+
+    private void Notify(string title, string message, int balloonIcon)
+    {
+        if (!ToastCenter.Show(title, message))
+            _trayIcon?.ShowBalloonTip(title, message, balloonIcon);
+    }
+
+    private void NotifyRunningInBackground()
+    {
+        string mode = (_settings.BackgroundNotice ?? "Once").Trim();
+        if (mode.Equals("Never", StringComparison.OrdinalIgnoreCase)) return;
+
+        bool always = mode.Equals("Always", StringComparison.OrdinalIgnoreCase);
+        if (!always && _settings.AppMinimizedNotificationShown) return;
+
+        if (!_settings.AppMinimizedNotificationShown)
+        {
+            _settings.AppMinimizedNotificationShown = true;
+            _settings.SaveFields(nameof(Settings.AppMinimizedNotificationShown));
+        }
+
+        Notify("Instant Replay", "Instant Replay is running in the background.", TrayIcon.IconInfo);
+    }
 
     private void CloseButton_Click()
     {
@@ -311,9 +506,11 @@ public partial class MainWindow : Window
         {
             hideTimer.Stop();
             ShowWindow(_hwnd, SwHide);
-            _isHidden = true;
+            _isHidden = true; StopHeroAnimations();
+            _taskbarBadge?.SetTaskbarVisible(false);
             _lastBalloonWasLeakWarning = false;
-            _trayIcon?.ShowBalloonTip("Instant Replay", "Instant Replay is minimized to tray", TrayIcon.IconInfo);
+
+            NotifyRunningInBackground();
         };
         hideTimer.Start();
     }
@@ -322,6 +519,9 @@ public partial class MainWindow : Window
     {
         if (_isClosingForReal) return;
         args.Handled = true;
+
+        if (_dirty) RevertPendingChanges();
+
         CloseButton_Click();
     }
 
@@ -331,66 +531,637 @@ public partial class MainWindow : Window
             EndHotkeyCapture();
 
         if (args.WindowActivationState != WindowActivationState.Deactivated)
-            RefreshStartupToggleState();
-    }
-
-    private void NavToggleButton_Click(object sender, RoutedEventArgs e)
-    {
-        _navCollapsed = !_navCollapsed;
-        ToolTipService.SetToolTip(NavToggleButton, _navCollapsed ? "Expand menu" : "Collapse menu");
-
-        double targetWidth = _navCollapsed ? NavCollapsedWidth : NavExpandedWidth;
-        AnimateNavWidth(NavSidebar.Width, targetWidth);
-
-        string sidebarState = _navCollapsed ? "SidebarCollapsed" : "SidebarExpanded";
-        foreach (var item in new Control[] { NavHome, NavSettings, NavAdvanced, NavDonate })
-            VisualStateManager.GoToState(item, sidebarState, true);
-
-        var labels = new[] { NavHomeLabel, NavSettingsLabel, NavAdvancedLabel, NavDonateLabel };
-        foreach (var label in labels)
         {
-            if (_navCollapsed)
-            {
-                AnimateDouble(label, "Opacity", label.Opacity, 0, TimeSpan.FromMilliseconds(90),
-                    onCompleted: () => label.Visibility = Visibility.Collapsed);
-            }
-            else
-            {
-                label.Visibility = Visibility.Visible;
-                AnimateDouble(label, "Opacity", 0, 1, TimeSpan.FromMilliseconds(160), TimeSpan.FromMilliseconds(60));
-            }
+            RefreshStartupToggleState();
+            _taskbarBadge?.StopFlashing();
+            if (ReferenceEquals(_currentPage, GalleryPage)) _ = RefreshGalleryAsync();
         }
     }
 
-    private void Nav_Checked(object sender, RoutedEventArgs e)
+    private void NavView_SelectionChanged(NavigationView sender, NavigationViewSelectionChangedEventArgs args)
     {
         if (_initializing) return;
-        FrameworkElement target = sender switch
-        {
-            _ when ReferenceEquals(sender, NavSettings) => SettingsPage,
-            _ when ReferenceEquals(sender, NavAdvanced) => AdvancedPage,
-            _ when ReferenceEquals(sender, NavDonate) => DonatePage,
-            _ => HomePage,
-        };
+        FrameworkElement target =
+            ReferenceEquals(sender.SelectedItem, NavSettingsItem) ? SettingsPage
+            : ReferenceEquals(sender.SelectedItem, NavGalleryItem) ? GalleryPage
+            : HomePage;
+        PlaySound(PageOrder(target) >= PageOrder(_currentPage ?? HomePage) ? ElementSoundKind.MoveNext : ElementSoundKind.GoBack);
         NavigateTo(target);
     }
 
-    private void NavigateTo(FrameworkElement newPage)
+    private int PageOrder(FrameworkElement page) =>
+        ReferenceEquals(page, SettingsPage) ? 2
+        : ReferenceEquals(page, GalleryPage) || ReferenceEquals(page, ViewerPage) ? 1
+        : 0;
+
+    private void NavView_ItemInvoked(NavigationView sender, NavigationViewItemInvokedEventArgs args)
+    {
+        if (ReferenceEquals(args.InvokedItemContainer, NavGalleryItem) && ReferenceEquals(_currentPage, ViewerPage))
+            CloseViewer();
+    }
+
+    private void NavigateTo(FrameworkElement newPage, bool fadeOnly = false)
     {
         if (ReferenceEquals(newPage, _currentPage)) return;
+
+        if (_dirty) RevertPendingChanges();
 
         if (ReferenceEquals(newPage, SettingsPage))
             RefreshStartupToggleState();
 
+        PlayNavIconAnimation(newPage);
+
         var oldPage = _currentPage;
         _currentPage = newPage;
 
-        if (oldPage != null)
-            oldPage.Visibility = Visibility.Collapsed;
+        Logger.Info($"NavigateTo: {newPage.Name}");
+
+        if (ReferenceEquals(oldPage, ViewerPage))
+        {
+            StopViewerPlayback();
+        }
+        if (ReferenceEquals(oldPage, HomePage)) StopHeroAnimations();
+
+        Canvas.SetZIndex(newPage, 1);
+        if (oldPage != null) Canvas.SetZIndex(oldPage, 0);
 
         newPage.Visibility = Visibility.Visible;
         newPage.Opacity = 0;
-        AnimateDouble(newPage, "Opacity", 0, 1, TimeSpan.FromMilliseconds(150));
+        AnimateDouble(newPage, "Opacity", 0, 1, TimeSpan.FromMilliseconds(240), TimeSpan.Zero,
+            new CubicEase { EasingMode = EasingMode.EaseOut });
+
+        if (!fadeOnly) PlayPageEntrance(newPage);
+        if (ReferenceEquals(newPage, HomePage) && !_isHidden) StartHeroAnimations();
+        if (ReferenceEquals(newPage, GalleryPage)) _ = RefreshGalleryAsync();
+
+        FitWindowToPage(newPage);
+
+        TransitionOut(oldPage);
+    }
+
+    private void FitWindowToPage(FrameworkElement page)
+    {
+        _dq.TryEnqueue(() =>
+        {
+            if (_appWindow.Presenter is not OverlappedPresenter) return;
+
+            try
+            {
+                double scale = GetDpiForWindow(_hwnd) / 96.0;
+                if (scale <= 0) scale = 1.0;
+
+                RectInt32 work = DisplayArea.GetFromWindowId(_appWindow.Id, DisplayAreaFallback.Nearest).WorkArea;
+                int w = (int)Math.Min(DefaultWindowWidthDips * scale, work.Width * 0.94);
+                int h = (int)Math.Min(DefaultWindowHeightDips * scale, work.Height * 0.94);
+
+                SizeInt32 current = _appWindow.ClientSize;
+                if (current.Width != w || current.Height != h)
+                    _appWindow.ResizeClient(new SizeInt32(w, h));
+
+                if (!_windowPlaced)
+                {
+                    _windowPlaced = true;
+                    SizeInt32 outer = _appWindow.Size;
+                    _appWindow.Move(new PointInt32(
+                        work.X + Math.Max(0, (work.Width - outer.Width) / 2),
+                        work.Y + Math.Max(0, (work.Height - outer.Height) / 2)));
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn($"FitWindowToPage failed: {ex.Message}");
+            }
+        });
+    }
+
+    private IEnumerable<FrameworkElement> EntranceTargets(FrameworkElement page)
+    {
+        if (ReferenceEquals(page, HomePage))
+            return new FrameworkElement[] { HeroArt, HeroTitle, HeroSubtitle, HeroActions };
+        if (ReferenceEquals(page, SettingsPage))
+            return SettingsContent.Children.OfType<FrameworkElement>().ToList();
+        if (ReferenceEquals(page, GalleryPage))
+            return new FrameworkElement[] { GalleryHeader, GalleryBody };
+        return Array.Empty<FrameworkElement>();
+    }
+
+    private void PlayPageEntrance(FrameworkElement page)
+    {
+        var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
+        int index = 0;
+        foreach (FrameworkElement el in EntranceTargets(page))
+        {
+            if (el.RenderTransform is not CompositeTransform t)
+            {
+                t = new CompositeTransform();
+                el.RenderTransform = t;
+            }
+
+            t.TranslateY = 28;
+            el.Opacity = 0;
+
+            var begin = TimeSpan.FromMilliseconds(index * 70);
+            AnimateDouble(el, "Opacity", 0, 1, TimeSpan.FromMilliseconds(380), begin, ease);
+            AnimateDouble(t, "TranslateY", 28, 0, TimeSpan.FromMilliseconds(460), begin, ease);
+            index++;
+        }
+    }
+
+    private readonly Dictionary<FrameworkElement, CompositeTransform> _navIcons = new();
+
+    private void SetupSettingsGear()
+    {
+        try
+        {
+            RegisterNavIcon(HomePage, NavHomeItem);
+            RegisterNavIcon(GalleryPage, NavGalleryItem);
+            RegisterNavIcon(SettingsPage, NavSettingsItem);
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"Navigation icon setup failed: {ex.Message}");
+        }
+    }
+
+    private void RegisterNavIcon(FrameworkElement page, NavigationViewItem item)
+    {
+        if (item.Icon is not FrameworkElement icon) return;
+        var transform = new CompositeTransform();
+        icon.RenderTransformOrigin = new Windows.Foundation.Point(0.5, 0.5);
+        icon.RenderTransform = transform;
+        _navIcons[page] = transform;
+    }
+
+    private static void AddKeys(Storyboard sb, DependencyObject target, string property, params (int Ms, double Value)[] keys)
+    {
+        var anim = new DoubleAnimationUsingKeyFrames();
+        foreach (var (ms, value) in keys)
+        {
+            anim.KeyFrames.Add(new EasingDoubleKeyFrame
+            {
+                KeyTime = KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(ms)),
+                Value = value,
+                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
+            });
+        }
+        Storyboard.SetTarget(anim, target);
+        Storyboard.SetTargetProperty(anim, property);
+        sb.Children.Add(anim);
+    }
+
+    private static void AddLoop(Storyboard sb, DependencyObject target, string property, double from, double to,
+        double seconds, double delaySeconds = 0, bool autoReverse = true)
+    {
+        var anim = new DoubleAnimation
+        {
+            From = from,
+            To = to,
+            Duration = TimeSpan.FromSeconds(seconds),
+            BeginTime = TimeSpan.FromSeconds(delaySeconds),
+            AutoReverse = autoReverse,
+            RepeatBehavior = RepeatBehavior.Forever,
+            EasingFunction = new SineEase { EasingMode = EasingMode.EaseInOut },
+        };
+        Storyboard.SetTarget(anim, target);
+        Storyboard.SetTargetProperty(anim, property);
+        sb.Children.Add(anim);
+    }
+
+    private void PlayNavIconAnimation(FrameworkElement page)
+    {
+        if (!_navIcons.TryGetValue(page, out CompositeTransform? t)) return;
+
+        try
+        {
+            _gearStoryboard?.Stop();
+            foreach (CompositeTransform other in _navIcons.Values)
+            {
+                other.Rotation = 0;
+                other.ScaleX = other.ScaleY = 1;
+                other.TranslateY = 0;
+            }
+
+            var sb = new Storyboard();
+            if (ReferenceEquals(page, SettingsPage))
+            {
+                AddKeys(sb, t, "Rotation", (0, 0), (400, 360));
+            }
+            else if (ReferenceEquals(page, HomePage))
+            {
+                AddKeys(sb, t, "ScaleX", (0, 1), (170, 1.3), (340, 1));
+                AddKeys(sb, t, "ScaleY", (0, 1), (170, 1.3), (340, 1));
+                AddKeys(sb, t, "TranslateY", (0, 0), (170, -3), (340, 0));
+            }
+            else
+            {
+                AddKeys(sb, t, "ScaleX", (0, 1), (150, 0.1), (320, 1));
+                AddKeys(sb, t, "Rotation", (0, 0), (150, -8), (320, 0));
+            }
+
+            _gearStoryboard = sb;
+            sb.Begin();
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"Navigation icon animation failed: {ex.Message}");
+        }
+    }
+
+
+    private void BuildHero()
+    {
+        if (_heroBuilt) return;
+        _heroBuilt = true;
+
+        HeroIcon.RenderTransform = new CompositeTransform();
+        HeroGlow.RenderTransform = new CompositeTransform();
+        HeroRingA.RenderTransform = new CompositeTransform();
+        HeroRingB.RenderTransform = new CompositeTransform();
+
+        var rng = new Random(11);
+        var accent = (Brush)Application.Current.Resources["AccentBrush"];
+        const double center = 120;
+
+        ParticleCanvas.Children.Clear();
+        for (int i = 0; i < 14; i++)
+        {
+            double angle = i * (2 * Math.PI / 14) + rng.NextDouble() * 0.35;
+            double radius = 84 + rng.NextDouble() * 32;
+            bool star = i % 2 == 0;
+            double size = star ? 10 + rng.NextDouble() * 10 : 4 + rng.NextDouble() * 4;
+
+            FrameworkElement particle = star
+                ? new TextBlock { Text = "\u2726", FontSize = size, Foreground = accent, IsTextScaleFactorEnabled = false }
+                : new Microsoft.UI.Xaml.Shapes.Ellipse { Width = size, Height = size, Fill = accent };
+
+            particle.Opacity = 0.15;
+            particle.RenderTransformOrigin = new Windows.Foundation.Point(0.5, 0.5);
+            particle.RenderTransform = new CompositeTransform();
+            Canvas.SetLeft(particle, center + Math.Cos(angle) * radius - size / 2);
+            Canvas.SetTop(particle, center + Math.Sin(angle) * radius - size / 2);
+            ParticleCanvas.Children.Add(particle);
+        }
+    }
+
+    private void StartHeroAnimations()
+    {
+        try
+        {
+            BuildHero();
+            StopHeroAnimations();
+
+            var sb = new Storyboard();
+            var rng = new Random(5);
+
+            var icon = (CompositeTransform)HeroIcon.RenderTransform;
+            AddLoop(sb, icon, "TranslateY", 0, -9, 3.2);
+            AddLoop(sb, icon, "Rotation", -3, 3, 4.6);
+            AddLoop(sb, icon, "ScaleX", 1, 1.05, 2.4);
+            AddLoop(sb, icon, "ScaleY", 1, 1.05, 2.4);
+
+            var glow = (CompositeTransform)HeroGlow.RenderTransform;
+            AddLoop(sb, glow, "ScaleX", 0.92, 1.14, 2.8);
+            AddLoop(sb, glow, "ScaleY", 0.92, 1.14, 2.8);
+            AddLoop(sb, HeroGlow, "Opacity", 0.16, 0.34, 2.8);
+
+            foreach (var (ring, delay) in new[] { (HeroRingA, 0.0), (HeroRingB, 1.6) })
+            {
+                var rt = (CompositeTransform)ring.RenderTransform;
+                AddLoop(sb, rt, "ScaleX", 0.8, 1.55, 3.2, delay, autoReverse: false);
+                AddLoop(sb, rt, "ScaleY", 0.8, 1.55, 3.2, delay, autoReverse: false);
+                AddLoop(sb, ring, "Opacity", 0.55, 0, 3.2, delay, autoReverse: false);
+            }
+
+            foreach (UIElement child in ParticleCanvas.Children)
+            {
+                var t = (CompositeTransform)((FrameworkElement)child).RenderTransform;
+                double dur = 1.4 + rng.NextDouble() * 2.0;
+                double delay = rng.NextDouble() * 2.0;
+                AddLoop(sb, child, "Opacity", 0.1, 1, dur, delay);
+                AddLoop(sb, t, "ScaleX", 0.55, 1.2, dur, delay);
+                AddLoop(sb, t, "ScaleY", 0.55, 1.2, dur, delay);
+                AddLoop(sb, t, "TranslateY", 0, -(6 + rng.NextDouble() * 8), dur * 1.7, delay);
+            }
+
+            _heroStoryboard = sb;
+            sb.Begin();
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"Hero animation failed: {ex.Message}");
+        }
+    }
+
+    private void StopHeroAnimations()
+    {
+        try { _heroStoryboard?.Stop(); } catch { }
+        _heroStoryboard = null;
+    }
+
+
+    private void SetStartStopLabel(string text, string? glyph = null)
+    {
+        StartStopText.Text = text;
+        if (glyph != null) StartStopIcon.Glyph = glyph;
+    }
+
+    private void ApplyStartStopLook(bool running)
+    {
+        SaveReplayButton.Visibility = running ? Visibility.Visible : Visibility.Collapsed;
+
+        if (running)
+        {
+            StartStopButton.Style = (Style)Application.Current.Resources["DangerButtonStyle"];
+            StartStopButton.ClearValue(Control.BackgroundProperty);
+            StartStopButton.MinWidth = 140;
+            SetStartStopLabel("STOP", "\uE71A");
+        }
+        else
+        {
+            StartStopButton.Style = (Style)Application.Current.Resources["AccentButtonStyle"];
+            StartStopButton.Background = (Brush)Application.Current.Resources["AccentGradientBrush"];
+            StartStopButton.MinWidth = 240;
+            SetStartStopLabel("START REPLAY", "\uE768");
+        }
+    }
+
+
+    private void UpdateGalleryChrome()
+    {
+        int n = _library.Items.Count;
+        GalleryCountText.Text = n == 1 ? "1 replay" : $"{n} replays";
+        GalleryEmptyState.Visibility = n == 0 ? Visibility.Visible : Visibility.Collapsed;
+        GalleryGrid.Visibility = n == 0 ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    private async Task RefreshGalleryAsync()
+    {
+        if (_galleryRefreshing)
+        {
+            _galleryRefreshAgain = true;
+            return;
+        }
+
+        _galleryRefreshing = true;
+        try
+        {
+            await _library.RefreshAsync(_settings.GetEffectiveSaveDestination());
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"Gallery refresh failed: {ex.Message}");
+        }
+        finally
+        {
+            _galleryRefreshing = false;
+        }
+
+        UpdateGalleryChrome();
+
+        if (_galleryRefreshAgain)
+        {
+            _galleryRefreshAgain = false;
+            _ = RefreshGalleryAsync();
+        }
+    }
+
+    private void EmptyGoHomeButton_Click(object sender, RoutedEventArgs e) => NavView.SelectedItem = NavHomeItem;
+
+    private void GalleryGrid_ItemClick(object sender, ItemClickEventArgs e)
+    {
+        if (e.ClickedItem is not ReplayItem item) return;
+        PlaySound(ElementSoundKind.MoveNext);
+        OpenViewer(item);
+    }
+
+    private void GalleryGrid_ContainerContentChanging(ListViewBase sender, ContainerContentChangingEventArgs args)
+    {
+        if (args.ItemContainer is not GridViewItem card || !_hoverWired.Add(card)) return;
+        card.PointerEntered += (_, _) => AnimateCardHover(card, true);
+        card.PointerExited += (_, _) => AnimateCardHover(card, false);
+    }
+
+    private void AnimateCardHover(GridViewItem card, bool hover)
+    {
+        try
+        {
+            _hoverCompositor ??= Microsoft.UI.Xaml.Media.CompositionTarget.GetCompositorForCurrentThread();
+            if (hover)
+            {
+                _hoverGrowAnim ??= CreateHoverSpring(new Vector3(1.04f, 1.04f, 1f));
+                Microsoft.UI.Xaml.Hosting.ElementCompositionPreview.GetElementVisual(card).StartAnimation("Scale", _hoverGrowAnim);
+            }
+            else
+            {
+                _hoverShrinkAnim ??= CreateHoverSpring(new Vector3(1f, 1f, 1f));
+                Microsoft.UI.Xaml.Hosting.ElementCompositionPreview.GetElementVisual(card).StartAnimation("Scale", _hoverShrinkAnim);
+            }
+        }
+        catch (Exception ex) { Logger.Warn($"Gallery hover animation failed: {ex.Message}"); }
+    }
+
+    private SpringVector3NaturalMotionAnimation CreateHoverSpring(Vector3 final)
+    {
+        var anim = _hoverCompositor!.CreateSpringVector3Animation();
+        anim.Target = "Scale";
+        anim.FinalValue = final;
+        return anim;
+    }
+
+    private void PopulateViewer(ReplayItem item)
+    {
+        ViewerPoster.Source = item.Thumbnail;
+        ViewerPoster.Visibility = Visibility.Visible;
+    }
+
+    private async void OpenViewer(ReplayItem item)
+    {
+        _viewerItem = item;
+
+        if (!item.MetadataLoaded) await _library.EnsureAsync(item);
+
+        _ = OpenFullscreenPlayerAsync(item);
+    }
+
+    private void ViewerBackButton_Click(object sender, RoutedEventArgs e)
+    {
+        PlaySound(ElementSoundKind.GoBack);
+        CloseViewer();
+    }
+
+    private async void CloseViewer()
+    {
+        StopViewerPlayback();
+        NavigateTo(GalleryPage, fadeOnly: true);
+    }
+
+    private void StopViewerPlayback()
+    {
+        CloseFullscreenPlayer();
+    }
+
+    private async void ConfirmDeleteButton_Click(object sender, RoutedEventArgs e)
+    {
+        ReplayItem? item = _viewerItem;
+        if (item == null) return;
+
+        StopViewerPlayback();
+        await Task.Delay(250);
+
+        bool deleted = await _library.DeleteAsync(item);
+        if (deleted)
+        {
+            _viewerItem = null;
+            NavigateTo(GalleryPage, fadeOnly: true);
+            ShowInfoBar(InfoBarSeverity.Success, "Replay deleted", "The replay was moved to the Recycle Bin.", "delete");
+        }
+        else
+        {
+            ShowInfoBar(InfoBarSeverity.Error, "Couldn't delete replay",
+                "The replay is in use or can't be removed. Check the debug log for details.", "delete");
+        }
+    }
+
+
+    private async Task OpenFullscreenPlayerAsync(ReplayItem item)
+    {
+        if (_fsWindow != null) return;
+        try
+        {
+            if (!File.Exists(item.VideoPath))
+            {
+                ShowInfoBar(InfoBarSeverity.Error, "Couldn't play replay",
+                    "The video file could not be opened. It may have been moved or deleted.", "play");
+                return;
+            }
+
+            Logger.Info("OpenViewer: opening fullscreen player");
+
+            var fs = new PlayerFullScreenWindow();
+            fs.Closed += (_, _) =>
+            {
+                if (_fsWindow != null) CloseFullscreenPlayer();
+            };
+            fs.NavigationCompleted += ok =>
+            {
+                if (ok) SendAccentFs();
+            };
+            _fsWindow = fs;
+            EnableWindow(_hwnd, false);
+
+            await fs.OpenAsync(BuildPlayerUrl(item.VideoPath, 0), HandlePlayerMessage, _hwnd);
+        }
+        catch (Exception ex)
+        {
+            Logger.Error($"Opening fullscreen player failed: {ex.Message}", ex);
+            CloseFullscreenPlayer();
+        }
+    }
+
+    private void CloseFullscreenPlayer()
+    {
+        var fs = _fsWindow;
+        if (fs == null) return;
+        _fsWindow = null;
+
+        try { EnableWindow(_hwnd, true); } catch { }
+        try { fs.Shutdown(); } catch { }
+        try { SetForegroundWindow(_hwnd); } catch { }
+        try { Activate(); } catch { }
+    }
+
+    private void SendScriptFs(string js) => _fsWindow?.SendScript(js);
+
+    private async void CardDeleteButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button button && button.DataContext is ReplayItem item)
+        {
+            if (_fsWindow != null)
+            {
+                var fs = _fsWindow;
+                _fsWindow = null;
+                try { fs.Shutdown(); } catch { }
+            }
+            try { _appWindow.Show(); } catch { }
+            try { SetForegroundWindow(_hwnd); } catch { }
+            try { Activate(); } catch { }
+            StopViewerPlayback();
+
+            bool deleted = await _library.DeleteAsync(item);
+            if (deleted)
+            {
+                ShowInfoBar(InfoBarSeverity.Success, "Replay deleted", "The replay was moved to the Recycle Bin.", "delete");
+            }
+            else
+            {
+                ShowInfoBar(InfoBarSeverity.Error, "Couldn't delete replay",
+                    "The replay is in use or can't be removed.", "delete");
+            }
+        }
+    }
+
+    private void SendAccentFs()
+    {
+        string? accent = GetAccentHex();
+        if (accent != null) SendScriptFs($"receiveCommand({{\"c\":\"accent\",\"v\":\"{accent}\"}})");
+    }
+
+    private static string? GetAccentHex()
+    {
+        try
+        {
+            if (Application.Current.Resources["AccentBrush"] is SolidColorBrush b)
+                return $"#{b.Color.R:X2}{b.Color.G:X2}{b.Color.B:X2}";
+        }
+        catch { }
+        return null;
+    }
+
+    private string BuildPlayerUrl(string videoPath, double startSeconds)
+    {
+        string page = new Uri(Path.Combine(AppContext.BaseDirectory, "mediaplayer", "player.html")).AbsoluteUri;
+        string src = new Uri(videoPath).AbsoluteUri;
+        string t = startSeconds.ToString("0.###", CultureInfo.InvariantCulture);
+        return $"{page}?src={Uri.EscapeDataString(src)}&t={t}&mode=fullscreen";
+    }
+
+    private void HandlePlayerMessage(string json)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            JsonElement root = doc.RootElement;
+            string type = root.GetProperty("type").GetString() ?? "";
+
+            switch (type)
+            {
+                case "fs":
+                    string act = root.TryGetProperty("act", out var ae) ? ae.GetString() ?? "" : "";
+                    if (act == "exit") CloseFullscreenPlayer();
+                    break;
+
+                case "close":
+                    CloseFullscreenPlayer();
+                    break;
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"Player message parse failed: {ex.Message}");
+        }
+    }
+
+    private void TransitionOut(FrameworkElement? oldPage)
+    {
+        if (oldPage == null) return;
+
+        oldPage.Opacity = 1;
+        AnimateDouble(oldPage, "Opacity", 1, 0, TimeSpan.FromMilliseconds(140), TimeSpan.Zero,
+            new CubicEase { EasingMode = EasingMode.EaseIn },
+            onCompleted: () =>
+            {
+                if (!ReferenceEquals(oldPage, _currentPage)) oldPage.Visibility = Visibility.Collapsed;
+            });
     }
 
     private static void AnimateDouble(DependencyObject target, string property, double from, double to,
@@ -403,24 +1174,6 @@ public partial class MainWindow : Window
         var sb = new Storyboard();
         sb.Children.Add(anim);
         if (onCompleted != null) sb.Completed += (_, _) => onCompleted();
-        sb.Begin();
-    }
-
-    private void AnimateNavWidth(double from, double to)
-    {
-        var anim = new DoubleAnimation
-        {
-            From = from,
-            To = to,
-            Duration = TimeSpan.FromMilliseconds(180),
-            EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut },
-            EnableDependentAnimation = true
-        };
-        Storyboard.SetTarget(anim, NavSidebar);
-        Storyboard.SetTargetProperty(anim, "Width");
-        var sb = new Storyboard();
-        sb.Children.Add(anim);
-        sb.Completed += (_, _) => NavSidebar.Width = to;
         sb.Begin();
     }
 
@@ -445,19 +1198,55 @@ public partial class MainWindow : Window
         target.Opacity = 1;
     }
 
-    private void UpdateSessionInfoDisplay()
+    private string? MicNotice()
     {
-        string mic = string.IsNullOrEmpty(_settings.Microphone) ? "Desktop audio only" : _settings.Microphone;
-        SessionMicText.Text = mic;
-        SessionDurationText.Text = $"{_settings.ReplayDurationSeconds}s";
-        SessionFpsText.Text = $"{_settings.FrameRate} FPS";
-        SessionQualityText.Text = _settings.QualityPreset;
-        SessionHotkeyText.Text = HotkeyDisplay.Format(_settings.HotkeyModifiers, _settings.HotkeyVk);
+        if (!_settings.RecordMicrophone) return null;
+        if (!_engine.TryGetMicStatus(out _, out _, out long gotFrames, out long failHr,
+                out _, out int micPeak, out string active))
+            return null;
+
+        if (failHr != 0)
+        {
+            return failHr switch
+            {
+                -1 => "capture thread unavailable",
+                -2 => "capture stream failed",
+                -3 => "no microphone available",
+                _ => $"engine error {failHr}",
+            };
+        }
+
+        if (string.IsNullOrEmpty(_settings.Microphone) && active.Length > 0)
+            return null;
+
+        if (_settings.Microphone.Length > 0 && active.Length > 0
+            && !string.Equals(active, _settings.Microphone, StringComparison.OrdinalIgnoreCase))
+            return "selected device unavailable";
+
+        if (!_engine.IsRunning) return null;
+        if (gotFrames == 0) return "no signal yet";
+        return micPeak == 0 ? "delivering silence" : null;
+    }
+
+    private static string ResolveIconPath()
+    {
+        string[] candidates =
+        {
+            Path.Combine(AppContext.BaseDirectory, "assets", "icons", "icon.ico"),
+            Path.Combine(AppContext.BaseDirectory, "assets", "icon.ico"),
+            Path.Combine(AppContext.BaseDirectory, "icon.ico"),
+        };
+        foreach (string candidate in candidates)
+        {
+            if (File.Exists(candidate)) return candidate;
+        }
+        return candidates[0];
     }
 
     private void SetupTrayIcon()
     {
-        string iconPath = Path.Combine(AppContext.BaseDirectory, "icon.ico");
+        string iconPath = ResolveIconPath();
+        _taskbarBadge = new TaskbarBadge(_hwnd);
         _trayIcon = new TrayIcon(_hwnd, iconPath, "Instant Replay");
         _trayIcon.MenuItemsProvider = () => new List<TrayMenuItem>
         {
@@ -473,21 +1262,131 @@ public partial class MainWindow : Window
             TrayMenuItem.Separator(),
             new() { Text = "Restart App", OnClick = RestartApplication },
             TrayMenuItem.Separator(),
-            new() { Text = "Exit", OnClick = () => _ = ExitApplicationAsync() },
+            new() { Text = "Exit", OnClick = ExitApplicationAsync },
         };
         _trayIcon.DoubleClicked += ShowFromTray;
-        _trayIcon.BalloonClicked += () => { if (_lastBalloonWasLeakWarning) RestartApplication(); };
+        _trayIcon.BalloonClicked += () =>
+        {
+            if (_lastBalloonWasLeakWarning)
+            {
+                RestartApplication();
+                return;
+            }
+
+            if (_lastSavedReplayPath != null)
+                OpenContainingFolder(_lastSavedReplayPath);
+        };
+    }
+
+    private static void OpenContainingFolder(string filePath)
+    {
+        try
+        {
+            string? directory = System.IO.Path.GetDirectoryName(filePath);
+            bool exists = !string.IsNullOrEmpty(filePath) && System.IO.File.Exists(filePath);
+
+            if (exists && !string.IsNullOrEmpty(directory))
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = "explorer.exe",
+                    Arguments = $"/select,\"{filePath}\"",
+                    UseShellExecute = true,
+                });
+                return;
+            }
+
+            if (!string.IsNullOrEmpty(directory) && System.IO.Directory.Exists(directory))
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = directory,
+                    UseShellExecute = true,
+                });
+                return;
+            }
+
+            Logger.Warn($"OpenContainingFolder: neither the file nor its folder exists ({filePath}).");
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"Could not open the folder containing {filePath}: {ex.Message}");
+        }
     }
 
     public void BringToFront() => ShowFromTray();
 
     private void ShowFromTray()
     {
+        if (_fsWindow != null)
+        {
+            try { _fsWindow.Activate(); } catch { }
+            return;
+        }
+
         ShowWindow(_hwnd, SwShow);
         _isHidden = false;
+        if (ReferenceEquals(_currentPage, HomePage)) StartHeroAnimations();
+        _taskbarBadge?.SetTaskbarVisible(true);
         if (_appWindow.Presenter is OverlappedPresenter presenter) presenter.Restore();
         Activate();
         RefreshStartupToggleState();
+        RefreshAppBadge();
+    }
+
+    private void RefreshAppBadge() =>
+        UpdateAppBadge(_hasErrored ? BadgeKind.Error
+                   : _engine.IsRunning ? BadgeKind.Recording
+                   : BadgeKind.Paused, flash: false);
+
+    private void UpdateAppBadge(BadgeKind kind, bool flash)
+    {
+        if (kind == BadgeKind.Error) _hasErrored = true;
+
+        try
+        {
+            if (kind != _badgeKind)
+            {
+                _badgeKind = kind;
+                ReleaseBadgeIcons();
+
+                if (kind != BadgeKind.None)
+                {
+                    (int glyph, Color color) = kind switch
+                    {
+                        BadgeKind.Recording => (0xE714, Color.FromArgb(255, 229, 72, 77)),
+                        BadgeKind.Paused => (0xE769, Color.FromArgb(255, 120, 120, 128)),
+                        _ => (0xE783, Color.FromArgb(255, 245, 166, 35)),
+                    };
+
+                    _badgeIcon = BadgeGlyphs.CreateOverlayIcon(glyph, color, kind, 32);
+                    _trayBadgeIcon = BadgeGlyphs.CreateBadgeIcon(glyph, color, kind, 32);
+                    if (_badgeIcon == IntPtr.Zero || _trayBadgeIcon == IntPtr.Zero)
+                        Logger.Warn($"Badge icon creation failed for {kind} (overlay={_badgeIcon != IntPtr.Zero}, tray={_trayBadgeIcon != IntPtr.Zero}).");
+
+                    _trayIcon?.SetIcon(_trayBadgeIcon);
+                }
+                else
+                {
+                    _trayIcon?.SetIcon(IntPtr.Zero);
+                }
+            }
+
+            if (kind == BadgeKind.None) _taskbarBadge?.Clear();
+            else _taskbarBadge?.SetOverlay(_badgeIcon, kind);
+
+            if (flash) _taskbarBadge?.Flash();
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"App badge update failed: {ex.Message}");
+        }
+    }
+
+    private void ReleaseBadgeIcons()
+    {
+        if (_badgeIcon != IntPtr.Zero) { DestroyIcon(_badgeIcon); _badgeIcon = IntPtr.Zero; }
+        if (_trayBadgeIcon != IntPtr.Zero) { DestroyIcon(_trayBadgeIcon); _trayBadgeIcon = IntPtr.Zero; }
     }
 
     private void RestartApplication()
@@ -505,8 +1404,7 @@ public partial class MainWindow : Window
             Logger.Error("RestartApplication: failed to relaunch", ex);
         }
 
-        _isClosingForReal = true;
-        _ = ExitApplicationAsync();
+        ExitApplicationAsync();
     }
 
     private bool StartCaptureCore()
@@ -527,6 +1425,12 @@ public partial class MainWindow : Window
     {
         bool ok = await Task.Run(StartCaptureCore);
         SetRunningVisual(ok);
+
+        if (ok) return;
+
+        Logger.Warn("InitialStart: the capture engine did not start.");
+        ShowInfoBar(InfoBarSeverity.Error, "Recording could not start",
+            "Instant Replay could not start the capture engine. Check the debug log for details.", "start");
     }
 
     private void SetRunningVisual(bool running)
@@ -542,19 +1446,23 @@ public partial class MainWindow : Window
             var t = _recDotPulseTimer;
             StartPulse(RecDot, ref t);
             _recDotPulseTimer = t;
-            StartStopButton.Content = "STOP";
+            ApplyStartStopLook(true);
+            _hasErrored = false;
+            RefreshAppBadge();
         }
         else
         {
             StopPulse(RecDot, ref _recDotPulseTimer);
             RecDot.Fill = GetThemedBrush("TextMutedBrush");
             StatusHeadline.Text = _engine.IsRunning ? "RECORDING" : "STOPPED";
-            StartStopButton.Content = "START";
+            ApplyStartStopLook(false);
+            RefreshAppBadge();
         }
     }
 
     private void CheckBufferHealth()
     {
+
         if (!_engine.IsRunning)
         {
             if (_lastBufferHealthy != null) { _lastBufferHealthy = null; SetRunningVisual(false); }
@@ -572,11 +1480,12 @@ public partial class MainWindow : Window
         RecDot.Fill = GetThemedBrush("ErrorBrush");
         RecDot.Opacity = 1;
         StatusHeadline.Text = "ERROR";
+        UpdateAppBadge(BadgeKind.Error, flash: true);
 
         if (_isHidden)
         {
             _lastBalloonWasLeakWarning = false;
-            _trayIcon?.ShowBalloonTip("Instant Replay", "Error: recording is not running", TrayIcon.IconError);
+            Notify("Instant Replay", "Error: recording is not running", TrayIcon.IconError);
         }
     }
 
@@ -612,7 +1521,7 @@ public partial class MainWindow : Window
     private void ShowLeakReminder()
     {
         _lastBalloonWasLeakWarning = true;
-        _trayIcon?.ShowBalloonTip("Instant Replay",
+        Notify("Instant Replay",
             "Memory usage looks unusually high — consider restarting the app (right-click the tray icon → Restart App).",
             TrayIcon.IconWarning);
     }
@@ -641,13 +1550,8 @@ public partial class MainWindow : Window
         Directory.CreateDirectory(destDir);
 
         var result = await Task.Run(() => _engine.SaveReplay(_tempDir, destDir));
-        string message = result.UserMessage();
 
-        _dq.TryEnqueue(() =>
-        {
-            _lastBalloonWasLeakWarning = false;
-            _trayIcon?.ShowBalloonTip("Instant Replay", message, result.Success ? TrayIcon.IconInfo : TrayIcon.IconError);
-        });
+        _lastSavedReplayPath = result.Success ? result.Path : null;
 
         if (result.Success && _engine.IsRunning)
         {
@@ -655,20 +1559,48 @@ public partial class MainWindow : Window
             bool restarted = await Task.Run(() => _engine.Restart(_tempDir, wipeSegments: false));
             if (!restarted) Logger.Error("Failed to restart capture after save; buffer may be stale.");
         }
+
+        _dq.TryEnqueue(() =>
+        {
+            _lastBalloonWasLeakWarning = false;
+            ShowSaveResult(result);
+        });
+    }
+
+    private void ShowSaveResult(SaveReplayResult result)
+    {
+        _lastBalloonWasLeakWarning = false;
+
+        if (!result.Success)
+        {
+            Notify("Instant Replay", result.UserMessage(), TrayIcon.IconError);
+            if (_isHidden || _isClosingForReal) return;
+            ShowInfoBar(InfoBarSeverity.Error, "Replay not saved", result.UserMessage());
+            return;
+        }
+
+        Notify("Instant Replay", result.UserMessage(), TrayIcon.IconInfo);
+        if (_isHidden || _isClosingForReal || string.IsNullOrEmpty(result.Path)) return;
+
+        string path = result.Path;
+        ShowInfoBar(InfoBarSeverity.Success, "Replay saved",
+            "Saved to " + path, "save",
+            actionLabel: "Show folder", action: () => OpenContainingFolder(path));
     }
 
     private async void StartStopButton_Click(object sender, RoutedEventArgs e)
     {
+        PlaySound(_engine.IsRunning ? ElementSoundKind.Hide : ElementSoundKind.Show);
         StartStopButton.IsEnabled = false;
         if (_engine.IsRunning)
         {
-            StartStopButton.Content = "STOPPING…";
+            SetStartStopLabel("STOPPING…");
             await Task.Run(() => _engine.Stop());
             SetRunningVisual(false);
         }
         else
         {
-            StartStopButton.Content = "STARTING…";
+            SetStartStopLabel("STARTING…");
             bool ok = await Task.Run(StartCaptureCore);
             SetRunningVisual(ok);
         }
@@ -688,45 +1620,103 @@ public partial class MainWindow : Window
             _dq.TryEnqueue(() =>
             {
                 _knownMics = mics;
-                bool wasInitializing = _initializing;
-                _initializing = true;
-
-                if (mics.Count == 0)
+                _syncingMicCombo = true;
+                try
                 {
-                    MicCombo.ItemsSource = new List<string> { "(no microphone found)" };
-                    MicCombo.SelectedIndex = 0;
-                    MicCombo.IsEnabled = false;
+                    bool configuredMissing = !string.IsNullOrEmpty(_settings.Microphone) && !mics.Contains(_settings.Microphone);
+                    _micMissing = configuredMissing;
+
+                    if (mics.Count == 0)
+                    {
+                        if (!string.IsNullOrEmpty(_settings.Microphone))
+                        {
+                            MicCombo.ItemsSource = new List<string> { _settings.Microphone };
+                            MicCombo.SelectedIndex = 0;
+                            MicCombo.IsEnabled = true;
+                        }
+                        else
+                        {
+                            MicCombo.ItemsSource = new List<string> { "(no microphone found)" };
+                            MicCombo.SelectedIndex = 0;
+                            MicCombo.IsEnabled = false;
+                        }
+                        _micMissing = !string.IsNullOrEmpty(_settings.Microphone);
+                    }
+                    else
+                    {
+                        MicCombo.IsEnabled = true;
+                        MicCombo.ItemsSource = mics;
+
+                        if (string.IsNullOrEmpty(_settings.Microphone))
+                        {
+                            _settings.Microphone = mics[0];
+                            _settings.SaveFields(nameof(Settings.Microphone));
+                            _baseline = _baseline with { Microphone = mics[0] };
+                            _micMissing = false;
+                        }
+                        else if (configuredMissing)
+                        {
+                            Logger.Warn($"Configured microphone '{_settings.Microphone}' is no longer available.");
+                        }
+                        else
+                        {
+                            _micMissing = false;
+                        }
+
+                        if (!string.IsNullOrEmpty(_settings.Microphone) && mics.Contains(_settings.Microphone))
+                        {
+                            MicCombo.ItemsSource = mics;
+                            MicCombo.SelectedItem = _settings.Microphone;
+                        }
+                        else if (!string.IsNullOrEmpty(_settings.Microphone))
+                        {
+                            MicCombo.ItemsSource = new List<string>(mics) { _settings.Microphone };
+                            MicCombo.SelectedItem = _settings.Microphone;
+                            MicCombo.IsEnabled = true;
+                        }
+                        else
+                        {
+                            MicCombo.ItemsSource = mics;
+                            MicCombo.SelectedItem = mics[0];
+                        }
+                    }
+
+                    UpdateMicComboStyle();
                 }
-                else
+                finally
                 {
-                    MicCombo.IsEnabled = true;
-                    MicCombo.ItemsSource = mics;
-
-                    if (string.IsNullOrEmpty(_settings.Microphone))
-                    {
-                        _settings.Microphone = mics[0];
-                        _settings.Save();
-                    }
-                    else if (!mics.Contains(_settings.Microphone))
-                    {
-                        Logger.Warn($"Configured microphone '{_settings.Microphone}' is no longer available.");
-                    }
-
-                    MicCombo.SelectedItem = mics.Contains(_settings.Microphone) ? _settings.Microphone : mics[0];
+                    _syncingMicCombo = false;
                 }
-
-                _initializing = wasInitializing;
-                UpdateSessionInfoDisplay();
             });
         });
     }
 
+    private void UpdateMicComboStyle()
+    {
+        if (MicCombo == null) return;
+        if (_micMissing)
+        {
+            try { MicCombo.Foreground = new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(255, 229, 72, 77)); }
+            catch { }
+            try { MicCombo.IsEnabled = true; } catch { }
+
+        }
+        else
+        {
+            try { MicCombo.ClearValue(Microsoft.UI.Xaml.Controls.ComboBox.ForegroundProperty); }
+            catch { }
+        }
+    }
+
     private void MicCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (_initializing) return;
+        if (_initializing || _syncingMicCombo) return;
         string mic = MicCombo.SelectedItem as string ?? "";
-        if (string.IsNullOrEmpty(mic) || mic == _settings.Microphone) return;
+        if (string.IsNullOrEmpty(mic)) return;
+        if (string.Equals(mic, _settings.Microphone, StringComparison.Ordinal)) return;
         _settings.Microphone = mic;
+        _micMissing = _knownMics.Count > 0 && !_knownMics.Contains(mic);
+        UpdateMicComboStyle();
         CheckDirty();
     }
 
@@ -739,7 +1729,6 @@ public partial class MainWindow : Window
     {
         if (_initializing) return;
         int seconds = DurationCombo.SelectedIndex switch { 0 => 30, 2 => 120, _ => 60 };
-        if (seconds == _settings.ReplayDurationSeconds) return;
         _settings.ReplayDurationSeconds = seconds;
         CheckDirty();
     }
@@ -753,7 +1742,6 @@ public partial class MainWindow : Window
     {
         if (_initializing) return;
         int fps = FpsCombo.SelectedIndex switch { 1 => 60, 2 => 120, _ => 30 };
-        if (fps == _settings.FrameRate) return;
         _settings.FrameRate = fps;
         CheckDirty();
     }
@@ -767,35 +1755,71 @@ public partial class MainWindow : Window
     {
         if (_initializing) return;
         string preset = QualityCombo.SelectedIndex switch { 1 => "Balanced", 2 => "Quality", _ => "Fast" };
-        if (preset == _settings.QualityPreset) return;
         _settings.QualityPreset = preset;
         CheckDirty();
     }
 
-    private void InitOffsetDisplays()
+    private void InitAudioToggles()
     {
-        SysOffsetValue.Text = FormatOffset(_settings.SystemAudioOffsetMs);
-        MicOffsetValue.Text = FormatOffset(_settings.MicOffsetMs);
+        _syncingAudioToggles = true;
+        SysAudioToggle.IsOn = _settings.RecordSystemAudio;
+        MicToggle.IsOn = _settings.RecordMicrophone;
+        _syncingAudioToggles = false;
     }
 
-    private static string FormatOffset(int ms) => (ms >= 0 ? "+" : "") + ms + " ms";
-
-    private void SysOffsetMinus_Click(object sender, RoutedEventArgs e) => AdjustSysOffset(-OffsetStepMs);
-    private void SysOffsetPlus_Click(object sender, RoutedEventArgs e) => AdjustSysOffset(OffsetStepMs);
-    private void MicOffsetMinus_Click(object sender, RoutedEventArgs e) => AdjustMicOffset(-OffsetStepMs);
-    private void MicOffsetPlus_Click(object sender, RoutedEventArgs e) => AdjustMicOffset(OffsetStepMs);
-
-    private void AdjustSysOffset(int deltaMs)
+    private void InitEncoderSegments()
     {
-        _settings.SystemAudioOffsetMs = Math.Clamp(_settings.SystemAudioOffsetMs + deltaMs, OffsetMinMs, OffsetMaxMs);
-        SysOffsetValue.Text = FormatOffset(_settings.SystemAudioOffsetMs);
+        EncoderCombo.SelectedIndex = _settings.EncoderChoice switch { "Hardware" => 1, "Software" => 2, _ => 0 };
+    }
+
+    private void EncoderCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_initializing) return;
+        string choice = EncoderCombo.SelectedIndex switch { 1 => "Hardware", 2 => "Software", _ => "Auto" };
+        _settings.EncoderChoice = choice;
         CheckDirty();
     }
 
-    private void AdjustMicOffset(int deltaMs)
+    private void InitCaptureSegments()
     {
-        _settings.MicOffsetMs = Math.Clamp(_settings.MicOffsetMs + deltaMs, OffsetMinMs, OffsetMaxMs);
-        MicOffsetValue.Text = FormatOffset(_settings.MicOffsetMs);
+        bool dxgiOk = false;
+        try { dxgiOk = ReplayEngine.DxgiDuplicationSupported(); }
+        catch (Exception ex)
+        {
+            Logger.Warn($"[Engine] DXGI availability probe failed ({ex.Message}); hiding DXGI option.");
+        }
+
+        CaptureDxgiItem.IsEnabled = dxgiOk;
+        CaptureMethodCombo.SelectedIndex = _settings.CaptureMethod == "Dxgi" && dxgiOk ? 1 : 0;
+
+        UpdateCaptureMethodHint();
+    }
+
+    private void UpdateCaptureMethodHint()
+    {
+    }
+
+    private void CaptureMethodCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_initializing) return;
+
+        string choice = CaptureMethodCombo.SelectedIndex == 1 ? "Dxgi" : "Wgc";
+        UpdateCaptureMethodHint();
+        _settings.CaptureMethod = choice;
+        CheckDirty();
+    }
+
+    private void SysAudioToggle_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_initializing || _syncingAudioToggles) return;
+        _settings.RecordSystemAudio = SysAudioToggle.IsOn;
+        CheckDirty();
+    }
+
+    private void MicToggle_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_initializing || _syncingAudioToggles) return;
+        _settings.RecordMicrophone = MicToggle.IsOn;
         CheckDirty();
     }
 
@@ -810,7 +1834,7 @@ public partial class MainWindow : Window
         _capturingHotkey = true;
         _pendingHotkeyModifier = 0;
         HotkeyCaptureButton.Style = (Style)Application.Current.Resources["AccentButtonStyle"];
-        HotkeyCaptureButton.Content = "PRESS A KEY…";
+        HotkeyCaptureText.Text = "PRESS A KEY…";
         var t = _hotkeyPulseTimer;
         StartPulse(HotkeyCaptureButton, ref t);
         _hotkeyPulseTimer = t;
@@ -827,7 +1851,7 @@ public partial class MainWindow : Window
     }
 
     private void UpdateHotkeyButtonDisplay() =>
-        HotkeyCaptureButton.Content = HotkeyDisplay.Format(_settings.HotkeyModifiers, _settings.HotkeyVk);
+        HotkeyCaptureText.Text = HotkeyDisplay.Format(_settings.HotkeyModifiers, _settings.HotkeyVk);
 
     private void Window_PreviewKeyDown(object sender, KeyRoutedEventArgs e)
     {
@@ -845,7 +1869,7 @@ public partial class MainWindow : Window
         if (mod != null)
         {
             _pendingHotkeyModifier = mod.Value;
-            HotkeyCaptureButton.Content = HotkeyDisplay.Format(_pendingHotkeyModifier, 0);
+            HotkeyCaptureText.Text = HotkeyDisplay.Format(_pendingHotkeyModifier, 0);
             e.Handled = true;
             return;
         }
@@ -861,7 +1885,7 @@ public partial class MainWindow : Window
         if (HotkeyDisplay.ModifierBitForKey(e.Key) == _pendingHotkeyModifier)
         {
             _pendingHotkeyModifier = 0;
-            HotkeyCaptureButton.Content = "PRESS A KEY…";
+            HotkeyCaptureText.Text = "PRESS A KEY…";
             e.Handled = true;
         }
     }
@@ -882,7 +1906,7 @@ public partial class MainWindow : Window
             _pendingHotkeyModifier = 0;
             StopPulse(HotkeyCaptureButton, ref _hotkeyPulseTimer);
             HotkeyCaptureButton.Style = (Style)Application.Current.Resources["BaseButtonStyle"];
-            HotkeyCaptureButton.Content = "ALREADY IN USE";
+            HotkeyCaptureText.Text = "ALREADY IN USE";
 
             var revertTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1.5) };
             revertTimer.Tick += (_, _) => { revertTimer.Stop(); UpdateHotkeyButtonDisplay(); };
@@ -892,8 +1916,7 @@ public partial class MainWindow : Window
 
         _settings.HotkeyModifiers = modifiers;
         _settings.HotkeyVk = vk;
-        _settings.Save();
-        UpdateSessionInfoDisplay();
+        _settings.SaveFields(nameof(Settings.HotkeyModifiers), nameof(Settings.HotkeyVk));
         EndHotkeyCapture();
     }
 
@@ -920,17 +1943,15 @@ public partial class MainWindow : Window
         bool enabled = DebugToggle.IsOn;
         _settings.DebugLogging = enabled;
         Logger.SetDebugMode(enabled);
-        _settings.Save();
+        _settings.SaveFields(nameof(Settings.DebugLogging));
     }
 
-    private void TransparencyToggle_Changed(object sender, RoutedEventArgs e)
+    private void BackdropCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_initializing) return;
-        if (!TransparencyToggle.IsEnabled) return;
-        bool enabled = TransparencyToggle.IsOn;
-        _settings.WindowTransparency = enabled;
-        _settings.Save();
-        _dq.TryEnqueue(() => ApplyBackdrop(enabled));
+        _settings.Backdrop = BackdropCombo.SelectedIndex switch { 1 => BackdropKind.Mica, _ => BackdropKind.Acrylic };
+        _settings.SaveFields(nameof(Settings.Backdrop));
+        _dq.TryEnqueue(() => ApplyBackdrop());
     }
 
     private void ThemeToggle_Changed(object sender, RoutedEventArgs e)
@@ -938,127 +1959,299 @@ public partial class MainWindow : Window
         if (_initializing) return;
         bool dark = ThemeToggle.IsOn;
         _settings.DarkMode = dark;
-        _settings.Save();
+        _settings.SaveFields(nameof(Settings.DarkMode));
         _dq.TryEnqueue(() =>
         {
             ApplyAppTheme(dark);
-            ApplyBackdrop(_settings.WindowTransparency);
+            ApplyBackdrop();
         });
-    }
-
-    private void FFmpegPathBox_TextChanged(object sender, TextChangedEventArgs e)
-    {
-        if (_initializing) return;
-        if (FFmpegPathBox.Text == _settings.FFmpegPath) return;
-        _settings.FFmpegPath = FFmpegPathBox.Text;
-        CheckDirty();
-    }
-
-    private async void BrowseFFmpegButton_Click(object sender, RoutedEventArgs e)
-    {
-        var picker = new Windows.Storage.Pickers.FileOpenPicker();
-        InitializeWithWindow.Initialize(picker, _hwnd);
-        picker.FileTypeFilter.Add(".exe");
-        picker.SuggestedStartLocation = Windows.Storage.Pickers.PickerLocationId.ComputerFolder;
-
-        var file = await picker.PickSingleFileAsync();
-        if (file != null) FFmpegPathBox.Text = file.Path;
     }
 
     private void SaveLocationBox_TextChanged(object sender, TextChangedEventArgs e)
     {
         if (_initializing) return;
-        if (SaveLocationBox.Text == _settings.SaveDestination) return;
         _settings.SaveDestination = SaveLocationBox.Text;
         CheckDirty();
     }
 
     private async void BrowseSaveLocationButton_Click(object sender, RoutedEventArgs e)
     {
-        var picker = new Windows.Storage.Pickers.FolderPicker();
-        InitializeWithWindow.Initialize(picker, _hwnd);
-        picker.FileTypeFilter.Add("*");
-        picker.SuggestedStartLocation = Windows.Storage.Pickers.PickerLocationId.ComputerFolder;
-
-        var folder = await picker.PickSingleFolderAsync();
-        if (folder != null) SaveLocationBox.Text = folder.Path;
-    }
-
-    private void CopyAddressButton_Click(object sender, RoutedEventArgs e)
-    {
         try
         {
-            var package = new DataPackage();
-            package.SetText(WalletAddressText.Text);
-            Clipboard.SetContent(package);
-            CopyAddressButton.Content = "COPIED!";
-            var revertTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1.5) };
-            revertTimer.Tick += (_, _) => { revertTimer.Stop(); CopyAddressButton.Content = "COPY ADDRESS"; };
-            revertTimer.Start();
+            var picker = new Windows.Storage.Pickers.FolderPicker();
+            InitializeWithWindow.Initialize(picker, _hwnd);
+            picker.FileTypeFilter.Add("*");
+            picker.SuggestedStartLocation = Windows.Storage.Pickers.PickerLocationId.ComputerFolder;
+
+            var folder = await picker.PickSingleFolderAsync();
+            if (folder != null) SaveLocationBox.Text = folder.Path;
         }
         catch (Exception ex)
         {
-            Logger.Warn($"Could not copy wallet address to clipboard: {ex.Message}");
+            Logger.Warn($"Could not open save location folder picker: {ex}");
         }
     }
 
     private void CheckDirty()
     {
-        _dirty = SnapshotJson() != _settingsSnapshot;
-        UpdateApplyButtonState();
+        _dirty = CapturePending() != _baseline;
+        UpdatePendingFlyout();
     }
 
-    private void UpdateApplyButtonState()
+    private static void PlaySound(ElementSoundKind kind)
     {
-        ApplyButton.IsEnabled = _dirty;
-        ApplyButton.Style = (Style)Application.Current.Resources[_dirty ? "AccentButtonStyle" : "BaseButtonStyle"];
-        ApplyButton.Content = _dirty ? "APPLY CHANGES" : "NO CHANGES PENDING";
+        try { ElementSoundPlayer.Play(kind); } catch { }
     }
 
-    private async void ApplyButton_Click(object sender, RoutedEventArgs e) => await DoApplyAsync();
-
-    private async Task DoApplyAsync()
+    private void EnsureInfoBarTimer()
     {
-        ApplyButton.IsEnabled = false;
-        ApplyButton.Content = "APPLYING…";
+        if (_infoBarTimer != null) return;
 
-        _settings.Save();
+        _infoBarTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
+        _infoBarTimer.Tick += (_, _) =>
+        {
+            _infoBarTimer!.Stop();
+            ClearInfoBar();
+        };
 
-        bool ok = true;
-        if (_engine.IsRunning) ok = await Task.Run(() => _engine.Restart(_tempDir, wipeSegments: true));
-        if (!ok) Logger.Warn("Apply: capture failed to restart with the new settings (see log).");
-
-        SetRunningVisual(_engine.IsRunning);
-        UpdateSessionInfoDisplay();
-
-        _dirty = false;
-        UpdateApplyButtonState();
-        _settingsSnapshot = SnapshotJson();
+        StatusInfoBar.PointerEntered += (_, _) => _infoBarTimer?.Stop();
+        StatusInfoBar.PointerExited += (_, _) =>
+        {
+            if (!StatusInfoBar.IsOpen) return;
+            _infoBarTimer?.Stop();
+            _infoBarTimer?.Start();
+        };
     }
 
-    private async Task ExitApplicationAsync()
+    private void ShowInfoBar(InfoBarSeverity severity, string title, string message, string? tag = null,
+        bool progress = false, string? actionLabel = null, Action? action = null)
     {
+        StatusInfoBar.Severity = severity;
+        StatusInfoBar.Title = title;
+        StatusInfoBar.Message = message;
+        StatusInfoBar.IsClosable = !progress;
+        StatusInfoBar.Tag = tag;
+        _infoBarAction = action;
+        StatusInfoBar.ActionButton.Content = actionLabel ?? "";
+        StatusInfoBar.ActionButton.Visibility = actionLabel is null
+            ? Visibility.Collapsed
+            : Visibility.Visible;
+        StatusInfoBar.IsOpen = true;
+
+        EnsureInfoBarTimer();
+        _infoBarTimer!.Stop();
+        _infoBarTimer.Start();
+    }
+
+    private void ClearInfoBar()
+    {
+        _infoBarTimer?.Stop();
+        StatusInfoBar.IsOpen = false;
+        StatusInfoBar.Tag = null;
+        _infoBarAction = null;
+        StatusInfoBar.ActionButton.Visibility = Visibility.Collapsed;
+    }
+
+    private void UpdatePendingFlyout()
+    {
+        if (_dirty == _flyoutShown) return;
+        _flyoutShown = _dirty;
+
         if (_dirty)
         {
-            var dialog = new ContentDialog
-            {
-                XamlRoot = RootGrid.XamlRoot,
-                Title = "Instant Replay",
-                Content = "You have unapplied settings changes. Apply them before exiting?",
-                PrimaryButtonText = "Apply & Exit",
-                SecondaryButtonText = "Exit Without Applying",
-                CloseButtonText = "Cancel",
-                DefaultButton = ContentDialogButton.Primary,
-            };
-            var result = await dialog.ShowAsync();
-            if (result == ContentDialogResult.None) return;
+            PlaySound(ElementSoundKind.Show);
+            PendingChangesFlyout.Visibility = Visibility.Visible;
+            AnimateDouble(PendingChangesFlyout, "Opacity", 0, 1, TimeSpan.FromMilliseconds(160));
+            AnimateDouble(PendingFlyoutSlide, "Y", -8, 0, TimeSpan.FromMilliseconds(200));
+            return;
+        }
 
-            if (result == ContentDialogResult.Primary)
+        AnimateDouble(PendingChangesFlyout, "Opacity", 1, 0, TimeSpan.FromMilliseconds(140),
+            onCompleted: () => PendingChangesFlyout.Visibility = Visibility.Collapsed);
+    }
+
+    private void RevertPendingChanges()
+    {
+        PendingSettings previous = _baseline;
+
+        _settings.ReplayDurationSeconds = previous.ReplayDurationSeconds;
+        _settings.FrameRate = previous.FrameRate;
+        _settings.QualityPreset = previous.QualityPreset;
+        _settings.EncoderChoice = previous.EncoderChoice;
+        _settings.CaptureMethod = previous.CaptureMethod;
+        _settings.Microphone = previous.Microphone;
+        _settings.SaveDestination = previous.SaveDestination;
+        _settings.RecordSystemAudio = previous.RecordSystemAudio;
+        _settings.RecordMicrophone = previous.RecordMicrophone;
+
+        SyncControlsFromSettings();
+
+        Logger.Info("RevertPendingChanges: restored the previous settings values.");
+        CheckDirty();
+    }
+
+    private void SyncControlsFromSettings()
+    {
+        bool wasInitializing = _initializing;
+        _initializing = true;
+        try
+        {
+            if (MicCombo.ItemsSource is IEnumerable<string> mics && mics.Contains(_settings.Microphone))
+                MicCombo.SelectedItem = _settings.Microphone;
+
+            MicToggle.IsOn = _settings.RecordMicrophone;
+            SysAudioToggle.IsOn = _settings.RecordSystemAudio;
+            InitDurationSegments();
+            InitFpsSegments();
+            InitQualitySegments();
+            SaveLocationBox.Text = _settings.GetEffectiveSaveDestination();
+            InitEncoderSegments();
+            CaptureMethodCombo.SelectedIndex =
+                _settings.CaptureMethod == "Dxgi" && CaptureDxgiItem.IsEnabled ? 1 : 0;
+            UpdateCaptureMethodHint();
+        }
+        finally
+        {
+            _initializing = wasInitializing;
+        }
+
+    }
+
+    private async void PendingSaveButton_Click(object sender, RoutedEventArgs e) => await SaveChangesAsync();
+
+    private void PendingDiscardButton_Click(object sender, RoutedEventArgs e)
+    {
+        PlaySound(ElementSoundKind.Hide);
+        if (_savingChanges) return;
+        RevertPendingChanges();
+        ClearInfoBar();
+    }
+
+    private async Task SaveChangesAsync()
+    {
+        if (_savingChanges || !_dirty) return;
+        _savingChanges = true;
+        PendingSaveButton.IsEnabled = false;
+        PendingDiscardButton.IsEnabled = false;
+
+        ShowInfoBar(InfoBarSeverity.Informational, "Saving changes",
+            "Saving your settings and restarting the capture engine…", "apply", progress: true);
+
+        bool ok = true;
+        bool restarted = false;
+        try
+        {
+            _settings.Save();
+
+            if (_engine.IsRunning)
             {
-                _settings.Save();
-                if (_engine.IsRunning) _engine.Restart(_tempDir, wipeSegments: true);
+                restarted = true;
+                ok = await Task.Run(() => _engine.Restart(_tempDir, wipeSegments: true));
+            }
+
+            _baseline = CapturePending();
+            _dirty = false;
+            UpdatePendingFlyout();
+
+            if (ok)
+            {
+                ShowInfoBar(InfoBarSeverity.Success, "Engine started",
+                    restarted
+                        ? "Your changes were saved and the capture engine successfully started."
+                        : "Your changes were saved. They take effect the next time you start recording.");
+            }
+            else
+            {
+                Logger.Warn("Save changes: capture failed to restart with the new settings (see log).");
+                ShowInfoBar(InfoBarSeverity.Error, "Engine failed to start",
+                    "Your changes were saved, but the capture engine could not start with them. Check the debug log for details.");
             }
         }
+        catch (Exception ex)
+        {
+            Logger.Error("Save changes failed", ex);
+            ShowInfoBar(InfoBarSeverity.Error, "Could not save changes",
+                $"{ex.Message} Check the debug log for details.");
+        }
+        finally
+        {
+            PendingSaveButton.IsEnabled = true;
+            PendingDiscardButton.IsEnabled = true;
+            _savingChanges = false;
+            SetRunningVisual(_engine.IsRunning);
+        }
+    }
+
+
+    private static readonly SolidColorBrush AlertBrush = MakeFrozen(225, 91, 91);
+
+    private static SolidColorBrush MakeFrozen(byte r, byte g, byte b)
+    {
+        return new SolidColorBrush(Color.FromArgb(255, r, g, b));
+    }
+
+    private void UpdateSystemStats()
+    {
+        double? cpuPct = null;
+        try
+        {
+            if (GetSystemTimes(out var idle, out var kernel, out var user))
+            {
+                ulong i = idle.Ticks, k = kernel.Ticks, u = user.Ticks;
+                if (_statsBaselineTaken && k >= _lastKernelTicks && u >= _lastUserTicks && i >= _lastIdleTicks)
+                {
+                    ulong dTotal = (k - _lastKernelTicks) + (u - _lastUserTicks);
+                    ulong dIdle = i - _lastIdleTicks;
+                    if (dTotal > 0 && dTotal >= dIdle)
+                        cpuPct = 100.0 * (dTotal - dIdle) / dTotal;
+                }
+                _lastIdleTicks = i; _lastKernelTicks = k; _lastUserTicks = u;
+                _statsBaselineTaken = true;
+            }
+        }
+        catch (Exception ex) { Logger.Warn($"CPU stats failed: {ex.Message}"); }
+
+        if (cpuPct is { } pct)
+        {
+            CpuValueText.Text = $"{pct:0}%";
+            ApplyStatAlert(CpuCard, CpuIconBg, CpuValueText, CpuHintText, pct >= 70);
+        }
+        else
+        {
+            CpuValueText.Text = "\u2014";
+        }
+
+        try
+        {
+            var m = new MEMORYSTATUSEX { dwLength = (uint)Marshal.SizeOf<MEMORYSTATUSEX>() };
+            if (GlobalMemoryStatusEx(ref m))
+            {
+                double totalGb = m.ullTotalPhys / (1024.0 * 1024 * 1024);
+                double usedGb = (m.ullTotalPhys - m.ullAvailPhys) / (1024.0 * 1024 * 1024);
+                RamValueText.Text = $"{usedGb:0.0} / {totalGb:0} GB";
+                RamHintText.Text = $"{m.dwMemoryLoad}% used";
+                ApplyStatAlert(RamCard, RamIconBg, RamValueText, RamHintText, m.dwMemoryLoad >= 85);
+            }
+        }
+        catch (Exception ex) { Logger.Warn($"Memory stats failed: {ex.Message}"); }
+    }
+
+    private void ApplyStatAlert(Border card, Border icon, TextBlock value, TextBlock hint, bool alert)
+    {
+        card.BorderBrush = alert ? AlertBrush : (Brush)Application.Current.Resources["SurfaceBorderBrush"];
+        icon.Background = alert ? AlertBrush : (Brush)Application.Current.Resources["AccentGradientBrush"];
+        bool dark = _settings.DarkMode;
+        if (RootGrid.RequestedTheme == ElementTheme.Dark || Application.Current.RequestedTheme == ApplicationTheme.Dark) dark = true;
+        if (RootGrid.RequestedTheme == ElementTheme.Light || Application.Current.RequestedTheme == ApplicationTheme.Light) dark = false;
+        value.Foreground = alert ? AlertBrush : (dark ? new SolidColorBrush(Colors.White) : new SolidColorBrush(Colors.Black));
+        hint.Foreground = alert ? AlertBrush : (dark ? new SolidColorBrush(Color.FromArgb(255, 212, 212, 212)) : new SolidColorBrush(Color.FromArgb(255, 64, 64, 64)));
+    }
+
+    private void ExitApplicationAsync()
+    {
+        if (_isClosingForReal) return;
+
+        if (_dirty) RevertPendingChanges();
 
         _isClosingForReal = true;
 
@@ -1066,6 +2259,7 @@ public partial class MainWindow : Window
 
         _debugStatsTimer?.Stop();
         _bufferHealthTimer?.Stop();
+        _statsTimer?.Stop();
         _micRefreshTimer?.Stop();
         _deviceChangeDebounceTimer?.Stop();
         _audioWatcher?.Dispose();
@@ -1073,12 +2267,21 @@ public partial class MainWindow : Window
         _leakReminderTimer?.Stop();
         _recDotPulseTimer?.Stop();
         _hotkeyPulseTimer?.Stop();
+        EnableWindow(_hwnd, true);
         _engine.Stop();
         _engine.Dispose();
 
+        _taskbarBadge?.Dispose();
+        ReleaseBadgeIcons();
         _trayIcon?.Dispose();
 
-        Close();
-        Environment.Exit(0);
+        void FinishExit()
+        {
+            try { Close(); }
+            catch (Exception ex) { Logger.Warn($"Window.Close() during exit failed: {ex.Message}"); }
+            Environment.Exit(0);
+        }
+
+        if (!_dq.TryEnqueue(FinishExit)) FinishExit();
     }
 }

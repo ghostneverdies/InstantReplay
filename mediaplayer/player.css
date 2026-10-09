@@ -1,0 +1,255 @@
+:root {
+  --accent: #6b7bff;
+  --bar-h: 52px;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: #000;
+  overflow: hidden;
+  font-family: "Segoe UI", system-ui, sans-serif;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  background: #000;
+  object-fit: contain;
+  cursor: default;
+  outline: none;
+}
+
+.close-btn {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 3;
+  background: rgba(0, 0, 0, 0.45);
+  border-radius: 50%;
+}
+
+.close-btn {
+  width: 40px;
+  height: 40px;
+}
+
+.close-btn svg {
+  width: 20px;
+  height: 20px;
+}
+
+.close-btn:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+.close-btn svg path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+#center {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+#center .big,
+#center #error {
+  pointer-events: auto;
+}
+
+.big {
+  width: 76px;
+  height: 76px;
+  border-radius: 50%;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  transition: transform 0.12s ease, background 0.12s ease, opacity 0.2s ease;
+  opacity: 0;
+  padding-left: 6px;
+}
+
+.big svg {
+  width: 34px;
+  height: 34px;
+}
+
+.big svg path {
+  fill: currentColor;
+}
+
+.big[hidden] {
+  display: none;
+}
+
+body.paused .big {
+  opacity: 1;
+}
+
+.big:hover {
+  transform: scale(1.06);
+  background: rgba(0, 0, 0, 0.7);
+}
+
+.big:active {
+  transform: scale(0.96);
+}
+
+#error {
+  text-align: center;
+  color: #fff;
+  padding: 20px 28px;
+  border-radius: 10px;
+  background: rgba(20, 20, 20, 0.85);
+  max-width: 80%;
+}
+
+#error p {
+  margin: 0 0 12px;
+  font-size: 15px;
+  opacity: 0.9;
+}
+
+#retry {
+  border: none;
+  border-radius: 8px;
+  padding: 8px 22px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  color: #fff;
+  background: var(--accent);
+}
+
+#retry:hover {
+  filter: brightness(1.1);
+}
+
+#bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: var(--bar-h);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px;
+  background: linear-gradient(0deg, rgba(0, 0, 0, 0.82), rgba(0, 0, 0, 0));
+  transition: opacity 0.25s ease, transform 0.25s ease;
+}
+
+body.idle #bar,
+body.idle .close-btn {
+  opacity: 0;
+  transform: translateY(8px);
+  pointer-events: none;
+}
+
+body.idle .close-btn {
+  transform: translateY(-8px);
+}
+
+.btn {
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #fff;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.1s ease, transform 0.1s ease;
+}
+
+.btn:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.btn:active {
+  transform: scale(0.92);
+}
+
+.btn svg {
+  width: 20px;
+  height: 20px;
+}
+
+.btn svg path {
+  fill: currentColor;
+}
+
+#icSlash {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+.time {
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: rgba(255, 255, 255, 0.92);
+  min-width: 42px;
+  text-align: center;
+}
+
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.25);
+  outline: none;
+  cursor: pointer;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: #fff;
+  border: none;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+  transition: transform 0.1s ease;
+}
+
+input[type="range"]:hover::-webkit-slider-thumb {
+  transform: scale(1.2);
+}
+
+#seek {
+  flex: 1 1 auto;
+  width: auto;
+}
+
+#vol {
+  flex: 0 0 96px;
+}

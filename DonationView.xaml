@@ -1,0 +1,90 @@
+<UserControl
+    x:Class="InstantReplay.DonationView"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Background="Transparent">
+
+    <Grid x:Name="RootGrid"
+            Background="Transparent">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="32"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <Grid x:Name="TitleBarStrip"
+                Grid.Row="0"
+                Background="Transparent"
+                Padding="12,0,0,0">
+            <TextBlock Text="Support Instant Replay"
+                    FontSize="12"
+                       Foreground="{ThemeResource TextMutedBrush}"
+                    VerticalAlignment="Center"/>
+            <Button x:Name="CloseDonateButton"
+                    Width="46"
+                    HorizontalAlignment="Right"
+                    Style="{StaticResource TitleBarCloseButtonStyle}"
+                    IsTabStop="False"
+                    Click="CloseDonateButton_Click"
+                    ToolTipService.ToolTip="Close">
+                <FontIcon Glyph="&#xE8BB;"
+                        FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                        FontSize="10"/>
+            </Button>
+        </Grid>
+
+        <ScrollViewer Grid.Row="1"
+                VerticalScrollBarVisibility="Auto"
+                HorizontalScrollMode="Disabled">
+            <StackPanel MaxWidth="440"
+                    Margin="28,20,28,24">
+                <TextBlock Text="&#x1F496;"
+                        FontFamily="Segoe UI Emoji"
+                        FontSize="42"
+                           IsTextScaleFactorEnabled="False"
+                        HorizontalAlignment="Center"
+                        Margin="0,0,0,10"/>
+                <TextBlock Style="{StaticResource Mono}"
+                        TextWrapping="Wrap"
+                        TextAlignment="Center"
+                        Margin="4,0,4,16"
+                        LineHeight="18">
+                    <Run Text="Thank you so much for using Instant Replay — genuinely, it means a lot that you're here."/>
+                    <LineBreak/><LineBreak/>
+                    <Run Text="This app is free and built in my spare time. If it's been useful to you and you'd like to help keep it going, a small donation is always appreciated. No pressure at all — just send it if you're able and want to."/>
+                </TextBlock>
+
+                <TextBlock Text="USDT &#x00B7; TRC-20"
+                        Style="{StaticResource Caption}"
+                        Foreground="{ThemeResource DonateBrush}"
+                        HorizontalAlignment="Center"
+                        Margin="0,0,0,8"/>
+                <Border Background="{ThemeResource SettingsAreaBrush}"
+                        BorderBrush="{ThemeResource SurfaceBorderBrush}"
+                        BorderThickness="1"
+                        CornerRadius="8"
+                        Padding="10,6"
+                        Margin="0,0,0,12">
+                    <TextBlock x:Name="WalletAddressText"
+                            Text="TBLWg9dJtimMijGJtSKGX61DtmZbYaDbkD"
+                               Style="{StaticResource Mono}"
+                            Foreground="{ThemeResource TextPrimaryBrush}"
+                               TextWrapping="Wrap"
+                            TextAlignment="Center"
+                            FontSize="13"/>
+                </Border>
+                <Button x:Name="CopyAddressButton"
+                        Content="COPY ADDRESS"
+                        Style="{StaticResource AccentButtonStyle}"
+                        HorizontalAlignment="Stretch"
+                        Click="CopyAddressButton_Click"/>
+                <TextBlock Text="Every donation goes back into keeping Instant Replay free for everyone."
+                           Style="{StaticResource Mono}"
+                        FontSize="12"
+                        TextWrapping="Wrap"
+                        TextAlignment="Center"
+                           Foreground="{ThemeResource TextMutedBrush}"
+                        Margin="0,16,0,0"/>
+            </StackPanel>
+        </ScrollViewer>
+    </Grid>
+</UserControl>

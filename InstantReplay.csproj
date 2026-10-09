@@ -6,14 +6,15 @@
     <TargetPlatformMinVersion>10.0.19041.0</TargetPlatformMinVersion>
     <RootNamespace>InstantReplay</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <ApplicationIcon>icon.ico</ApplicationIcon>
+    <ApplicationIcon>assets\icons\icon.ico</ApplicationIcon>
     <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWinUI>true</UseWinUI>
     <EnableMsixTooling>true</EnableMsixTooling>
     <WindowsPackageType>None</WindowsPackageType>
     <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
-    <SelfContained>true</SelfContained>
+    <SelfContained>false</SelfContained>
 
     <Platforms>x64</Platforms>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
@@ -25,15 +26,52 @@
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4258.31" />
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.7.250606001" />
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.1742" />
     <PackageReference Include="Microsoft.Win32.SystemEvents" Version="8.0.0" />
   </ItemGroup>
 
   <ItemGroup>
-    <Content Include="icon.ico">
+    <Content Include="assets\icons\github_light_mode.png">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+    <Content Include="assets\icons\github_dark_mode.png">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+    <Content Include="assets\icons\icon.ico">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+    <Content Include="mediaplayer\**\*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </Content>
   </ItemGroup>
+
+  <ItemGroup>
+    <None Include="engine\engine.dll" Link="engine.dll">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </None>
+  </ItemGroup>
+
+  <Target Name="ReorganizePublish" AfterTargets="Publish">
+    <ItemGroup>
+      <_PublishRootFiles Include="icon.ico;InstantReplay.pdb" />
+    </ItemGroup>
+
+    <MakeDir Directories="$(PublishDir)assets;$(PublishDir)symbols" />
+
+    <Move SourceFiles="$(PublishDir)icon.ico" DestinationFolder="$(PublishDir)assets"
+      Condition="Exists('$(PublishDir)icon.ico')" />
+    <Move SourceFiles="$(PublishDir)InstantReplay.pdb" DestinationFolder="$(PublishDir)symbols"
+      Condition="Exists('$(PublishDir)InstantReplay.pdb')" />
+
+    <Message Importance="high"
+      Text="Publish layout reorganized: assets/, symbols/ (exe + WinUI runtime stay at root)." />
+  </Target>
 
 </Project>

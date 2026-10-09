@@ -1,13 +1,7 @@
-using System;
-using System.Collections.Generic;
-using System.Diagnostics;
-using System.IO;
-using System.Linq;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
-using System.Threading;
-using System.Threading.Tasks;
 
 namespace InstantReplay;
 
@@ -87,6 +81,13 @@ public sealed class AudioDeviceWatcher : IMMNotificationClient, IDisposable
     }
 }
 
+public enum BackdropKind
+{
+    Acrylic = 0,
+    Mica = 1,
+    None = 2,
+}
+
 public static class WindowsTheme
 {
     public static (byte R, byte G, byte B) GetAccentColor()
@@ -125,44 +126,35 @@ public static class WindowsTheme
         }
         return true;
     }
-
-    public static bool IsTransparencyEnabled()
-    {
-        try
-        {
-            using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(
-                @"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
-            if (key?.GetValue("EnableTransparency") is int value)
-                return value == 1;
-        }
-        catch (Exception ex)
-        {
-            Logger.Warn($"WindowsTheme: could not read transparency setting, defaulting to enabled: {ex.Message}");
-        }
-        return true;
-    }
 }
 
 public sealed class Settings
 {
-    public string FFmpegPath { get; set; } = @"C:\ffmpeg\ffmpeg.exe";
     public string Microphone { get; set; } = "";
     public int ReplayDurationSeconds { get; set; } = 60;
-    public int FrameRate { get; set; } = 30;
-    public int SystemAudioOffsetMs { get; set; } = 0;
-    public int MicOffsetMs { get; set; } = 0;
+    public int FrameRate { get; set; } = 60;
+    public bool RecordSystemAudio { get; set; } = true;
+    public bool RecordMicrophone { get; set; } = true;
     public bool DebugLogging { get; set; } = false;
 
-    public bool WindowTransparency { get; set; } = true;
+    public BackdropKind Backdrop { get; set; } = BackdropKind.Mica;
 
     public bool DarkMode { get; set; } = true;
 
     public uint HotkeyModifiers { get; set; } = 0x0002;
     public uint HotkeyVk { get; set; } = 0x6A;
 
-    public string QualityPreset { get; set; } = "Fast";
+    public string QualityPreset { get; set; } = "Balanced";
+
+    public string EncoderChoice { get; set; } = "Auto";
+
+    public string CaptureMethod { get; set; } = "Wgc";
 
     public string SaveDestination { get; set; } = "";
+
+    public bool AppMinimizedNotificationShown { get; set; } = false;
+
+    public string BackgroundNotice { get; set; } = "Once";
 
     public string GetEffectiveSaveDestination() =>
         string.IsNullOrWhiteSpace(SaveDestination)
@@ -181,7 +173,12 @@ public sealed class Settings
             if (File.Exists(path))
             {
                 var loaded = JsonSerializer.Deserialize<Settings>(File.ReadAllText(path));
-                if (loaded != null) return loaded;
+                if (loaded != null)
+                {
+                    if (loaded.Backdrop == BackdropKind.None)
+                        loaded.Backdrop = BackdropKind.Mica;
+                    return loaded;
+                }
             }
         }
         catch
@@ -201,6 +198,54 @@ public sealed class Settings
         catch (Exception ex)
         {
             Logger.Error("Settings.Save failed", ex);
+        }
+    }
+
+    public void SaveFields(params string[] names)
+    {
+        if (names.Length == 0) return;
+        try
+        {
+            string path = PathOnDisk;
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+
+            Dictionary<string, JsonElement>? onDisk = null;
+            if (File.Exists(path))
+            {
+                try
+                {
+                    onDisk = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(File.ReadAllText(path));
+                }
+                catch (Exception ex)
+                {
+                    Logger.Warn($"Settings.SaveFields: existing file is unreadable ({ex.Message}); rewriting it in full.");
+                }
+            }
+
+            if (onDisk is null)
+            {
+                Save();
+                return;
+            }
+
+            var options = new JsonSerializerOptions { WriteIndented = true };
+            var doc = new Dictionary<string, JsonElement>(onDisk, StringComparer.Ordinal);
+            foreach (string name in names)
+            {
+                PropertyInfo? property = typeof(Settings).GetProperty(name, BindingFlags.Public | BindingFlags.Instance);
+                if (property is null || !property.CanRead)
+                {
+                    Logger.Warn($"Settings.SaveFields: '{name}' is not a readable property; ignored.");
+                    continue;
+                }
+                doc[name] = JsonSerializer.SerializeToElement(property.GetValue(this), options);
+            }
+
+            File.WriteAllText(path, JsonSerializer.Serialize(doc, options));
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("Settings.SaveFields failed", ex);
         }
     }
 }
@@ -286,8 +331,8 @@ public readonly struct SaveReplayResult
         SaveReplayOutcome.NoSegments => "Still buffering — nothing to save yet. Try again in a few seconds.",
         SaveReplayOutcome.WriteBlocked =>
             "Save blocked by Windows security. Open Windows Security → Virus & threat protection → " +
-            "Manage ransomware protection → Controlled folder access, and allow ffmpeg.exe (and Instant " +
-            "Replay.exe) through it, then try again.",
+            "Manage ransomware protection → Controlled folder access, and allow Instant Replay.exe " +
+            "through it, then try again.",
         SaveReplayOutcome.MergeFailed => "Failed to save replay (see log for details).",
         _ => "Failed to save replay (see log for details).",
     };
@@ -295,126 +340,101 @@ public readonly struct SaveReplayResult
 
 public sealed class RecorderEngine : IDisposable
 {
-    private const int SegmentSeconds = 1;
-    private const string SegmentBaseName = "seg";
-    private const string SegmentExt = ".ts";
-
-    private const int WatchdogRestartMinutes = 60;
-    private const int WatchdogPollSeconds = 5;
-
     private readonly object _lock = new();
     private readonly object _opLock = new();
     private readonly Settings _settings;
+    private readonly ReplayEngine _engine = new();
 
-    private Process? _process;
-    private DateTime _startTimeUtc;
-    private string _segmentDir = "";
-    private int _segmentWrapCount;
-    private CancellationTokenSource? _watchdogCts;
+    private long _lastHealthTicks = -1;
+    private int _noProgressPolls;
 
-    public RecorderEngine(Settings settings) => _settings = settings;
+    public bool IsAvailable => true;
+
+    public RecorderEngine(Settings settings)
+    {
+        _settings = settings;
+    }
 
     public bool IsRunning
     {
-        get { lock (_lock) return _process is { HasExited: false }; }
+        get
+        {
+            lock (_lock)
+            {
+                _engine.GetStatus(out bool buffering, out _, out _, out _, out _, out _,
+                    out _, out _, out _, out _);
+                return buffering;
+            }
+        }
     }
-
-    private const int StaleSegmentThresholdSeconds = 5;
 
     public bool IsBufferHealthy()
     {
-        string dir;
-        DateTime startTimeUtc;
         lock (_lock)
         {
-            if (_process is not { HasExited: false }) return false;
-            dir = _segmentDir;
-            startTimeUtc = _startTimeUtc;
-        }
-
-        if (string.IsNullOrEmpty(dir)) return false;
-
-        try
-        {
-            DateTime newest = DateTime.MinValue;
-            foreach (var path in Directory.EnumerateFiles(dir, SegmentBaseName + "*" + SegmentExt))
+            _engine.GetStatus(out bool buffering, out _, out _, out _, out _, out bool hasError,
+                out _, out _, out _, out long healthTicks);
+            if (!buffering)
             {
-                var written = File.GetLastWriteTimeUtc(path);
-                if (written > newest) newest = written;
+                _lastHealthTicks = -1;
+                _noProgressPolls = 0;
+                return false;
+            }
+            if (hasError) return false;
+
+            if (_lastHealthTicks < 0)
+            {
+                _lastHealthTicks = healthTicks;
+                return true;
             }
 
-            DateTime reference = newest == DateTime.MinValue ? startTimeUtc : newest;
-            return (DateTime.UtcNow - reference).TotalSeconds < StaleSegmentThresholdSeconds;
-        }
-        catch
-        {
+            if (healthTicks != _lastHealthTicks)
+            {
+                _lastHealthTicks = healthTicks;
+                _noProgressPolls = 0;
+                return true;
+            }
+
+            if (++_noProgressPolls >= 8)
+            {
+                _lastHealthTicks = -1;
+                return false;
+            }
+
             return true;
         }
     }
 
     public List<string> EnumerateMicrophones()
     {
-        var result = new List<string>();
-        if (string.IsNullOrEmpty(_settings.FFmpegPath))
-            return result;
-
-        var psi = new ProcessStartInfo
-        {
-            FileName = _settings.FFmpegPath,
-            Arguments = "-list_devices true -f dshow -i dummy",
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardError = true,
-        };
-
-        string output = "";
-        try
-        {
-            using var proc = Process.Start(psi);
-            if (proc is null) return result;
-
-            Task<string> readTask = proc.StandardError.ReadToEndAsync();
-            if (!proc.WaitForExit(5000))
-                proc.Kill(entireProcessTree: true);
-            output = readTask.Wait(2000) ? readTask.Result : "";
-        }
-        catch (Exception ex)
-        {
-            Logger.Warn($"EnumerateMicrophones failed: {ex.Message}");
-            return result;
-        }
-
-        bool inAudioSection = false;
-        foreach (string rawLine in output.Split('\n'))
-        {
-            string line = rawLine.TrimEnd('\r');
-
-            if (line.Contains("DirectShow audio devices")) { inAudioSection = true; continue; }
-            if (line.Contains("DirectShow video devices")) { inAudioSection = false; continue; }
-
-            bool taggedAudio = line.Contains("(audio)");
-            bool taggedVideo = line.Contains("(video)");
-            if (!taggedAudio && !(inAudioSection && !taggedVideo)) continue;
-
-            int q1 = line.IndexOf('"');
-            if (q1 < 0) continue;
-            int q2 = line.IndexOf('"', q1 + 1);
-            if (q2 < 0) continue;
-
-            string name = line.Substring(q1 + 1, q2 - q1 - 1);
-            if (name == "virtual-audio-capturer") continue;
-
-            result.Add(name);
-        }
-
-        return result;
+        return ReplayEngine.EnumerateMicrophones();
     }
 
-    private static (string Preset, int Crf) ResolveQuality(string qualityPreset) => qualityPreset switch
+    public bool TryGetMicStatus(out long micFrames, out long micEvents, out long micGotFrames,
+        out long micFailHr, out int sysPeak, out int micPeak, out string activeName)
     {
-        "Quality" => ("medium", 18),
-        "Balanced" => ("faster", 20),
-        _ => ("ultrafast", 23),
+        return _engine.TryGetMicStatus(out micFrames, out micEvents, out micGotFrames,
+            out micFailHr, out sysPeak, out micPeak, out activeName);
+    }
+
+    private static int ResolveBitrate(string qualityPreset) => qualityPreset switch
+    {
+        "Quality" => 9000,
+        "Balanced" => 6000,
+        _ => 4000,
+    };
+
+    private static EncoderPreference ResolveEncoder(string choice) => choice switch
+    {
+        "Hardware" => EncoderPreference.Hardware,
+        "Software" => EncoderPreference.Software,
+        _ => EncoderPreference.Auto,
+    };
+
+    private static CaptureMethod ResolveCaptureMethod(string choice) => choice switch
+    {
+        "Dxgi" => CaptureMethod.Dxgi,
+        _ => CaptureMethod.Wgc,
     };
 
     public bool Start(string tempDir, bool wipeSegments = true)
@@ -423,121 +443,40 @@ public sealed class RecorderEngine : IDisposable
         {
             lock (_lock)
             {
-                if (_process is { HasExited: false })
+                if (IsRunning)
                 {
                     Logger.Warn("Start() called while already running; ignoring.");
                     return true;
                 }
             }
 
-            string segmentDir = tempDir;
-            Directory.CreateDirectory(segmentDir);
-            if (wipeSegments) DeleteOldSegments(segmentDir);
+            bool ok = _engine.StartBuffering(
+                monitorIndex: -1,
+                ringSeconds: Math.Max(_settings.ReplayDurationSeconds, 1),
+                fps: _settings.FrameRate,
+                bitrateKbps: ResolveBitrate(_settings.QualityPreset),
+                captureAudio: _settings.RecordSystemAudio,
+                preference: ResolveEncoder(_settings.EncoderChoice),
+                method: ResolveCaptureMethod(_settings.CaptureMethod),
+                captureMic: _settings.RecordMicrophone,
+                micDevice: _settings.Microphone);
 
-            int segmentWrapCount = Math.Max(_settings.ReplayDurationSeconds / SegmentSeconds, 1);
-
-            string mic = _settings.Microphone;
-            if (!string.IsNullOrEmpty(mic))
+            if (!ok)
             {
-                var mics = EnumerateMicrophones();
-                if (!mics.Contains(mic))
-                {
-                    Logger.Warn($"Configured microphone '{mic}' not found; falling back to desktop audio only.");
-                    mic = "";
-                }
-            }
-
-            string outputPattern = Path.Combine(segmentDir, SegmentBaseName + "%d" + SegmentExt);
-
-            string filterComplex = $"ddagrab=framerate={_settings.FrameRate},hwdownload,format=bgra[v]";
-            string audioMap = "0:a";
-            if (!string.IsNullOrEmpty(mic))
-            {
-                filterComplex += ";[0:a][1:a]amix=inputs=2:duration=longest[a]";
-                audioMap = "[a]";
-            }
-
-            var (encPreset, crf) = ResolveQuality(_settings.QualityPreset);
-
-            var args = new StringBuilder();
-            args.Append("-y -nostats -loglevel warning ");
-            args.Append($"-filter_complex \"{filterComplex}\" ");
-            args.Append($"-thread_queue_size 1024 -itsoffset {MsToOffset(_settings.SystemAudioOffsetMs)} -audio_buffer_size 50 -f dshow -i audio=\"virtual-audio-capturer\" ");
-            if (!string.IsNullOrEmpty(mic))
-                args.Append($"-thread_queue_size 1024 -itsoffset {MsToOffset(_settings.MicOffsetMs)} -audio_buffer_size 50 -f dshow -i audio=\"{mic}\" ");
-            args.Append($"-map \"[v]\" -map \"{audioMap}\" ");
-            args.Append($"-c:v libx264 -preset {encPreset} -crf {crf} -pix_fmt yuv420p ");
-            args.Append($"-force_key_frames \"expr:gte(t,n_forced*{SegmentSeconds})\" -sc_threshold 0 ");
-            args.Append("-c:a aac -b:a 160k -ar 44100 -ac 2 ");
-            args.Append($"-f segment -segment_time {SegmentSeconds} -segment_wrap {segmentWrapCount} " +
-                        $"-segment_format mpegts -reset_timestamps 1 \"{outputPattern}\"");
-
-            var psi = new ProcessStartInfo
-            {
-                FileName = _settings.FFmpegPath,
-                Arguments = args.ToString(),
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardInput = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-            };
-
-            var proc = new Process { StartInfo = psi, EnableRaisingEvents = true };
-            const int StderrTailMaxLines = 40;
-            var stderrTail = new Queue<string>(StderrTailMaxLines);
-            var stderrLock = new object();
-            proc.OutputDataReceived += (_, e) => { if (e.Data != null) Logger.Debug($"ffmpeg stdout: {e.Data}"); };
-            proc.ErrorDataReceived += (_, e) =>
-            {
-                if (e.Data == null) return;
-                Logger.Debug($"ffmpeg stderr: {e.Data}");
-                lock (stderrLock)
-                {
-                    if (stderrTail.Count == StderrTailMaxLines) stderrTail.Dequeue();
-                    stderrTail.Enqueue(e.Data);
-                }
-            };
-
-            try
-            {
-                if (!proc.Start())
-                {
-                    Logger.Error("Could not start ffmpeg for video+audio capture.");
-                    return false;
-                }
-            }
-            catch (Exception ex)
-            {
-                Logger.Error("Exception starting ffmpeg", ex);
-                return false;
-            }
-
-            proc.BeginOutputReadLine();
-            proc.BeginErrorReadLine();
-
-            Thread.Sleep(750);
-            if (proc.HasExited)
-            {
-                string tail;
-                lock (stderrLock) tail = string.Join("\n", stderrTail);
-                Logger.Error($"ffmpeg exited immediately (code {proc.ExitCode}). Check the FFmpeg path and microphone setting.\n" +
-                             $"--- ffmpeg stderr (last {StderrTailMaxLines} lines) ---\n{tail}");
+                Logger.Error("Start() failed: managed engine could not start buffering.");
                 return false;
             }
 
             lock (_lock)
             {
-                _process = proc;
-                _startTimeUtc = DateTime.UtcNow;
-                _segmentDir = segmentDir;
-                _segmentWrapCount = segmentWrapCount;
+                _lastHealthTicks = -1;
+                _noProgressPolls = 0;
             }
 
-            Logger.Info($"Video Capture Started - Source: ddagrab, FPS: {_settings.FrameRate}");
-            Logger.Info($"Audio Capture Started - Device: virtual-audio-capturer" + (string.IsNullOrEmpty(mic) ? "" : $" + {mic}"));
-
-            StartWatchdog(tempDir);
+            Logger.Info($"Capture Started - Managed engine, FPS: {_settings.FrameRate}, " +
+                        $"Ring: {_settings.ReplayDurationSeconds}s, " +
+                        $"System audio: {(_settings.RecordSystemAudio ? "on" : "off")}, " +
+                        $"Mic: {(_settings.RecordMicrophone ? (_settings.Microphone.Length > 0 ? _settings.Microphone : "default") : "off")}");
             return true;
         }
     }
@@ -546,35 +485,12 @@ public sealed class RecorderEngine : IDisposable
     {
         lock (_opLock)
         {
-            _watchdogCts?.Cancel();
-            _watchdogCts = null;
-
-            Process? proc;
+            _engine.StopBuffering();
             lock (_lock)
             {
-                proc = _process;
-                _process = null;
+                _lastHealthTicks = -1;
+                _noProgressPolls = 0;
             }
-            if (proc is null) return;
-
-            try
-            {
-                if (!proc.HasExited)
-                {
-                    proc.StandardInput.Write("q\r\n");
-                    proc.StandardInput.Flush();
-                }
-            }
-            catch { }
-
-            try
-            {
-                if (!proc.WaitForExit(3000))
-                    proc.Kill(entireProcessTree: true);
-            }
-            catch { }
-
-            proc.Dispose();
             Logger.Info("Recording stopped.");
         }
     }
@@ -583,54 +499,6 @@ public sealed class RecorderEngine : IDisposable
     {
         Stop();
         return Start(tempDir, wipeSegments);
-    }
-
-    private void StartWatchdog(string tempDir)
-    {
-        _watchdogCts = new CancellationTokenSource();
-        var token = _watchdogCts.Token;
-
-        _ = Task.Run(async () =>
-        {
-            while (!token.IsCancellationRequested)
-            {
-                try { await Task.Delay(TimeSpan.FromSeconds(WatchdogPollSeconds), token); }
-                catch (TaskCanceledException) { break; }
-
-                try
-                {
-                    bool needsRestart;
-                    lock (_lock)
-                    {
-                        if (_process is null)
-                        {
-                            needsRestart = false;
-                        }
-                        else if (_process.HasExited)
-                        {
-                            Logger.Warn($"ffmpeg exited unexpectedly (code {_process.ExitCode}); restarting capture.");
-                            needsRestart = true;
-                        }
-                        else if (DateTime.UtcNow - _startTimeUtc > TimeSpan.FromMinutes(WatchdogRestartMinutes))
-                        {
-                            Logger.Info("Watchdog: periodic restart interval reached; recycling ffmpeg process.");
-                            needsRestart = true;
-                        }
-                        else
-                        {
-                            needsRestart = false;
-                        }
-                    }
-
-                    if (needsRestart && !token.IsCancellationRequested)
-                        Restart(tempDir);
-                }
-                catch (Exception ex)
-                {
-                    Logger.Error("Watchdog iteration failed unexpectedly; continuing to poll.", ex);
-                }
-            }
-        }, token);
     }
 
     public SaveReplayResult SaveReplay(string tempDir, string destDir)
@@ -643,70 +511,16 @@ public sealed class RecorderEngine : IDisposable
 
     private SaveReplayResult SaveReplayCore(string tempDir, string destDir)
     {
-        Process? proc;
         lock (_lock)
         {
-            proc = _process;
-        }
-
-        if (proc is null || proc.HasExited)
-        {
-            Logger.Warn("SaveReplay requested but recorder is not running.");
-            return new SaveReplayResult(SaveReplayOutcome.NotRecording);
-        }
-
-        const int ActiveMargin = 2;
-
-        List<(string Path, DateTime Written, long Length)> allSegments;
-        try
-        {
-            allSegments = Directory.EnumerateFiles(tempDir, SegmentBaseName + "*" + SegmentExt)
-                .Select(p => (Path: p, Written: File.GetLastWriteTimeUtc(p), Length: new FileInfo(p).Length))
-                .ToList();
-        }
-        catch (Exception ex)
-        {
-            Logger.Error("SaveReplay: failed enumerating segments", ex);
-            return new SaveReplayResult(SaveReplayOutcome.MergeFailed);
-        }
-
-        if (allSegments.Count == 0)
-        {
-            Logger.Warn("SaveReplay: no closed segments found yet (nothing recorded this session?).");
-            return new SaveReplayResult(SaveReplayOutcome.NoSegments);
-        }
-
-        allSegments.Sort((a, b) => a.Written.CompareTo(b.Written));
-
-        var segments = allSegments
-            .Take(Math.Max(allSegments.Count - ActiveMargin, 0))
-            .Where(s => s.Length > 0)
-            .Select(s => (s.Path, s.Written))
-            .ToList();
-
-        if (segments.Count == 0)
-        {
-            Logger.Warn("SaveReplay: no closed segments found yet (nothing recorded this session?).");
-            return new SaveReplayResult(SaveReplayOutcome.NoSegments);
-        }
-
-        string listPath = Path.Combine(tempDir, "concat_list.txt");
-        try
-        {
-            var sb = new StringBuilder();
-            foreach (var seg in segments)
-                sb.Append($"file '{seg.Path.Replace("'", "'\\''")}'\n");
-
-            File.WriteAllText(listPath, sb.ToString(), new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
-        }
-        catch (Exception ex)
-        {
-            Logger.Error("SaveReplay: failed writing concat list", ex);
-            return new SaveReplayResult(SaveReplayOutcome.MergeFailed);
+            if (!IsRunning)
+            {
+                Logger.Warn("SaveReplay requested but recorder is not running.");
+                return new SaveReplayResult(SaveReplayOutcome.NotRecording);
+            }
         }
 
         string saveFolder = Path.Combine(destDir, $"replay_{DateTime.Now:yyyyMMdd_HHmmss}");
-
         try
         {
             Directory.CreateDirectory(saveFolder);
@@ -714,66 +528,39 @@ public sealed class RecorderEngine : IDisposable
         catch (Exception ex)
         {
             Logger.Error("SaveReplay: failed creating save folder", ex);
-            try { File.Delete(listPath); } catch { }
             return ProbeWriteBlocked(destDir, ex);
         }
 
         string destMp4 = Path.Combine(saveFolder, "replay.mp4");
-        string args = $"-y -f concat -safe 0 -i \"{listPath}\" -c copy \"{destMp4}\"";
 
+        int rc;
         try
         {
-            var psi = new ProcessStartInfo
-            {
-                FileName = _settings.FFmpegPath,
-                Arguments = args,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardError = true,
-            };
-
-            using var merge = Process.Start(psi);
-            if (merge is null)
-            {
-                CleanupFailedSaveFolder(saveFolder);
-                return new SaveReplayResult(SaveReplayOutcome.MergeFailed);
-            }
-
-            merge.ErrorDataReceived += (_, e) => { if (e.Data != null) Logger.Debug($"ffmpeg (merge) stderr: {e.Data}"); };
-            merge.BeginErrorReadLine();
-
-            if (!merge.WaitForExit(15000))
-            {
-                merge.Kill(entireProcessTree: true);
-                Logger.Error("SaveReplay: merge process timed out.");
-                CleanupFailedSaveFolder(saveFolder);
-                return new SaveReplayResult(SaveReplayOutcome.MergeFailed);
-            }
-
-            bool ok = merge.ExitCode == 0 && File.Exists(destMp4);
-            if (ok)
-            {
-                Logger.Info($"Replay Saved - Path: {destMp4}");
-                return new SaveReplayResult(SaveReplayOutcome.Success, destMp4);
-            }
-
-            Logger.Info("SaveReplay: merge failed.");
-
-            var probeResult = ProbeWriteBlocked(saveFolder, null);
-            CleanupFailedSaveFolder(saveFolder);
-            return probeResult;
+            rc = _engine.SaveReplay(destMp4, Math.Max(_settings.ReplayDurationSeconds, 1));
         }
         catch (Exception ex)
         {
-            Logger.Error("SaveReplay: exception launching merge ffmpeg", ex);
-            var probeResult = ProbeWriteBlocked(destDir, ex);
+            Logger.Error("SaveReplay: exception in managed engine", ex);
             CleanupFailedSaveFolder(saveFolder);
-            return probeResult;
+            return ProbeWriteBlocked(destDir, ex);
         }
-        finally
+
+        if (rc == 0 && File.Exists(destMp4))
         {
-            try { File.Delete(listPath); } catch { }
+            Logger.Info($"Replay Saved - Path: {destMp4}");
+            return new SaveReplayResult(SaveReplayOutcome.Success, destMp4);
         }
+
+        Logger.Info($"SaveReplay: managed engine returned {rc}.");
+
+        if (rc == -1 || rc == -30)
+        {
+            CleanupFailedSaveFolder(saveFolder);
+            return new SaveReplayResult(SaveReplayOutcome.NoSegments);
+        }
+
+        CleanupFailedSaveFolder(saveFolder);
+        return ProbeWriteBlocked(destDir, null);
     }
 
     private static void CleanupFailedSaveFolder(string saveFolder)
@@ -813,29 +600,12 @@ public sealed class RecorderEngine : IDisposable
         return new SaveReplayResult(SaveReplayOutcome.MergeFailed);
     }
 
-    private static void DeleteOldSegments(string dir)
+    public void Dispose()
     {
-        try
-        {
-            foreach (var file in Directory.EnumerateFiles(dir, SegmentBaseName + "*"))
-                File.Delete(file);
-        }
-        catch (Exception ex)
-        {
-            Logger.Warn($"DeleteOldSegments failed: {ex.Message}");
-        }
+        Stop();
+        try { _engine.Shutdown(); }
+        catch (Exception ex) { Logger.Warn($"Engine shutdown failed: {ex.Message}"); }
     }
-
-    private static string MsToOffset(int ms)
-    {
-        bool neg = ms < 0;
-        int absMs = Math.Abs(ms);
-        int whole = absMs / 1000;
-        int frac = absMs % 1000;
-        return $"{(neg ? "-" : "")}{whole}.{frac:D3}";
-    }
-
-    public void Dispose() => Stop();
 }
 
 public static class StartupManager
@@ -903,4 +673,398 @@ public static class StartupManager
         string exe = Environment.ProcessPath ?? "InstantReplay.exe";
         return $"\"{exe}\" --tray";
     }
+}
+
+internal static class IrNative
+{
+    internal const int OK = 0;
+    internal const int Fail = -1;
+    internal const int NotEnoughData = -30;
+
+    private const string Dll = "engine";
+
+    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int IR_Create(out IntPtr engine);
+
+    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern void IR_Destroy(IntPtr engine);
+
+    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int IR_Start(IntPtr engine, int monitorIndex, int ringSeconds,
+        int fps, int bitrateKbps, int capW, int capH, int captureAudio, int captureMic,
+        [MarshalAs(UnmanagedType.LPWStr)] string micDevice,
+        int encoderPreference, int captureMethod, out long startQpc100ns);
+
+    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern void IR_Stop(IntPtr engine);
+
+    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int IR_Save(IntPtr engine,
+        [MarshalAs(UnmanagedType.LPWStr)] string outPath, int secondsBack);
+
+    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern void IR_GetStatus(IntPtr engine, out int isBuffering,
+        out int ringSeconds, out long framesEncoded, out long framesDropped,
+        out int hasError, out long audioFrames, out long audioEvents,
+        out long audioGotFrames, out long healthHeartbeat);
+
+    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int IR_GetMonitorCount();
+
+    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern void IR_GetMonitorInfo(int index,
+        [MarshalAs(UnmanagedType.LPWStr)] StringBuilder name, int nameCap,
+        out int width, out int height);
+
+    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int IR_IsDxgiSupported();
+
+    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int IR_DxgiDuplicationSupported();
+
+    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int IR_ActiveCaptureMethod(IntPtr engine);
+
+    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int IR_ActiveEncoder(IntPtr engine);
+
+    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int IR_HwInitHr(IntPtr engine);
+
+    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int IR_GetMicDeviceCount();
+
+    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern void IR_GetMicDeviceName(int index,
+        [MarshalAs(UnmanagedType.LPWStr)] StringBuilder name, int nameCap);
+
+    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern void IR_MicStatus(IntPtr engine, out long micFrames, out long micEvents,
+        out long micGotFrames, out long micFailHr, out int sysPeak, out int micPeak,
+        [MarshalAs(UnmanagedType.LPWStr)] StringBuilder activeName, int nameCap);
+
+    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern IntPtr IR_Version();
+
+    internal static string Version()
+    {
+        try { return Marshal.PtrToStringAnsi(IR_Version()) ?? ""; }
+        catch { return ""; }
+    }
+}
+
+public enum EncoderPreference
+{
+    Auto = 0,
+    Hardware = 1,
+    Software = 2,
+}
+
+public enum CaptureMethod
+{
+    Wgc = 0,
+    Dxgi = 1,
+}
+
+public sealed class ReplayEngine : IDisposable
+{
+    public static bool DxgiDuplicationSupported()
+    {
+        try { return IrNative.IR_DxgiDuplicationSupported() == 1; }
+        catch { return false; }
+    }
+    public const int SaveOk = IrNative.OK;
+    public const int SaveFailed = IrNative.Fail;
+    public const int SaveNotEnoughData = IrNative.NotEnoughData;
+
+    private readonly object _opLock = new();
+    private IntPtr _engine;
+
+    private volatile bool _hasError;
+    private string _lastVersion = "";
+
+    public ReplayEngine()
+    {
+        try { _lastVersion = IrNative.Version(); }
+        catch (Exception ex)
+        {
+            Logger.Warn($"[Engine] Could not load engine.dll: {ex.Message}");
+            _lastVersion = "";
+        }
+    }
+
+    public bool Initialize()
+    {
+        lock (_opLock)
+        {
+            if (_engine != IntPtr.Zero) return true;
+            int rc = IrNative.IR_Create(out IntPtr handle);
+            if (rc != IrNative.OK || handle == IntPtr.Zero)
+            {
+                _hasError = true;
+                Logger.Error("[Engine] IR_Create failed; native engine not available.");
+                return false;
+            }
+            _engine = handle;
+            Logger.Info($"[Engine] Native engine created (version {_lastVersion}).");
+            return true;
+        }
+    }
+
+    public bool StartBuffering(int monitorIndex, int ringSeconds, int fps, int bitrateKbps,
+        bool captureAudio, EncoderPreference preference, CaptureMethod method = CaptureMethod.Wgc,
+        bool captureMic = false, string? micDevice = null)
+    {
+        lock (_opLock)
+        {
+            GetStatus(out bool buffering, out _, out _, out _, out _, out _, out _, out _, out _, out _);
+            if (buffering) return true;
+            if (!Initialize()) return false;
+
+            int mon = monitorIndex;
+            int secs = Math.Max(ringSeconds, 1);
+            int rate = Math.Clamp(fps, 15, 240);
+            int bps = Math.Max(bitrateKbps, 1);
+            var (capW, capH) = ResolutionCap(preference);
+
+            if (method == CaptureMethod.Dxgi && IrNative.IR_DxgiDuplicationSupported() == 0)
+            {
+                _hasError = true;
+                Logger.Error("[Engine] DXGI capture requested, but no desktop duplication could be opened. " +
+                             "Another screen recorder or remote-desktop tool is probably already capturing this monitor.");
+                return false;
+            }
+
+            long origin;
+            string wantedMic = (micDevice ?? "").Trim();
+            int rc = IrNative.IR_Start(_engine, mon, secs, rate, bps, capW, capH,
+                captureAudio ? 1 : 0, captureMic ? 1 : 0,
+                captureMic ? wantedMic : string.Empty,
+                (int)preference, (int)method, out origin);
+            if (rc != IrNative.OK)
+            {
+                _hasError = true;
+                Logger.Error($"[Engine] IR_Start failed (rc={rc}). Capture could not start.");
+                return false;
+            }
+
+            if (captureMic) ReportMicStartup(wantedMic);
+
+            _hasError = false;
+            int active = IrNative.IR_ActiveEncoder(_engine);
+            int hwHr = IrNative.IR_HwInitHr(_engine);
+            string encName = active switch
+            {
+                4 => "hardware (Media Foundation, GPU shaders, zero-copy)",
+                2 => "hardware (Media Foundation, CPU upload)",
+                1 => "software (Microsoft H.264 MFT)",
+                _ => "unknown",
+            };
+            Logger.Info($"[Engine] Encoder: {encName} (requested {preference}){(hwHr != 0 && active != 4 ? $", GPU/hardware path unavailable: HRESULT 0x{hwHr:X8}" : "")}");
+
+            int activeCap = IrNative.IR_ActiveCaptureMethod(_engine);
+            string capName = activeCap == 1 ? "DXGI duplication" : "WGC";
+            Logger.Info($"[Engine] Buffering started ({capName}): monitor {mon}, {rate} fps, {secs}s ring, bitrate {bps} kbps, cap {capW}x{capH}, audio={(captureAudio ? "on" : "off")}");
+            return true;
+        }
+    }
+
+    public void StopBuffering()
+    {
+        lock (_opLock)
+        {
+            if (_engine != IntPtr.Zero)
+            {
+                try { IrNative.IR_Stop(_engine); } catch { }
+            }
+            Logger.Info("[Engine] Buffering stopped");
+        }
+    }
+
+    public int SaveReplay(string outPath, int secondsBack)
+    {
+        lock (_opLock)
+        {
+            if (_engine == IntPtr.Zero) return SaveFailed;
+            if (string.IsNullOrWhiteSpace(outPath)) return SaveFailed;
+            int rc = IrNative.IR_Save(_engine, outPath, Math.Max(secondsBack, 1));
+            Logger.Info($"[Engine] IR_Save('{outPath}', {secondsBack}s) -> rc={rc}");
+            return rc;
+        }
+    }
+
+    public void GetStatus(out bool isBuffering, out int segmentCount, out int ringSeconds,
+        out long framesEncoded, out long framesDropped, out bool hasError,
+        out long audioFrames, out long audioEvents, out long audioGotFrames, out long healthHeartbeat)
+    {
+        if (_engine == IntPtr.Zero)
+        {
+            isBuffering = false;
+            segmentCount = 0;
+            ringSeconds = 0;
+            framesEncoded = 0;
+            framesDropped = 0;
+            hasError = _hasError;
+            audioFrames = 0;
+            audioEvents = 0;
+            audioGotFrames = 0;
+            healthHeartbeat = 0;
+            return;
+        }
+
+        int ib, rs, he;
+        long fe, fd, af, ae, agf, hb;
+        IrNative.IR_GetStatus(_engine, out ib, out rs, out fe, out fd, out he, out af, out ae, out agf, out hb);
+        isBuffering = ib != 0;
+        segmentCount = 0;
+        ringSeconds = rs;
+        framesEncoded = fe;
+        framesDropped = fd;
+        hasError = he != 0 || _hasError;
+        audioFrames = af;
+        audioEvents = ae;
+        audioGotFrames = agf;
+        healthHeartbeat = hb;
+    }
+
+    public static List<(int Index, string Name)> EnumerateMonitors()
+    {
+        var result = new List<(int, string)>();
+        try
+        {
+            int count = IrNative.IR_GetMonitorCount();
+            for (int i = 0; i < count; ++i)
+            {
+                var sb = new StringBuilder(256);
+                IrNative.IR_GetMonitorInfo(i, sb, sb.Capacity, out _, out _);
+                result.Add((i, sb.ToString()));
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"[Engine] EnumerateMonitors failed: {ex.Message}");
+        }
+        return result;
+    }
+
+    public static List<string> EnumerateMicrophones()
+    {
+        var result = new List<string>();
+        try
+        {
+            int count = IrNative.IR_GetMicDeviceCount();
+            for (int i = 0; i < count; ++i)
+            {
+                var sb = new StringBuilder(512);
+                IrNative.IR_GetMicDeviceName(i, sb, sb.Capacity);
+                string name = sb.ToString().Trim();
+                if (name.Length > 0 && !result.Contains(name)) result.Add(name);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"[Engine] EnumerateMicrophones failed: {ex.Message}");
+        }
+        return result;
+    }
+
+    public bool TryGetMicStatus(out long micFrames, out long micEvents, out long micGotFrames,
+        out long micFailHr, out int sysPeak, out int micPeak, out string activeName)
+    {
+        micFrames = 0;
+        micEvents = 0;
+        micGotFrames = 0;
+        micFailHr = 0;
+        sysPeak = 0;
+        micPeak = 0;
+        activeName = "";
+        if (_engine == IntPtr.Zero) return false;
+        try
+        {
+            var sb = new StringBuilder(512);
+            IrNative.IR_MicStatus(_engine, out micFrames, out micEvents, out micGotFrames,
+                out micFailHr, out sysPeak, out micPeak, sb, sb.Capacity);
+            activeName = sb.ToString().Trim();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"[Engine] IR_MicStatus failed: {ex.Message}");
+            return false;
+        }
+    }
+
+    private void ReportMicStartup(string requested)
+    {
+        if (!TryGetMicStatus(out _, out _, out long got, out long failHr, out int sysPeak,
+            out int micPeak, out string active))
+        {
+            Logger.Warn("[Engine] Microphone capture requested but engine status is unavailable.");
+            return;
+        }
+
+        if (failHr != 0)
+        {
+            string reason = failHr switch
+            {
+                -1 => "COM could not be initialised on the capture thread",
+                -2 => "the capture stream stopped or could not be opened",
+                -3 => "no capture device matched and there is no default",
+                _ => $"internal error {failHr}",
+            };
+            Logger.Error($"[Engine] Microphone capture failed: {reason}.");
+            return;
+        }
+
+        if (active.Length == 0)
+        {
+            Logger.Warn($"[Engine] Microphone capture requested ('{requested}') but no device is open.");
+            return;
+        }
+
+        if (requested.Length > 0 && !string.Equals(active, requested, StringComparison.OrdinalIgnoreCase))
+            Logger.Warn($"[Engine] Microphone '{requested}' is unavailable, using '{active}' instead.");
+        else
+            Logger.Info($"[Engine] Microphone capture: '{active}'.");
+
+        if (got == 0)
+            Logger.Warn($"[Engine] Microphone '{active}' has not delivered any audio yet; " +
+                        "check the Windows privacy setting for microphone access and that no other app is holding it exclusively.");
+        else if (micPeak == 0)
+            Logger.Warn($"[Engine] Microphone '{active}' is delivering silence " +
+                        $"(system audio peak={sysPeak}); it will be recorded but muted.");
+        else
+            Logger.Info($"[Engine] Microphone '{active}' peak={micPeak}, system audio peak={sysPeak}.");
+    }
+
+    public static bool IsDxgiSupported()
+    {
+        try { return IrNative.IR_IsDxgiSupported() != 0; }
+        catch { return false; }
+    }
+
+    private static (int, int) ResolutionCap(EncoderPreference preference)
+    {
+        return preference switch
+        {
+            EncoderPreference.Hardware => (1920, 1080),
+            EncoderPreference.Software => (1920, 1080),
+            _ => (1600, 900),
+        };
+    }
+
+    public void Shutdown()
+    {
+        lock (_opLock)
+        {
+            StopBuffering();
+            if (_engine != IntPtr.Zero)
+            {
+                try { IrNative.IR_Destroy(_engine); } catch { }
+                _engine = IntPtr.Zero;
+            }
+        }
+    }
+
+    public void Dispose() => Shutdown();
 }

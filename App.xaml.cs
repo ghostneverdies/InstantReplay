@@ -1,7 +1,4 @@
-using System;
 using System.Diagnostics;
-using System.Linq;
-using System.Threading;
 using Microsoft.UI.Xaml;
 
 namespace InstantReplay;
@@ -22,7 +19,8 @@ public partial class App : Application
         InitializeComponent();
         UnhandledException += (_, e) =>
         {
-            Logger.Warn($"Unhandled exception: {e.Exception}");
+            Logger.Error($"Unhandled exception: {e.Exception}", e.Exception);
+            e.Handled = true;
         };
     }
 

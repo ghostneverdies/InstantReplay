@@ -3,22 +3,38 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:local="using:InstantReplay">
 
-    <ThemeResource x:Key="ButtonBackground" ResourceKey="SurfaceBorderBrush"/>
-    <ThemeResource x:Key="ButtonBackgroundPointerOver" ResourceKey="SurfaceBorderBrush"/>
-    <ThemeResource x:Key="ButtonBackgroundPressed" ResourceKey="SurfaceBorderBrush"/>
-    <ThemeResource x:Key="ButtonForeground" ResourceKey="TextPrimaryBrush"/>
-    <ThemeResource x:Key="ButtonForegroundPointerOver" ResourceKey="TextPrimaryBrush"/>
-    <ThemeResource x:Key="ButtonForegroundPressed" ResourceKey="TextPrimaryBrush"/>
+    <ThemeResource x:Key="ButtonBackground"
+            ResourceKey="SurfaceBorderBrush"/>
+    <ThemeResource x:Key="ButtonBackgroundPointerOver"
+            ResourceKey="SurfaceBorderBrush"/>
+    <ThemeResource x:Key="ButtonBackgroundPressed"
+            ResourceKey="SurfaceBorderBrush"/>
+    <ThemeResource x:Key="ButtonForeground"
+            ResourceKey="TextPrimaryBrush"/>
+    <ThemeResource x:Key="ButtonForegroundPointerOver"
+            ResourceKey="TextPrimaryBrush"/>
+    <ThemeResource x:Key="ButtonForegroundPressed"
+            ResourceKey="TextPrimaryBrush"/>
     <CornerRadius x:Key="ControlCornerRadius">8</CornerRadius>
 
-    <Style x:Key="AccentButtonStyle" TargetType="Button">
-        <Setter Property="Background" Value="{ThemeResource AccentBrush}"/>
-        <Setter Property="Foreground" Value="{ThemeResource AccentTextBrush}"/>
-        <Setter Property="FontFamily" Value="Segoe UI Variable"/>
-        <Setter Property="FontSize" Value="14"/>
-        <Setter Property="Padding" Value="{StaticResource ButtonPadding}"/>
-        <Setter Property="HorizontalContentAlignment" Value="Center"/>
-        <Setter Property="CornerRadius" Value="8"/>
+    <Style x:Key="AccentButtonStyle"
+            TargetType="Button">
+        <Setter Property="local:UiHover.IsEnabled"
+                Value="True"/>
+        <Setter Property="Background"
+                Value="{ThemeResource AccentBrush}"/>
+        <Setter Property="Foreground"
+                Value="{ThemeResource AccentTextBrush}"/>
+        <Setter Property="FontFamily"
+                Value="Segoe UI Variable"/>
+        <Setter Property="FontSize"
+                Value="14"/>
+        <Setter Property="Padding"
+                Value="{StaticResource ButtonPadding}"/>
+        <Setter Property="HorizontalContentAlignment"
+                Value="Center"/>
+        <Setter Property="CornerRadius"
+                Value="8"/>
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="Button">
@@ -28,22 +44,26 @@
                                 <VisualState x:Name="Normal"/>
                                 <VisualState x:Name="PointerOver">
                                     <VisualState.Setters>
-                                        <Setter Target="RootBorder.Opacity" Value="0.9"/>
+                                        <Setter Target="RootBorder.Opacity"
+                                                Value="0.9"/>
                                     </VisualState.Setters>
                                 </VisualState>
                                 <VisualState x:Name="Pressed">
                                     <VisualState.Setters>
-                                        <Setter Target="RootBorder.Opacity" Value="0.8"/>
+                                        <Setter Target="RootBorder.Opacity"
+                                                Value="0.8"/>
                                     </VisualState.Setters>
                                 </VisualState>
                                 <VisualState x:Name="Disabled">
                                     <VisualState.Setters>
-                                        <Setter Target="RootBorder.Opacity" Value="0.4"/>
+                                        <Setter Target="RootBorder.Opacity"
+                                                Value="0.4"/>
                                     </VisualState.Setters>
                                 </VisualState>
                             </VisualStateGroup>
                         </VisualStateManager.VisualStateGroups>
-                        <Border x:Name="RootBorder" Background="{TemplateBinding Background}"
+                        <Border x:Name="RootBorder"
+                                Background="{TemplateBinding Background}"
                                 CornerRadius="{TemplateBinding CornerRadius}"
                                 Padding="{TemplateBinding Padding}">
                             <ContentPresenter Content="{TemplateBinding Content}"
@@ -57,14 +77,24 @@
         </Setter>
     </Style>
 
-    <Style x:Key="BaseButtonStyle" TargetType="Button">
-        <Setter Property="Background" Value="{ThemeResource SurfaceBorderBrush}"/>
-        <Setter Property="Foreground" Value="{ThemeResource TextPrimaryBrush}"/>
-        <Setter Property="FontFamily" Value="Segoe UI Variable"/>
-        <Setter Property="FontSize" Value="14"/>
-        <Setter Property="Padding" Value="{StaticResource ButtonPadding}"/>
-        <Setter Property="HorizontalContentAlignment" Value="Center"/>
-        <Setter Property="CornerRadius" Value="8"/>
+    <Style x:Key="BaseButtonStyle"
+            TargetType="Button">
+        <Setter Property="local:UiHover.IsEnabled"
+                Value="True"/>
+        <Setter Property="Background"
+                Value="{ThemeResource SurfaceBorderBrush}"/>
+        <Setter Property="Foreground"
+                Value="{ThemeResource TextPrimaryBrush}"/>
+        <Setter Property="FontFamily"
+                Value="Segoe UI Variable"/>
+        <Setter Property="FontSize"
+                Value="14"/>
+        <Setter Property="Padding"
+                Value="{StaticResource ButtonPadding}"/>
+        <Setter Property="HorizontalContentAlignment"
+                Value="Center"/>
+        <Setter Property="CornerRadius"
+                Value="8"/>
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="Button">
@@ -74,22 +104,26 @@
                                 <VisualState x:Name="Normal"/>
                                 <VisualState x:Name="PointerOver">
                                     <VisualState.Setters>
-                                        <Setter Target="RootBorder.Opacity" Value="0.85"/>
+                                        <Setter Target="RootBorder.Opacity"
+                                                Value="0.85"/>
                                     </VisualState.Setters>
                                 </VisualState>
                                 <VisualState x:Name="Pressed">
                                     <VisualState.Setters>
-                                        <Setter Target="RootBorder.Opacity" Value="0.75"/>
+                                        <Setter Target="RootBorder.Opacity"
+                                                Value="0.75"/>
                                     </VisualState.Setters>
                                 </VisualState>
                                 <VisualState x:Name="Disabled">
                                     <VisualState.Setters>
-                                        <Setter Target="RootBorder.Opacity" Value="0.4"/>
+                                        <Setter Target="RootBorder.Opacity"
+                                                Value="0.4"/>
                                     </VisualState.Setters>
                                 </VisualState>
                             </VisualStateGroup>
                         </VisualStateManager.VisualStateGroups>
-                        <Border x:Name="RootBorder" Background="{TemplateBinding Background}"
+                        <Border x:Name="RootBorder"
+                                Background="{TemplateBinding Background}"
                                 CornerRadius="{TemplateBinding CornerRadius}"
                                 Padding="{TemplateBinding Padding}">
                             <ContentPresenter Content="{TemplateBinding Content}"
@@ -103,43 +137,254 @@
         </Setter>
     </Style>
 
-    <Style x:Key="StepperButtonStyle" TargetType="Button" BasedOn="{StaticResource BaseButtonStyle}">
-        <Setter Property="Width" Value="{StaticResource StepperButtonSize}"/>
-        <Setter Property="Height" Value="{StaticResource StepperButtonSize}"/>
-        <Setter Property="Padding" Value="0"/>
-        <Setter Property="FontSize" Value="15"/>
+    <Style x:Key="TitleBarIconButtonStyle"
+            TargetType="Button">
+        <Setter Property="local:UiHover.IsEnabled"
+                Value="True"/>
+        <Setter Property="Background"
+                Value="Transparent"/>
+        <Setter Property="Height"
+                Value="32"/>
+        <Setter Property="Padding"
+                Value="0"/>
+        <Setter Property="HorizontalContentAlignment"
+                Value="Center"/>
+        <Setter Property="VerticalContentAlignment"
+                Value="Center"/>
+        <Setter Property="CornerRadius"
+                Value="0"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Grid>
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal"/>
+                                <VisualState x:Name="PointerOver">
+                                    <VisualState.Setters>
+                                        <Setter Target="RootBorder.Background"
+                                                Value="{ThemeResource TitleBarHoverBrush}"/>
+                                    </VisualState.Setters>
+                                </VisualState>
+                                <VisualState x:Name="Pressed">
+                                    <VisualState.Setters>
+                                        <Setter Target="RootBorder.Background"
+                                                Value="{ThemeResource TitleBarPressedBrush}"/>
+                                    </VisualState.Setters>
+                                </VisualState>
+                                <VisualState x:Name="Disabled">
+                                    <VisualState.Setters>
+                                        <Setter Target="RootBorder.Opacity"
+                                                Value="0.4"/>
+                                    </VisualState.Setters>
+                                </VisualState>
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                        <Border x:Name="RootBorder"
+                                Background="{TemplateBinding Background}"
+                                CornerRadius="{TemplateBinding CornerRadius}">
+                            <ContentPresenter Content="{TemplateBinding Content}"
+                                              Foreground="{TemplateBinding Foreground}"
+                                              HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                              VerticalAlignment="{TemplateBinding VerticalContentAlignment}"/>
+                        </Border>
+                    </Grid>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
     </Style>
 
-    <ThemeResource x:Key="ComboBoxBackground" ResourceKey="BgBrush"/>
-    <ThemeResource x:Key="ComboBoxBackgroundPointerOver" ResourceKey="BgBrush"/>
-    <ThemeResource x:Key="ComboBoxForeground" ResourceKey="TextPrimaryBrush"/>
-    <ThemeResource x:Key="ComboBoxBorderBrush" ResourceKey="SurfaceBorderBrush"/>
-    <ThemeResource x:Key="ComboBoxDropDownBackground" ResourceKey="SurfaceBrush"/>
-    <ThemeResource x:Key="ComboBoxItemBackgroundSelected" ResourceKey="AccentDimBrush"/>
-    <ThemeResource x:Key="ComboBoxItemForegroundSelected" ResourceKey="TextPrimaryBrush"/>
+    <Style x:Key="TitleBarCloseButtonStyle"
+            TargetType="Button">
+        <Setter Property="local:UiHover.IsEnabled"
+                Value="True"/>
+        <Setter Property="Background"
+                Value="Transparent"/>
+        <Setter Property="Height"
+                Value="32"/>
+        <Setter Property="Padding"
+                Value="0"/>
+        <Setter Property="HorizontalContentAlignment"
+                Value="Center"/>
+        <Setter Property="VerticalContentAlignment"
+                Value="Center"/>
+        <Setter Property="CornerRadius"
+                Value="0"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Grid>
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal"/>
+                                <VisualState x:Name="PointerOver">
+                                    <VisualState.Setters>
+                                        <Setter Target="RootBorder.Background"
+                                                Value="#C42B1C"/>
+                                        <Setter Target="ContentPresenter.Foreground"
+                                                Value="#FFFFFF"/>
+                                    </VisualState.Setters>
+                                </VisualState>
+                                <VisualState x:Name="Pressed">
+                                    <VisualState.Setters>
+                                        <Setter Target="RootBorder.Background"
+                                                Value="#B02418"/>
+                                        <Setter Target="ContentPresenter.Foreground"
+                                                Value="#FFFFFF"/>
+                                    </VisualState.Setters>
+                                </VisualState>
+                                <VisualState x:Name="Disabled">
+                                    <VisualState.Setters>
+                                        <Setter Target="RootBorder.Opacity"
+                                                Value="0.4"/>
+                                    </VisualState.Setters>
+                                </VisualState>
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                        <Border x:Name="RootBorder"
+                                Background="{TemplateBinding Background}"
+                                CornerRadius="{TemplateBinding CornerRadius}">
+                            <ContentPresenter Content="{TemplateBinding Content}"
+                                              Foreground="{TemplateBinding Foreground}"
+                                              HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                              VerticalAlignment="{TemplateBinding VerticalContentAlignment}"/>
+                        </Border>
+                    </Grid>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
 
-    <ThemeResource x:Key="TextControlBackground" ResourceKey="BgBrush"/>
-    <ThemeResource x:Key="TextControlBackgroundPointerOver" ResourceKey="BgBrush"/>
-    <ThemeResource x:Key="TextControlBackgroundFocused" ResourceKey="BgBrush"/>
-    <ThemeResource x:Key="TextControlBorderBrush" ResourceKey="SurfaceBorderBrush"/>
-    <ThemeResource x:Key="TextControlBorderBrushPointerOver" ResourceKey="AccentBrush"/>
-    <ThemeResource x:Key="TextControlBorderBrushFocused" ResourceKey="AccentBrush"/>
-    <ThemeResource x:Key="TextControlForeground" ResourceKey="TextPrimaryBrush"/>
-    <ThemeResource x:Key="TextControlForegroundFocused" ResourceKey="TextPrimaryBrush"/>
+    <Style x:Key="StepperButtonStyle"
+            TargetType="Button"
+            BasedOn="{StaticResource BaseButtonStyle}">
+        <Setter Property="Width"
+                Value="{StaticResource StepperButtonSize}"/>
+        <Setter Property="Height"
+                Value="{StaticResource StepperButtonSize}"/>
+        <Setter Property="Padding"
+                Value="0"/>
+        <Setter Property="FontSize"
+                Value="15"/>
+    </Style>
 
-    <ThemeResource x:Key="ToggleSwitchFillOff" ResourceKey="SurfaceBorderBrush"/>
-    <ThemeResource x:Key="ToggleSwitchFillOn" ResourceKey="AccentBrush"/>
-    <ThemeResource x:Key="ToggleSwitchFillOnPointerOver" ResourceKey="AccentBrush"/>
-    <ThemeResource x:Key="ToggleSwitchStrokeOff" ResourceKey="SurfaceBorderBrush"/>
-    <ThemeResource x:Key="ToggleSwitchStrokeOn" ResourceKey="AccentBrush"/>
-    <ThemeResource x:Key="ToggleSwitchKnobFillOff" ResourceKey="TextMutedBrush"/>
-    <ThemeResource x:Key="ToggleSwitchKnobFillOn" ResourceKey="AccentTextBrush"/>
+    <Style x:Key="DangerButtonStyle"
+            TargetType="Button">
+        <Setter Property="local:UiHover.IsEnabled"
+                Value="True"/>
+        <Setter Property="Background"
+                Value="{ThemeResource RecBrush}"/>
+        <Setter Property="Foreground"
+                Value="#FFFFFF"/>
+        <Setter Property="FontFamily"
+                Value="Segoe UI Variable"/>
+        <Setter Property="FontSize"
+                Value="14"/>
+        <Setter Property="Padding"
+                Value="{StaticResource ButtonPadding}"/>
+        <Setter Property="HorizontalContentAlignment"
+                Value="Center"/>
+        <Setter Property="CornerRadius"
+                Value="8"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Grid>
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal"/>
+                                <VisualState x:Name="PointerOver">
+                                    <VisualState.Setters>
+                                        <Setter Target="RootBorder.Background"
+                                                Value="#C12E33"/>
+                                    </VisualState.Setters>
+                                </VisualState>
+                                <VisualState x:Name="Pressed">
+                                    <VisualState.Setters>
+                                        <Setter Target="RootBorder.Background"
+                                                Value="#AB2429"/>
+                                    </VisualState.Setters>
+                                </VisualState>
+                                <VisualState x:Name="Disabled">
+                                    <VisualState.Setters>
+                                        <Setter Target="RootBorder.Opacity"
+                                                Value="0.4"/>
+                                    </VisualState.Setters>
+                                </VisualState>
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                        <Border x:Name="RootBorder"
+                                Background="{TemplateBinding Background}"
+                                CornerRadius="{TemplateBinding CornerRadius}"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter Content="{TemplateBinding Content}"
+                                              Foreground="{TemplateBinding Foreground}"
+                                              HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                              VerticalAlignment="Center"/>
+                        </Border>
+                    </Grid>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
 
-    <Style x:Key="NavItemStyle" TargetType="RadioButton">
-        <Setter Property="Padding" Value="8,0"/>
-        <Setter Property="Height" Value="{StaticResource NavItemHeight}"/>
-        <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
-        <Setter Property="Foreground" Value="{ThemeResource TextMutedBrush}"/>
+    <ThemeResource x:Key="ComboBoxBackground"
+            ResourceKey="BgBrush"/>
+    <ThemeResource x:Key="ComboBoxBackgroundPointerOver"
+            ResourceKey="BgBrush"/>
+    <ThemeResource x:Key="ComboBoxForeground"
+            ResourceKey="TextPrimaryBrush"/>
+    <ThemeResource x:Key="ComboBoxBorderBrush"
+            ResourceKey="SurfaceBorderBrush"/>
+    <ThemeResource x:Key="ComboBoxDropDownBackground"
+            ResourceKey="SurfaceBrush"/>
+    <ThemeResource x:Key="ComboBoxItemBackgroundSelected"
+            ResourceKey="AccentDimBrush"/>
+    <ThemeResource x:Key="ComboBoxItemForegroundSelected"
+            ResourceKey="TextPrimaryBrush"/>
+
+    <ThemeResource x:Key="TextControlBackground"
+            ResourceKey="BgBrush"/>
+    <ThemeResource x:Key="TextControlBackgroundPointerOver"
+            ResourceKey="BgBrush"/>
+    <ThemeResource x:Key="TextControlBackgroundFocused"
+            ResourceKey="BgBrush"/>
+    <ThemeResource x:Key="TextControlBorderBrush"
+            ResourceKey="SurfaceBorderBrush"/>
+    <ThemeResource x:Key="TextControlBorderBrushPointerOver"
+            ResourceKey="AccentBrush"/>
+    <ThemeResource x:Key="TextControlBorderBrushFocused"
+            ResourceKey="AccentBrush"/>
+    <ThemeResource x:Key="TextControlForeground"
+            ResourceKey="TextPrimaryBrush"/>
+    <ThemeResource x:Key="TextControlForegroundFocused"
+            ResourceKey="TextPrimaryBrush"/>
+
+    <ThemeResource x:Key="ToggleSwitchFillOff"
+            ResourceKey="SurfaceBorderBrush"/>
+    <ThemeResource x:Key="ToggleSwitchFillOn"
+            ResourceKey="AccentBrush"/>
+    <ThemeResource x:Key="ToggleSwitchFillOnPointerOver"
+            ResourceKey="AccentBrush"/>
+    <ThemeResource x:Key="ToggleSwitchStrokeOff"
+            ResourceKey="SurfaceBorderBrush"/>
+    <ThemeResource x:Key="ToggleSwitchStrokeOn"
+            ResourceKey="AccentBrush"/>
+    <ThemeResource x:Key="ToggleSwitchKnobFillOff"
+            ResourceKey="TextMutedBrush"/>
+    <ThemeResource x:Key="ToggleSwitchKnobFillOn"
+            ResourceKey="AccentTextBrush"/>
+
+    <Style x:Key="NavItemStyle"
+            TargetType="RadioButton">
+        <Setter Property="Padding"
+                Value="8,0"/>
+        <Setter Property="Height"
+                Value="{StaticResource NavItemHeight}"/>
+        <Setter Property="HorizontalContentAlignment"
+                Value="Stretch"/>
+        <Setter Property="Foreground"
+                Value="{ThemeResource TextMutedBrush}"/>
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="RadioButton">
@@ -149,8 +394,10 @@
                                 <VisualState x:Name="Normal"/>
                                 <VisualState x:Name="PointerOver">
                                     <VisualState.Setters>
-                                        <Setter Target="HoverBorder.Opacity" Value="1"/>
-                                        <Setter Target="ContentPresenter.Foreground" Value="{ThemeResource TextPrimaryBrush}"/>
+                                        <Setter Target="HoverBorder.Opacity"
+                                                Value="1"/>
+                                        <Setter Target="ContentPresenter.Foreground"
+                                                Value="{ThemeResource TextPrimaryBrush}"/>
                                     </VisualState.Setters>
                                 </VisualState>
                             </VisualStateGroup>
@@ -158,77 +405,197 @@
                                 <VisualState x:Name="Unchecked"/>
                                 <VisualState x:Name="Checked">
                                     <VisualState.Setters>
-                                        <Setter Target="CheckBackground.Opacity" Value="1"/>
-                                        <Setter Target="AccentBar.Opacity" Value="1"/>
-                                        <Setter Target="ContentPresenter.Foreground" Value="{ThemeResource AccentTextBrush}"/>
+                                        <Setter Target="CheckBackground.Opacity"
+                                                Value="1"/>
+                                        <Setter Target="AccentBar.Opacity"
+                                                Value="1"/>
+                                        <Setter Target="ContentPresenter.Foreground"
+                                                Value="{ThemeResource AccentTextBrush}"/>
                                     </VisualState.Setters>
                                 </VisualState>
                             </VisualStateGroup>
                             <VisualStateGroup x:Name="SidebarStates">
                                 <VisualState x:Name="SidebarExpanded">
                                     <VisualState.Setters>
-                                        <Setter Target="CheckBackground.Width" Value="161"/>
-                                        <Setter Target="HoverBorder.Width" Value="161"/>
+                                        <Setter Target="CheckBackground.Width"
+                                                Value="161"/>
+                                        <Setter Target="HoverBorder.Width"
+                                                Value="161"/>
                                     </VisualState.Setters>
                                 </VisualState>
                                 <VisualState x:Name="SidebarCollapsed">
                                     <VisualState.Setters>
-                                        <Setter Target="CheckBackground.Width" Value="40"/>
-                                        <Setter Target="HoverBorder.Width" Value="40"/>
+                                        <Setter Target="CheckBackground.Width"
+                                                Value="40"/>
+                                        <Setter Target="HoverBorder.Width"
+                                                Value="40"/>
                                     </VisualState.Setters>
                                 </VisualState>
                             </VisualStateGroup>
                         </VisualStateManager.VisualStateGroups>
-                        <Rectangle x:Name="HoverBorder" RadiusX="8" RadiusY="8" Fill="{ThemeResource HoverBrush}" Opacity="0"
-                                HorizontalAlignment="Left" Width="161" Margin="0,3,0,3"/>
-                        <Rectangle x:Name="CheckBackground" RadiusX="8" RadiusY="8" Fill="{ThemeResource AccentDimBrush}" Opacity="0"
-                                HorizontalAlignment="Left" Width="161" Margin="0,3,0,3"/>
-                        <Rectangle x:Name="AccentBar" Width="3" Height="22" HorizontalAlignment="Left" Margin="0,1,0,0"
-                                Fill="{ThemeResource AccentBrush}" RadiusX="1.5" RadiusY="1.5" Opacity="0"/>
-                        <ContentPresenter x:Name="ContentPresenter" Content="{TemplateBinding Content}"
-                                          Margin="{TemplateBinding Padding}" Foreground="{TemplateBinding Foreground}"
+                        <Rectangle x:Name="HoverBorder"
+                                RadiusX="8"
+                                RadiusY="8"
+                                Fill="{ThemeResource HoverBrush}"
+                                Opacity="0"
+                                   HorizontalAlignment="Left"
+                                Width="161"
+                                Margin="0,3,0,3"/>
+                        <Rectangle x:Name="CheckBackground"
+                                RadiusX="8"
+                                RadiusY="8"
+                                Fill="{ThemeResource AccentDimBrush}"
+                                Opacity="0"
+                                   HorizontalAlignment="Left"
+                                Width="161"
+                                Margin="0,3,0,3"/>
+                        <Rectangle x:Name="AccentBar"
+                                Width="3"
+                                Height="22"
+                                HorizontalAlignment="Left"
+                                Margin="0,1,0,0"
+                                   Fill="{ThemeResource AccentBrush}"
+                                RadiusX="1.5"
+                                RadiusY="1.5"
+                                Opacity="0"/>
+                        <ContentPresenter x:Name="ContentPresenter"
+                                Content="{TemplateBinding Content}"
+                                          Margin="{TemplateBinding Padding}"
+                                Foreground="{TemplateBinding Foreground}"
                                           VerticalAlignment="Center"/>
                     </Grid>
                 </ControlTemplate>
             </Setter.Value>
         </Setter>
     </Style>
-    <Style x:Key="Caption" TargetType="TextBlock">
-        <Setter Property="FontFamily" Value="Segoe UI Variable"/>
-        <Setter Property="FontSize" Value="{StaticResource CaptionFontSize}"/>
-        <Setter Property="CharacterSpacing" Value="30"/>
-        <Setter Property="Foreground" Value="{ThemeResource TextMutedBrush}"/>
+    <Style x:Key="Title"
+            TargetType="TextBlock">
+        <Setter Property="FontFamily"
+                Value="Segoe UI Variable"/>
+        <Setter Property="FontSize"
+                Value="20"/>
+        <Setter Property="FontWeight"
+                Value="SemiBold"/>
+        <Setter Property="Foreground"
+                Value="{ThemeResource TextPrimaryBrush}"/>
     </Style>
 
-    <Style x:Key="Mono" TargetType="TextBlock">
-        <Setter Property="FontFamily" Value="Segoe UI Variable"/>
-        <Setter Property="FontSize" Value="{StaticResource BodyFontSize}"/>
-        <Setter Property="Foreground" Value="{ThemeResource TextMutedBrush}"/>
+    <Style x:Key="Caption"
+            TargetType="TextBlock">
+        <Setter Property="FontFamily"
+                Value="Segoe UI Variable"/>
+        <Setter Property="FontWeight"
+                Value="Normal"/>
+        <Setter Property="FontSize"
+                Value="{StaticResource CaptionFontSize}"/>
+        <Setter Property="CharacterSpacing"
+                Value="30"/>
+        <Setter Property="Foreground"
+                Value="{ThemeResource TextMutedBrush}"/>
     </Style>
 
-    <Style x:Key="Card" TargetType="Border">
-        <Setter Property="Background" Value="{ThemeResource SurfaceBrush}"/>
-        <Setter Property="BorderBrush" Value="{ThemeResource SurfaceBorderBrush}"/>
-        <Setter Property="BorderThickness" Value="1"/>
-        <Setter Property="CornerRadius" Value="10"/>
-        <Setter Property="Padding" Value="{StaticResource CardPadding}"/>
+    <Style x:Key="Mono"
+            TargetType="TextBlock">
+        <Setter Property="FontFamily"
+                Value="Segoe UI Variable"/>
+        <Setter Property="FontWeight"
+                Value="Normal"/>
+        <Setter Property="FontSize"
+                Value="{StaticResource BodyFontSize}"/>
+        <Setter Property="Foreground"
+                Value="{ThemeResource TextMutedBrush}"/>
     </Style>
+
+    <Style x:Key="Helper"
+            TargetType="TextBlock">
+        <Setter Property="FontFamily"
+                Value="Segoe UI Variable"/>
+        <Setter Property="FontWeight"
+                Value="Normal"/>
+        <Setter Property="FontSize"
+                Value="{StaticResource HelperFontSize}"/>
+        <Setter Property="Foreground"
+                Value="{ThemeResource TextMutedBrush}"/>
+    </Style>
+
+    <Style x:Key="Card"
+            TargetType="Border">
+        <Setter Property="Background"
+                Value="{ThemeResource SettingsAreaBrush}"/>
+        <Setter Property="BorderBrush"
+                Value="{ThemeResource SurfaceBorderBrush}"/>
+        <Setter Property="BorderThickness"
+                Value="1"/>
+        <Setter Property="CornerRadius"
+                Value="10"/>
+        <Setter Property="Padding"
+                Value="{StaticResource CardPadding}"/>
+    </Style>
+    <Style x:Key="SettingsCard"
+            TargetType="Border">
+        <Setter Property="Background"
+                Value="{ThemeResource SettingsAreaBrush}"/>
+        <Setter Property="BorderBrush"
+                Value="{ThemeResource SurfaceBorderBrush}"/>
+        <Setter Property="BorderThickness"
+                Value="1"/>
+        <Setter Property="CornerRadius"
+                Value="10"/>
+        <Setter Property="Padding"
+                Value="{StaticResource CardPadding}"/>
+    </Style>
+
+    <Style x:Key="PendingChangesBar"
+            TargetType="Border">
+        <Setter Property="Background"
+                Value="{ThemeResource BgBrush}"/>
+        <Setter Property="BorderBrush"
+                Value="{ThemeResource AccentBrush}"/>
+        <Setter Property="BorderThickness"
+                Value="1"/>
+        <Setter Property="CornerRadius"
+                Value="8"/>
+        <Setter Property="Padding"
+                Value="14,8"/>
+    </Style>
+
+    <Style x:Key="SettingsCaption"
+            TargetType="TextBlock"
+            BasedOn="{StaticResource Caption}">
+        <Setter Property="Foreground"
+                Value="{ThemeResource SettingsAreaTextBrush}"/>
+        <Setter Property="CharacterSpacing"
+                Value="30"/>
+    </Style>
+
     <Style TargetType="TextBlock">
-        <Setter Property="FontFamily" Value="Segoe UI Variable"/>
+        <Setter Property="FontFamily"
+                Value="Segoe UI Variable"/>
+        <Setter Property="FontWeight"
+                Value="Normal"/>
+        <Setter Property="FontSize"
+                Value="{StaticResource BodyFontSize}"/>
+        <Setter Property="Foreground"
+                Value="{ThemeResource TextPrimaryBrush}"/>
     </Style>
     <Style TargetType="local:SettingRow">
-        <Setter Property="Margin" Value="0,0,0,12"/>
+        <Setter Property="Margin"
+                Value="0,0,0,12"/>
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="local:SettingRow">
                     <Grid Margin="{TemplateBinding Margin}">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="200"/>
                         </Grid.ColumnDefinitions>
-                        <TextBlock Grid.Column="0" Text="{TemplateBinding Label}"
-                                   Style="{StaticResource Caption}" VerticalAlignment="Center"/>
-                        <ContentPresenter Grid.Column="1" Content="{TemplateBinding Content}" VerticalAlignment="Center"/>
+                        <TextBlock Grid.Column="0"
+                                Text="{TemplateBinding Label}"
+                                   Style="{StaticResource Mono}"
+                                VerticalAlignment="Center"/>
+                        <ContentPresenter Grid.Column="1"
+                                Content="{TemplateBinding Content}"
+                                VerticalAlignment="Center"/>
                     </Grid>
                 </ControlTemplate>
             </Setter.Value>

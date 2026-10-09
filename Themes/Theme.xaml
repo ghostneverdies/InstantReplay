@@ -1,36 +1,126 @@
-<ResourceDictionary
+﻿<ResourceDictionary
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
 
-    <SolidColorBrush x:Key="AccentBrush" Color="{ThemeResource SystemAccentColor}"/>
-    <SolidColorBrush x:Key="AccentTextBrush" Color="#FFFFFF"/>
-    <SolidColorBrush x:Key="RecBrush" Color="#E5484D"/>
-    <SolidColorBrush x:Key="HeartRedBrush" Color="#ED4956"/>
+    <SolidColorBrush x:Key="AccentBrush"
+            Color="{ThemeResource SystemAccentColor}"/>
+    <SolidColorBrush x:Key="AccentTextBrush"
+            Color="#FFFFFF"/>
+    <SolidColorBrush x:Key="RecBrush"
+            Color="#E5484D"/>
+    <SolidColorBrush x:Key="HeartRedBrush"
+            Color="#ED4956"/>
+    <LinearGradientBrush x:Key="AccentGradientBrush"
+            StartPoint="0,0"
+            EndPoint="1,1">
+        <GradientStop Color="{ThemeResource SystemAccentColor}"
+                Offset="0"/>
+        <GradientStop Color="{ThemeResource SystemAccentColorDark1}"
+                Offset="1"/>
+    </LinearGradientBrush>
 
     <ResourceDictionary.ThemeDictionaries>
 
         <ResourceDictionary x:Key="Dark">
-            <SolidColorBrush x:Key="BgBrush" Color="#131116"/>
-            <SolidColorBrush x:Key="SurfaceBrush" Color="#1C1922"/>
-            <SolidColorBrush x:Key="SurfaceBorderBrush" Color="#2E2838"/>
-            <SolidColorBrush x:Key="HoverBrush" Color="#2C2C2C"/>
-            <SolidColorBrush x:Key="AccentDimBrush" Color="{ThemeResource SystemAccentColorDark2}"/>
-            <SolidColorBrush x:Key="ErrorBrush" Color="#F5A623"/>
-            <SolidColorBrush x:Key="TextPrimaryBrush" Color="#FFFFFF"/>
-            <SolidColorBrush x:Key="TextMutedBrush" Color="#FFFFFF"/>
-            <SolidColorBrush x:Key="DonateBrush" Color="#26A17B"/>
+            <SolidColorBrush x:Key="BgBrush"
+                    Color="#131116"/>
+            <SolidColorBrush x:Key="SurfaceBrush"
+                    Color="#1C1922"/>
+            <SolidColorBrush x:Key="SurfaceBorderBrush"
+                    Color="#2E2838"/>
+            <SolidColorBrush x:Key="HoverBrush"
+                    Color="#2C2C2C"/>
+            <SolidColorBrush x:Key="AccentDimBrush"
+                    Color="{ThemeResource SystemAccentColorDark2}"/>
+            <SolidColorBrush x:Key="ErrorBrush"
+                    Color="#F5A623"/>
+            <SolidColorBrush x:Key="TextPrimaryBrush"
+                    Color="#FFFFFF"/>
+            <SolidColorBrush x:Key="TextMutedBrush"
+                    Color="#FFFFFF"/>
+            <SolidColorBrush x:Key="DonateBrush"
+                    Color="#26A17B"/>
+            <SolidColorBrush x:Key="TitleBarHoverBrush"
+                    Color="#4C4C4C"/>
+            <SolidColorBrush x:Key="TitleBarPressedBrush"
+                    Color="#404040"/>
+            <SolidColorBrush x:Key="SettingsAreaBrush"
+                    Color="#2D2D2D"/>
+            <SolidColorBrush x:Key="SettingsAreaTextBrush"
+                    Color="#FFFFFF"/>
+            <SolidColorBrush x:Key="SettingsAreaMutedBrush"
+                    Color="#D4D4D4"/>
+            <LinearGradientBrush x:Key="HeroBackgroundBrush"
+                    StartPoint="0,0"
+                    EndPoint="1,1">
+                <GradientStop Color="{ThemeResource SystemAccentColorDark3}"
+                        Offset="0"/>
+                <GradientStop Color="#1C1922"
+                        Offset="1"/>
+            </LinearGradientBrush>
+            <SolidColorBrush x:Key="HeroBorderBrush"
+                    Color="{ThemeResource SystemAccentColorDark1}"/>
+            <BitmapImage x:Key="GitHubLogoSource"
+                    UriSource="ms-appx:///assets/icons/github_dark_mode.png"/>
+            <StaticResource x:Key="NavigationViewDefaultPaneBackground"
+                    ResourceKey="BgBrush"/>
+            <StaticResource x:Key="NavigationViewContentBackground"
+                    ResourceKey="BgBrush"/>
+            <StaticResource x:Key="NavigationViewExpandedPaneBackground"
+                    ResourceKey="BgBrush"/>
+            <StaticResource x:Key="NavigationViewCollapsedPaneBackground"
+                    ResourceKey="BgBrush"/>
         </ResourceDictionary>
 
         <ResourceDictionary x:Key="Light">
-            <SolidColorBrush x:Key="BgBrush" Color="#FFFFFF"/>
-            <SolidColorBrush x:Key="SurfaceBrush" Color="#FFFFFF"/>
-            <SolidColorBrush x:Key="SurfaceBorderBrush" Color="#DAD2E8"/>
-            <SolidColorBrush x:Key="HoverBrush" Color="#E8E8E8"/>
-            <SolidColorBrush x:Key="AccentDimBrush" Color="{ThemeResource SystemAccentColorLight3}"/>
-            <SolidColorBrush x:Key="ErrorBrush" Color="#C4700A"/>
-            <SolidColorBrush x:Key="TextPrimaryBrush" Color="#000000"/>
-            <SolidColorBrush x:Key="TextMutedBrush" Color="#000000"/>
-            <SolidColorBrush x:Key="DonateBrush" Color="#1F8F6A"/>
+            <SolidColorBrush x:Key="BgBrush"
+                    Color="#FFFFFF"/>
+            <SolidColorBrush x:Key="SurfaceBrush"
+                    Color="#FFFFFF"/>
+            <SolidColorBrush x:Key="SurfaceBorderBrush"
+                    Color="#DAD2E8"/>
+            <SolidColorBrush x:Key="HoverBrush"
+                    Color="#E8E8E8"/>
+            <SolidColorBrush x:Key="AccentDimBrush"
+                    Color="{ThemeResource SystemAccentColorLight3}"/>
+            <SolidColorBrush x:Key="ErrorBrush"
+                    Color="#C4700A"/>
+            <SolidColorBrush x:Key="TextPrimaryBrush"
+                    Color="#000000"/>
+            <SolidColorBrush x:Key="TextMutedBrush"
+                    Color="#000000"/>
+            <SolidColorBrush x:Key="DonateBrush"
+                    Color="#1F8F6A"/>
+            <SolidColorBrush x:Key="TitleBarHoverBrush"
+                    Color="#E4E4E4"/>
+            <SolidColorBrush x:Key="TitleBarPressedBrush"
+                    Color="#D6D6D6"/>
+            <SolidColorBrush x:Key="SettingsAreaBrush"
+                    Color="#FFFFFF"/>
+            <SolidColorBrush x:Key="SettingsAreaTextBrush"
+                    Color="#000000"/>
+            <SolidColorBrush x:Key="SettingsAreaMutedBrush"
+                    Color="#3B3B3B"/>
+            <LinearGradientBrush x:Key="HeroBackgroundBrush"
+                    StartPoint="0,0"
+                    EndPoint="1,1">
+                <GradientStop Color="{ThemeResource SystemAccentColorLight3}"
+                        Offset="0"/>
+                <GradientStop Color="#FFFFFF"
+                        Offset="1"/>
+            </LinearGradientBrush>
+            <SolidColorBrush x:Key="HeroBorderBrush"
+                    Color="{ThemeResource SystemAccentColorLight2}"/>
+            <BitmapImage x:Key="GitHubLogoSource"
+                    UriSource="ms-appx:///assets/icons/github_light_mode.png"/>
+            <StaticResource x:Key="NavigationViewDefaultPaneBackground"
+                    ResourceKey="BgBrush"/>
+            <StaticResource x:Key="NavigationViewContentBackground"
+                    ResourceKey="BgBrush"/>
+            <StaticResource x:Key="NavigationViewExpandedPaneBackground"
+                    ResourceKey="BgBrush"/>
+            <StaticResource x:Key="NavigationViewCollapsedPaneBackground"
+                    ResourceKey="BgBrush"/>
         </ResourceDictionary>
 
     </ResourceDictionary.ThemeDictionaries>
