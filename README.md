@@ -1,6 +1,19 @@
 # Instant Replay 1.5
 
-A Windows app that keeps the last 30, 60 or 120 seconds of your screen and audio in memory and saves them as an MP4 when you press a hotkey.
+[![Stars](https://img.shields.io/github/stars/ghostneverdies/InstantReplay?style=flat-square)](https://github.com/ghostneverdies/InstantReplay/stargazers)
+[![Forks](https://img.shields.io/github/forks/ghostneverdies/InstantReplay?style=flat-square)](https://github.com/ghostneverdies/InstantReplay/forks)
+[![Downloads](https://img.shields.io/github/downloads/ghostneverdies/InstantReplay/total?style=flat-square)](https://github.com/ghostneverdies/InstantReplay/releases)
+[![Latest release](https://img.shields.io/github/v/release/ghostneverdies/InstantReplay?style=flat-square)](https://github.com/ghostneverdies/InstantReplay/releases/latest)
+![views](https://komarev.com/ghpvc/?username=ghostneverdies-InstantReplay&label=README+views&color=007ec6&style=flat-square)
+
+
+[![Rust 48.32%](https://img.shields.io/static/v1?label=Rust&message=48.32%25&color=dea584&style=flat-square)](https://api.github.com/repos/ghostneverdies/InstantReplay/languages)
+[![C# 47.58%](https://img.shields.io/static/v1?label=C%23&message=47.58%25&color=178600&style=flat-square)](https://api.github.com/repos/ghostneverdies/InstantReplay/languages)
+[![JavaScript 1.84%](https://img.shields.io/static/v1?label=JavaScript&message=1.84%25&color=f1e05a&style=flat-square)](https://api.github.com/repos/ghostneverdies/InstantReplay/languages)
+[![NSIS 0.99%](https://img.shields.io/static/v1?label=NSIS&message=0.99%25&color=8b5cf6&style=flat-square)](https://api.github.com/repos/ghostneverdies/InstantReplay/languages)
+[![CSS 0.81%](https://img.shields.io/static/v1?label=CSS&message=0.81%25&color=563d7c&style=flat-square)](https://api.github.com/repos/ghostneverdies/InstantReplay/languages)
+[![HTML 0.47%](https://img.shields.io/static/v1?label=HTML&message=0.47%25&color=e34c26&style=flat-square)](https://api.github.com/repos/ghostneverdies/InstantReplay/languages)
+
 
 ## Features
 
@@ -146,10 +159,6 @@ When preparing a release, keep the app version in `InstantReplay.csproj`, the in
 The capture/encoding approach and embedded, compressed shader bytecode are adapted from [mmozeiko/wcap](https://github.com/mmozeiko/wcap), released into the public domain under the Unlicense. `engine/rust/shaders/wcap_shaders.hlsl` is retained as reference source. Runtime code decompresses embedded bytecode with `D3DDecompressShaders`; it does not compile HLSL at runtime. The engine depends only on the Windows Rust bindings and does not use `windows-capture` or a WASAPI wrapper crate.
 
 The Rust DLL keeps the existing `IR_*` ABI and provides `IR_SetCaptureTarget`, `IR_SetPaused`, `IR_GetWindowCount` and `IR_GetWindowInfo`. Set the target before `IR_Start`: HWND 0 means monitor capture. Capture options are 1=client area, 2=cursor, 4=border, 8=keep rounded corners, 16=secondary windows, 32=legacy automatic active-window selection for existing DLL callers, and 64=process audio for the supplied HWND. The frontend uses explicit HWND targets and never sets bit 32. `IR_SetPaused` gates video and app audio; enabled microphone capture continues independently. Window-only options require the corresponding Windows capture APIs; unsupported optional flags are ignored.
-
-Run `cargo test` in `engine/rust` for pacing, cursor, audio, conversion and native encoder regressions. Windows-native tests also execute the embedded resize/color shaders on WARP and verify sparse software-encoder timestamps and stationary-scene replay trimming.
-
-WGC validation passed all 56 native tests at the time of the pacing change. In local 1280 × 1024 moving-scene checks, hardware recording improved from about 37.5 FPS to roughly 58–60 FPS; one saved replay averaged 59.9 FPS. Software recording measured about 56–58 FPS. These are results from the test system, not guarantees for other hardware, games, resolutions or workloads. The save-memory change was separately checked with 57 non-capture regressions and the software-encoder sparse MP4 regression, including sample offsets, packet lifetime and low-memory budget boundaries; desktop capture and hardware stress tests were not rerun while investigating system memory exhaustion.
 
 ## License
 
