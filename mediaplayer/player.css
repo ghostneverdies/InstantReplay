@@ -203,12 +203,6 @@ body.idle .close-btn {
   fill: currentColor;
 }
 
-#icSlash {
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 2;
-  stroke-linecap: round;
-}
 
 .time {
   flex: 0 0 auto;
@@ -252,4 +246,22 @@ input[type="range"]:hover::-webkit-slider-thumb {
 
 #vol {
   flex: 0 0 96px;
+}
+body.inline .close-btn { display: none; }
+@media (max-width: 600px) {
+  #vol { width: 54px; }
+  #bar { gap: 6px; padding-left: 8px; padding-right: 8px; }
+  .time { min-width: 32px; }
+}
+
+body.inline { border-radius: 12px; overflow: hidden; }
+body.fullscreen .close-btn { width: auto; padding: 0 12px; gap: 8px; border-radius: 8px; font-size: 13px; }
+
+html:has(body.inline) { background: transparent; border-radius: 12px; overflow: hidden; }
+body.inline { background: transparent; clip-path: inset(0 round 12px); }
+body.inline video { border-radius: 12px; clip-path: inset(0 round 12px); }
+
+#icWaveLow, #icWaveHigh, #icMuted { transition: opacity 120ms linear; }
+@media (prefers-reduced-motion: reduce) {
+  #icWaveLow, #icWaveHigh, #icMuted { transition: none; }
 }

@@ -1,9 +1,129 @@
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crate::{RingAudio, SharedState, SECOND_100NS};
 
-type AudioError = Box<dyn std::error::Error>;
+use windows::{
+    core::*,
+    Win32::{
+        Foundation::*,
+        Media::Audio::*,
+        System::{
+            Com::{StructuredStorage::PropVariantToStringAlloc, *},
+            Threading::*,
+        },
+    },
+};
+struct ComApartment;
+#[implement(IActivateAudioInterfaceCompletionHandler)]
+struct ActivationCompleted {
+    ready: Arc<AtomicBool>,
+}
+impl IActivateAudioInterfaceCompletionHandler_Impl for ActivationCompleted_Impl {
+    fn ActivateCompleted(&self, _: Ref<'_, IActivateAudioInterfaceAsyncOperation>) -> Result<()> {
+        self.ready.store(true, Ordering::Release);
+        Ok(())
+    }
+}
+unsafe fn process_client(pid: u32) -> Result<IAudioClient> {
+    use windows::Win32::System::{Com::StructuredStorage::*, Variant::VT_BLOB};
+    let activation = AUDIOCLIENT_ACTIVATION_PARAMS {
+        ActivationType: AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
+        Anonymous: AUDIOCLIENT_ACTIVATION_PARAMS_0 {
+            ProcessLoopbackParams: AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS {
+                TargetProcessId: pid,
+                ProcessLoopbackMode: PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE,
+            },
+        },
+    };
+    let blob =
+        CoTaskMemAlloc(std::mem::size_of_val(&activation)) as *mut AUDIOCLIENT_ACTIVATION_PARAMS;
+    if blob.is_null() {
+        return Err(Error::from_hresult(E_OUTOFMEMORY));
+    }
+    blob.write(activation);
+    let mut params = PROPVARIANT::default();
+    params.Anonymous.Anonymous = std::mem::ManuallyDrop::new(PROPVARIANT_0_0 {
+        vt: VT_BLOB,
+        Anonymous: PROPVARIANT_0_0_0 {
+            blob: BLOB {
+                cbSize: std::mem::size_of_val(&activation) as u32,
+                pBlobData: blob as _,
+            },
+        },
+        ..Default::default()
+    });
+    let ready = Arc::new(AtomicBool::new(false));
+    let handler: IActivateAudioInterfaceCompletionHandler = ActivationCompleted {
+        ready: ready.clone(),
+    }
+    .into();
+    let op = ActivateAudioInterfaceAsync(
+        VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
+        &IAudioClient::IID,
+        Some(&params),
+        &handler,
+    )?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !ready.load(Ordering::Acquire) {
+        if std::time::Instant::now() >= deadline {
+            return Err(Error::from_hresult(HRESULT(0x800705B4u32 as i32)));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    let mut status = S_OK;
+    let mut object = None;
+    op.GetActivateResult(&mut status, &mut object)?;
+    status.ok()?;
+    object.ok_or_else(|| Error::from_hresult(E_FAIL))?.cast()
+}
+impl ComApartment {
+    unsafe fn new() -> windows::core::Result<Self> {
+        CoInitializeEx(None, COINIT_MULTITHREADED).ok()?;
+        Ok(Self)
+    }
+}
+impl Drop for ComApartment {
+    fn drop(&mut self) {
+        unsafe {
+            CoUninitialize();
+        }
+    }
+}
+unsafe fn enumerator() -> windows::core::Result<IMMDeviceEnumerator> {
+    CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
+}
+#[repr(C)]
+struct PropertyKey {
+    fmtid: GUID,
+    pid: u32,
+}
+unsafe fn device_name(device: &IMMDevice) -> windows::core::Result<String> {
+    use std::ffi::c_void;
+    use windows::Win32::System::Com::StructuredStorage::{PropVariantClear, PROPVARIANT};
+    type OpenStore = unsafe extern "system" fn(*mut c_void, u32, *mut *mut c_void) -> HRESULT;
+    type GetValue =
+        unsafe extern "system" fn(*mut c_void, *const PropertyKey, *mut PROPVARIANT) -> HRESULT;
+    let table = *(device.as_raw() as *const *const usize);
+    let open: OpenStore = std::mem::transmute(*table.add(4));
+    let mut pointer = std::ptr::null_mut();
+    open(device.as_raw(), 0, &mut pointer).ok()?;
+    let store = IUnknown::from_raw(pointer);
+    let table = *(store.as_raw() as *const *const usize);
+    let get: GetValue = std::mem::transmute(*table.add(5));
+    let key = PropertyKey {
+        fmtid: GUID::from_u128(0xa45c254e_df1c_4efd_8020_67d146a850e0),
+        pid: 14,
+    };
+    let mut property = PROPVARIANT::default();
+    get(store.as_raw(), &key, &mut property).ok()?;
+    let result = PropVariantToStringAlloc(&property);
+    let _ = PropVariantClear(&mut property);
+    let value = result?;
+    let text = value.to_string();
+    CoTaskMemFree(Some(value.0 as _));
+    Ok(text?)
+}
 
 pub const OUT_RATE: u32 = 48000;
 pub const OUT_CHANNELS: u32 = 2;
@@ -26,13 +146,6 @@ impl Sink {
         }
     }
 
-    fn push(self, shared: &SharedState, data: &[u8], frames: u32) {
-        match self {
-            Sink::System => shared.push_audio(data, frames),
-            Sink::Microphone => shared.push_mic(data, frames),
-        }
-    }
-
     fn note_event(self, shared: &SharedState) {
         match self {
             Sink::System => shared.audio_events.fetch_add(1, Ordering::Relaxed),
@@ -49,47 +162,46 @@ impl Sink {
 }
 
 pub fn mic_devices() -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    if wasapi::initialize_mta().is_err() {
-        return out;
-    }
-    if let Ok(collection) = wasapi::DeviceCollection::new(&wasapi::Direction::Capture) {
-        for item in &collection {
-            let Ok(device) = item else { continue };
-            let Ok(state) = device.get_state() else { continue };
-            if !matches!(state, wasapi::DeviceState::Active) {
-                continue;
+    unsafe {
+        let Ok(_apartment) = ComApartment::new() else {
+            return Vec::new();
+        };
+        let Ok(enumerator) = enumerator() else {
+            return Vec::new();
+        };
+        let Ok(devices) = enumerator.EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE) else {
+            return Vec::new();
+        };
+        let mut names = Vec::new();
+        for index in 0..devices.GetCount().unwrap_or(0) {
+            if let Ok(device) = devices.Item(index) {
+                if let Ok(name) = device_name(&device) {
+                    if !name.trim().is_empty() && !names.contains(&name) {
+                        names.push(name);
+                    }
+                }
             }
-            let Ok(name) = device.get_friendlyname() else { continue };
-            let trimmed = name.trim();
-            if trimmed.is_empty() || out.iter().any(|e| e == trimmed) {
-                continue;
-            }
-            out.push(trimmed.to_string());
         }
+        names
     }
-    wasapi::deinitialize();
-    out
 }
-
-fn resolve_mic_device(name: Option<&str>) -> Result<(wasapi::Device, String), AudioError> {
-    let want = name.map(str::trim).filter(|s| !s.is_empty());
-    if let Some(want) = want {
-        if let Ok(collection) = wasapi::DeviceCollection::new(&wasapi::Direction::Capture) {
-            if let Ok(device) = collection.get_device_with_name(want) {
-                let resolved = device
-                    .get_friendlyname()
-                    .unwrap_or_else(|_| want.to_string());
-                return Ok((device, resolved));
-            }
+unsafe fn resolve_mic_device(name: Option<&str>) -> windows::core::Result<(IMMDevice, String)> {
+    let wanted = name
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| Error::new(E_INVALIDARG, "No microphone selected"))?;
+    let devices = enumerator()?.EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE)?;
+    for index in 0..devices.GetCount()? {
+        let device = devices.Item(index)?;
+        let name = device_name(&device)?;
+        if name == wanted {
+            return Ok((device, name));
         }
-        return Err(AudioError::from(format!(
-            "microphone '{want}' is unavailable and was not found in available capture devices"
-        )));
     }
-    return Err(AudioError::from(
-        "no microphone device configured for recording",
-    ));
+    Err(Error::new(
+        E_INVALIDARG,
+        "The selected microphone is unavailable",
+    ))
 }
 
 pub struct CubicResampler {
@@ -258,21 +370,11 @@ impl CubicResampler {
 fn decode_frame(bytes: &[u8], p: usize, bits: u32, _channels: u32, mono: bool) -> (f64, f64) {
     match bits {
         32 => {
-            let l = f32::from_le_bytes([
-                bytes[p],
-                bytes[p + 1],
-                bytes[p + 2],
-                bytes[p + 3],
-            ]) as f64;
+            let l = f32::from_le_bytes([bytes[p], bytes[p + 1], bytes[p + 2], bytes[p + 3]]) as f64;
             let r = if mono {
                 l
             } else {
-                f32::from_le_bytes([
-                    bytes[p + 4],
-                    bytes[p + 5],
-                    bytes[p + 6],
-                    bytes[p + 7],
-                ]) as f64
+                f32::from_le_bytes([bytes[p + 4], bytes[p + 5], bytes[p + 6], bytes[p + 7]]) as f64
             };
             (l, r)
         }
@@ -288,14 +390,16 @@ fn decode_frame(bytes: &[u8], p: usize, bits: u32, _channels: u32, mono: bool) -
         _ => {
             let l = (((bytes[p + 2] as i32) << 24)
                 | ((bytes[p + 1] as i32) << 16)
-                | ((bytes[p] as i32) << 8)) >> 8;
+                | ((bytes[p] as i32) << 8))
+                >> 8;
             let l = l as f64 / 8388608.0;
             let r = if mono {
                 l
             } else {
                 let r = (((bytes[p + 5] as i32) << 24)
                     | ((bytes[p + 4] as i32) << 16)
-                    | ((bytes[p + 3] as i32) << 8)) >> 8;
+                    | ((bytes[p + 3] as i32) << 8))
+                    >> 8;
                 r as f64 / 8388608.0
             };
             (l, r)
@@ -306,12 +410,20 @@ fn decode_frame(bytes: &[u8], p: usize, bits: u32, _channels: u32, mono: bool) -
 fn cubic(a: f64, b: f64, c: f64, d: f64, t: f64) -> f64 {
     let t2 = t * t;
     let t3 = t2 * t;
-    0.5 * ((2.0 * b) + (c - a) * t + (2.0 * a - 5.0 * b + 4.0 * c - d) * t2
+    0.5 * ((2.0 * b)
+        + (c - a) * t
+        + (2.0 * a - 5.0 * b + 4.0 * c - d) * t2
         + (3.0 * b - a - 3.0 * c + d) * t3)
 }
 
 fn clamp16(v: f64) -> i16 {
-    let v = if v > 1.0 { 1.0 } else if v < -1.0 { -1.0 } else { v };
+    let v = if v > 1.0 {
+        1.0
+    } else if v < -1.0 {
+        -1.0
+    } else {
+        v
+    };
     (v * 32767.0) as i16
 }
 
@@ -326,217 +438,200 @@ impl Default for CubicResampler {
 }
 
 pub fn spawn(shared: Arc<SharedState>) -> std::thread::JoinHandle<()> {
-    std::thread::Builder::new()
-        .name("ir-audio".into())
-        .spawn(move || {
-            if wasapi::initialize_mta().is_err() {
-                Sink::System.note_fail(&shared, -1);
-                shared.audio_got_frames.store(0, Ordering::Relaxed);
-                wasapi::deinitialize();
-                return;
-            }
-            match wasapi::get_default_device(&wasapi::Direction::Render) {
-                Ok(device) => {
-                    if run_source(&shared, &device, Sink::System, true, false).is_err() {
-                        Sink::System.note_fail(&shared, -2);
-                    }
-                }
-                Err(_) => Sink::System.note_fail(&shared, -3),
-            }
-            wasapi::deinitialize();
-        })
-        .expect("spawn audio thread")
+    spawn_source(shared, None, Sink::System)
 }
-
 pub fn spawn_mic(
     shared: Arc<SharedState>,
     device_name: Option<String>,
 ) -> std::thread::JoinHandle<()> {
-    std::thread::Builder::new()
-        .name("ir-mic".into())
-        .spawn(move || {
-            if wasapi::initialize_mta().is_err() {
-                Sink::Microphone.note_fail(&shared, -1);
-                shared.mic_got_frames.store(0, Ordering::Relaxed);
-                wasapi::deinitialize();
-                return;
-            }
-            match resolve_mic_device(device_name.as_deref()) {
-                Ok((device, resolved)) => {
-                    *shared.mic_active.lock().unwrap_or_else(|e| e.into_inner()) = resolved.clone();
-                    if run_source(&shared, &device, Sink::Microphone, false, true).is_err() {
-                        Sink::Microphone.note_fail(&shared, -2);
-                    }
-                }
-                Err(e) => {
-                    eprintln!("[mic] could not open a capture device: {e}");
-                    Sink::Microphone.note_fail(&shared, -3);
-                }
-            }
-            wasapi::deinitialize();
-        })
-        .expect("spawn mic thread")
+    spawn_source(shared, device_name, Sink::Microphone)
 }
-
-fn run_source(
-    shared: &Arc<SharedState>,
-    device: &wasapi::Device,
+fn spawn_source(
+    shared: Arc<SharedState>,
+    device_name: Option<String>,
     sink: Sink,
-    keep_alive: bool,
-    mono_out: bool,
-) -> Result<(), AudioError> {
-    let mut client = device.get_iaudioclient()?;
-    let mix = client.get_mixformat()?;
-    let (default_period, _min_period) = client.get_periods()?;
-
-    client.initialize_client(
-        &mix,
-        default_period,
-        &wasapi::Direction::Capture,
-        &wasapi::ShareMode::Shared,
-        true,
-    )?;
-    let h_event = client.set_get_eventhandle()?;
-    let capture_client = client.get_audiocaptureclient()?;
-    client.start_stream()?;
-
-    let silence = if keep_alive {
-        Silence::start(device).ok()
+) -> std::thread::JoinHandle<()> {
+    std::thread::Builder::new()
+        .name(format!("ir-{}", sink.label()))
+        .spawn(move || unsafe {
+            let result = (|| -> windows::core::Result<()> {
+                let _apartment = ComApartment::new()?;
+                if sink == Sink::System && shared.capture_options.load(Ordering::Acquire) & 64 != 0
+                {
+                    let window = HWND(shared.target_window.load(Ordering::Acquire) as *mut _);
+                    let mut pid = 0;
+                    windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(
+                        window,
+                        Some(&mut pid),
+                    );
+                    if pid == 0 {
+                        return Err(Error::from_hresult(E_INVALIDARG));
+                    }
+                    return run_client(&shared, process_client(pid)?, None, sink);
+                }
+                let device = if sink == Sink::System {
+                    enumerator()?.GetDefaultAudioEndpoint(eRender, eConsole)?
+                } else {
+                    let (device, name) = resolve_mic_device(device_name.as_deref())?;
+                    *shared.mic_active.lock().unwrap_or_else(|e| e.into_inner()) = name;
+                    device
+                };
+                run_source(&shared, &device, sink)
+            })();
+            if let Err(error) = result {
+                sink.note_fail(&shared, error.code().0 as i64);
+                if sink == Sink::System && shared.capture_options.load(Ordering::Acquire) & 64 != 0
+                {
+                    shared.has_error.store(true, Ordering::Release);
+                }
+            }
+        })
+        .expect("spawn audio worker")
+}
+struct AudioStream(IAudioClient);
+impl Drop for AudioStream {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = self.0.Stop();
+        }
+    }
+}
+struct AudioEvent(HANDLE);
+impl Drop for AudioEvent {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = CloseHandle(self.0);
+        }
+    }
+}
+fn pcm_format(channels: u16) -> WAVEFORMATEX {
+    WAVEFORMATEX {
+        wFormatTag: 1,
+        nChannels: channels,
+        nSamplesPerSec: OUT_RATE,
+        nAvgBytesPerSec: OUT_RATE * channels as u32 * 2,
+        nBlockAlign: channels * 2,
+        wBitsPerSample: 16,
+        cbSize: 0,
+    }
+}
+unsafe fn run_source(
+    shared: &Arc<SharedState>,
+    device: &IMMDevice,
+    sink: Sink,
+) -> windows::core::Result<()> {
+    let client: IAudioClient = device.Activate(CLSCTX_ALL, None)?;
+    run_client(shared, client, Some(device), sink)
+}
+unsafe fn run_client(
+    shared: &Arc<SharedState>,
+    client: IAudioClient,
+    device: Option<&IMMDevice>,
+    sink: Sink,
+) -> windows::core::Result<()> {
+    let channels = if sink == Sink::Microphone { 1 } else { 2 };
+    let format = pcm_format(channels);
+    let flags = AUDCLNT_STREAMFLAGS_EVENTCALLBACK
+        | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
+        | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY
+        | if sink == Sink::System {
+            AUDCLNT_STREAMFLAGS_LOOPBACK
+        } else {
+            0
+        };
+    client.Initialize(AUDCLNT_SHAREMODE_SHARED, flags, 1_000_000, 0, &format, None)?;
+    let event = AudioEvent(CreateEventW(None, false, false, None)?);
+    client.SetEventHandle(event.0)?;
+    let capture: IAudioCaptureClient = client.GetService()?;
+    client.Start()?;
+    let _stream = AudioStream(client);
+    let silence = if sink == Sink::System {
+        device.and_then(|device| Silence::start(device).ok())
     } else {
         None
     };
-
-    let in_rate = mix.get_samplespersec();
-    let channels = mix.get_nchannels() as u32;
-    let bits = mix.get_bitspersample() as u32;
-    let block_align = mix.get_blockalign() as usize;
-
-    let passthrough = !mono_out && CubicResampler::passthrough(in_rate, channels, bits);
-    let mut resampler = CubicResampler::new();
-    let resample_ok = if mono_out {
-        resampler.init_mono(in_rate, channels, bits)
-    } else {
-        resampler.init(in_rate, channels, bits)
-    };
-    let out_bpf = resampler.output_bytes_per_frame();
-
-    let mut scratch: Vec<u8> = Vec::with_capacity(1 << 16);
-    let mut packet: Vec<u8> = Vec::new();
-    let mut silence_buf: Vec<u8> = Vec::new();
-    let mut silent_packets: u64 = 0;
-    let mut discontinuity_packets: u64 = 0;
-
-    eprintln!(
-        "[{}] device '{}': {in_rate} Hz, {channels} ch, {bits} bit, block_align {block_align} \
-         (passthrough={passthrough}, resample_ok={resample_ok}, dec={}, out_mono={mono_out})",
-        sink.label(),
-        device.get_friendlyname().unwrap_or_default(),
-        resampler.dec
-    );
-
-    while shared.running.load(Ordering::Relaxed) {
-        if let Some(s) = silence.as_ref() {
-            s.feed();
+    let mut packet = Vec::new();
+    while shared.running.load(Ordering::Acquire) {
+        if let Some(silence) = &silence {
+            silence.feed();
         }
-
-        let _ = h_event.wait_for_event(200);
-
-        loop {
-            let Some(n) = capture_client.get_next_nbr_frames()? else {
-                break;
-            };
-            if n == 0 {
-                break;
-            }
-            let need = n as usize * block_align;
-            if packet.len() < need {
-                packet.resize(need, 0);
-            }
-            let (got, flags) = capture_client.read_from_device(&mut packet[..need])?;
-            if got == 0 {
-                break;
-            }
-            sink.note_event(shared);
-            let bytes = &packet[..got as usize * block_align];
-
-            let (src, frames_in): (&[u8], u32) = if flags.silent || flags.data_discontinuity {
-                if flags.silent {
-                    silent_packets += 1;
-                } else {
-                    discontinuity_packets += 1;
-                }
-                let len = got as usize * block_align;
-                silence_buf.clear();
-                silence_buf.resize(len, 0);
-                (silence_buf.as_slice(), got)
+        let _ = WaitForSingleObject(event.0, 50);
+        while capture.GetNextPacketSize()? > 0 {
+            let (mut data, mut frames, mut flags, mut timestamp) =
+                (std::ptr::null_mut(), 0, 0, 0u64);
+            capture.GetBuffer(
+                &mut data,
+                &mut frames,
+                &mut flags,
+                None,
+                Some(&mut timestamp),
+            )?;
+            let length = frames as usize * channels as usize * 2;
+            packet.resize(length, 0);
+            if flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32 != 0 || data.is_null() {
+                packet.fill(0);
             } else {
-                (bytes, got)
+                packet.copy_from_slice(std::slice::from_raw_parts(data, length));
+            }
+            capture.ReleaseBuffer(frames)?;
+            sink.note_event(shared);
+            let time =
+                if timestamp == 0 || flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR.0 as u32 != 0 {
+                    crate::qpc100ns()
+                } else {
+                    timestamp.min(i64::MAX as u64) as i64
+                };
+            let timestamp = if sink == Sink::Microphone {
+                shared.microphone_time(time)
+            } else {
+                shared.capture_time(time)
             };
-
-            if passthrough {
-                sink.push(shared, src, frames_in);
-            } else if resample_ok
-                && resampler.process(src, &mut scratch)
-                && !scratch.is_empty()
-            {
-                let frames = (scratch.len() / out_bpf) as u32;
-                sink.push(shared, &scratch, frames);
+            let Some(pts) = timestamp else {
+                continue;
+            };
+            match sink {
+                Sink::System => shared.push_audio_at(&packet, frames, pts),
+                Sink::Microphone => shared.push_mic_at(&packet, frames, pts),
             }
         }
     }
-
-    if silent_packets > 0 || discontinuity_packets > 0 {
-        eprintln!(
-            "[{}] substituted silence for {silent_packets} silent and \
-             {discontinuity_packets} discontinuous packet(s)",
-            sink.label()
-        );
-    }
-    let _ = client.stop_stream();
     Ok(())
 }
-
 struct Silence {
-    client: wasapi::AudioClient,
-    render: wasapi::AudioRenderClient,
-    block_align: usize,
-    max_frames: u32,
+    stream: AudioStream,
+    render: IAudioRenderClient,
+    capacity: u32,
 }
-
 impl Silence {
-    fn start(device: &wasapi::Device) -> Result<Self, AudioError> {
-        let mut client = device.get_iaudioclient()?;
-        let mix = client.get_mixformat()?;
-        let (_default_period, min_period) = client.get_periods()?;
-        client.initialize_client(
-            &mix,
-            min_period,
-            &wasapi::Direction::Render,
-            &wasapi::ShareMode::Shared,
-            true,
+    unsafe fn start(device: &IMMDevice) -> windows::core::Result<Self> {
+        let client: IAudioClient = device.Activate(CLSCTX_ALL, None)?;
+        let format = pcm_format(2);
+        client.Initialize(
+            AUDCLNT_SHAREMODE_SHARED,
+            AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
+            1_000_000,
+            0,
+            &format,
+            None,
         )?;
-        let render = client.get_audiorenderclient()?;
-        let max_frames = client.get_bufferframecount()?;
-        let block_align = mix.get_blockalign() as usize;
-        client.start_stream()?;
-        Ok(Silence {
-            client,
+        let render = client.GetService()?;
+        let capacity = client.GetBufferSize()?;
+        client.Start()?;
+        Ok(Self {
+            stream: AudioStream(client),
             render,
-            block_align,
-            max_frames,
+            capacity,
         })
     }
-
-    fn feed(&self) {
-        let Ok(avail) = self.client.get_available_space_in_frames() else {
-            return;
-        };
-        if avail == 0 {
-            return;
+    unsafe fn feed(&self) {
+        if let Ok(padding) = self.stream.0.GetCurrentPadding() {
+            let available = self.capacity.saturating_sub(padding);
+            if available > 0 && self.render.GetBuffer(available).is_ok() {
+                let _ = self
+                    .render
+                    .ReleaseBuffer(available, AUDCLNT_BUFFERFLAGS_SILENT.0 as u32);
+            }
         }
-        let frames = avail.min(self.max_frames) as usize;
-        let zeros = vec![0u8; frames * self.block_align];
-        let _ = self.render.write_to_device(frames, &zeros, None);
     }
 }
 
@@ -690,10 +785,26 @@ pub fn mix(sys: &[RingAudio], mic: &[RingAudio], max_frames: i64) -> Vec<RingAud
         r.resize(n, 0.0);
 
         accumulate(
-            &sys_spans, &mut sys_cur, base, block_end, sys, 2, sys_gain, &mut l, &mut r,
+            &sys_spans,
+            &mut sys_cur,
+            base,
+            block_end,
+            sys,
+            2,
+            sys_gain,
+            &mut l,
+            &mut r,
         );
         accumulate(
-            &mic_spans, &mut mic_cur, base, block_end, mic, 1, mic_gain, &mut l, &mut r,
+            &mic_spans,
+            &mut mic_cur,
+            base,
+            block_end,
+            mic,
+            1,
+            mic_gain,
+            &mut l,
+            &mut r,
         );
 
         let mut off = 0usize;
@@ -719,7 +830,6 @@ pub fn mix(sys: &[RingAudio], mic: &[RingAudio], max_frames: i64) -> Vec<RingAud
     }
     out
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -876,11 +986,7 @@ mod tests {
             &[mono_pkt(240, 480, 500)],
             WIDE,
         );
-        assert_eq!(
-            total_frames(&out),
-            720,
-            "union of [0,480) and [240,720)"
-        );
+        assert_eq!(total_frames(&out), 720, "union of [0,480) and [240,720)");
 
         let got = flat(&out);
         let frame = |i: usize| (got[i * 2], got[i * 2 + 1]);
@@ -954,9 +1060,7 @@ mod tests {
         let sys: Vec<RingAudio> = (0..10)
             .map(|i| stereo_pkt(i * 480, 480, 300, -300))
             .collect();
-        let mic: Vec<RingAudio> = (0..10)
-            .map(|i| mono_pkt(i * 480 + 120, 480, 100))
-            .collect();
+        let mic: Vec<RingAudio> = (0..10).map(|i| mono_pkt(i * 480 + 120, 480, 100)).collect();
         let out = mix(&sys, &mic, WIDE);
         for w in out.windows(2) {
             assert_eq!(
@@ -970,10 +1074,7 @@ mod tests {
 
     #[test]
     fn unsorted_inputs_are_mixed_correctly() {
-        let sys = vec![
-            stereo_pkt(960, 480, 400, 400),
-            stereo_pkt(0, 480, 100, 100),
-        ];
+        let sys = vec![stereo_pkt(960, 480, 400, 400), stereo_pkt(0, 480, 100, 100)];
         let mic = vec![mono_pkt(240, 240, 50)];
         let out = mix(&sys, &mic, WIDE);
         assert_eq!(total_frames(&out), 1440);
@@ -1005,7 +1106,8 @@ mod tests {
     }
 
     #[test]
-    fn truncated_packet_bytes_are_ignored_not_read_out_of_bounds() {        let mut sys = stereo_pkt(0, 480, 500, 500);
+    fn truncated_packet_bytes_are_ignored_not_read_out_of_bounds() {
+        let mut sys = stereo_pkt(0, 480, 500, 500);
         sys.data.truncate(sys.data.len() - 3);
         let out = mix(&[sys], &[mono_pkt(0, 480, 500)], WIDE);
         assert_eq!(total_frames(&out), 480);
@@ -1017,18 +1119,15 @@ mod tests {
             "every whole frame sums both sources"
         );
         assert_eq!(
-            got[958], mic_only(500),
+            got[958],
+            mic_only(500),
             "the last frame lost its right sample, so only the mic lands"
         );
     }
 
     #[test]
     fn a_zero_frame_packet_is_skipped() {
-        let out = mix(
-            &[stereo_pkt(0, 0, 1, 1)],
-            &[mono_pkt(0, 480, 700)],
-            WIDE,
-        );
+        let out = mix(&[stereo_pkt(0, 0, 1, 1)], &[mono_pkt(0, 480, 700)], WIDE);
         assert_eq!(total_frames(&out), 480);
         assert_eq!(all(&out, 700).len(), 960);
     }

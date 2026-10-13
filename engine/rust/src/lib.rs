@@ -10,7 +10,7 @@ pub mod muxer;
 use std::collections::VecDeque;
 use std::ffi::c_char;
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicIsize, AtomicU32, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -27,24 +27,35 @@ pub const STAGE_MUX: i64 = 7;
 
 const SECOND_100NS: i64 = 10_000_000;
 const RING_BUDGET_BYTES: i64 = 512 * 1024 * 1024;
+fn save_memory_available(audio_bytes: u64) -> bool {
+    use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+    let mut memory = MEMORYSTATUSEX { dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32, ..Default::default() };
+    if unsafe { GlobalMemoryStatusEx(&mut memory) }.is_err() { return false; }
+    save_headroom_sufficient(memory.ullAvailPageFile, audio_bytes)
+}
+fn save_headroom_sufficient(available: u64, audio_bytes: u64) -> bool {
+    available >= (512 * 1024 * 1024u64).saturating_add(audio_bytes.saturating_mul(3))
+}
 pub(crate) const MAX_RAW_QUEUE: usize = 8;
-const AUDIO_PTS_RESYNC: i64 = 5 * SECOND_100NS / 100;
 const MIC_READY_WAIT_MS: u64 = 2500;
 
 pub const AUDIO_RATE: u32 = 48_000;
 pub const AUDIO_CHANNELS: u32 = 2;
 
+pub(crate) fn qpc_ticks_to_100ns(ticks: i64) -> i64 {
+    static FREQUENCY: std::sync::OnceLock<i64> = std::sync::OnceLock::new();
+    let frequency = *FREQUENCY.get_or_init(|| unsafe {
+        let mut frequency = 0;
+        let _ = QueryPerformanceFrequency(&mut frequency);
+        frequency.max(1)
+    });
+    ((ticks as i128 * SECOND_100NS as i128) / frequency as i128).clamp(0, i64::MAX as i128) as i64
+}
 pub(crate) fn qpc100ns() -> i64 {
     unsafe {
-        let mut t = 0i64;
-        let mut f = 0i64;
-        if QueryPerformanceFrequency(&mut f).is_err() || f == 0 {
-            return 0;
-        }
-        if QueryPerformanceCounter(&mut t).is_err() {
-            return 0;
-        }
-        t * SECOND_100NS / f
+        let mut ticks = 0;
+        let _ = QueryPerformanceCounter(&mut ticks);
+        qpc_ticks_to_100ns(ticks)
     }
 }
 
@@ -57,7 +68,7 @@ pub struct RawFrame {
 
 #[derive(Clone)]
 pub struct RingVideo {
-    pub data: Vec<u8>,
+    pub data: Arc<Vec<u8>>,
     pub keyframe: bool,
     pub pts100ns: i64,
 }
@@ -71,12 +82,17 @@ pub struct RingAudio {
 
 pub struct SharedState {
     pub running: AtomicBool,
+    pub pause_clock: Mutex<(Option<i64>, i64, i64)>,
+    pub mic_continuous: AtomicBool,
+    pub target_window: AtomicIsize,
+    pub capture_options: AtomicU32,
     pub has_error: AtomicBool,
     pub ring_seconds: AtomicI32,
     pub fps: AtomicI32,
     pub res_w: AtomicI32,
     pub res_h: AtomicI32,
     pub start_qpc: AtomicI64,
+    pub end_time: AtomicI64,
     pub frames_encoded: AtomicI64,
     pub frames_dropped: AtomicI64,
     pub audio_frames: AtomicI64,
@@ -145,15 +161,55 @@ pub struct SharedState {
 }
 
 impl SharedState {
+    pub fn capture_time(&self, source: i64) -> Option<i64> {
+        let clock = self.pause_clock.lock().unwrap_or_else(|e| e.into_inner());
+        if clock.0.is_some() || source < clock.2 {
+            return None;
+        }
+        let pts = source - self.start_qpc.load(Ordering::Acquire) - clock.1;
+        (pts >= 0).then_some(pts)
+    }
+    pub fn timeline_now(&self) -> i64 {
+        let clock = self.pause_clock.lock().unwrap_or_else(|e| e.into_inner());
+        let source = if self.mic_continuous.load(Ordering::Acquire) {
+            qpc100ns()
+        } else {
+            clock.0.unwrap_or_else(qpc100ns)
+        };
+        (source - self.start_qpc.load(Ordering::Acquire) - clock.1).max(0)
+    }
+    pub fn microphone_time(&self, source: i64) -> Option<i64> {
+        let pts = source - self.start_qpc.load(Ordering::Acquire);
+        (pts >= 0).then_some(pts)
+    }
+    pub fn pause_at(&self, pause: bool, now: i64) {
+        let mut clock = self.pause_clock.lock().unwrap_or_else(|e| e.into_inner());
+        match (pause, clock.0) {
+            (true, None) => clock.0 = Some(now),
+            (false, Some(start)) => {
+                if !self.mic_continuous.load(Ordering::Acquire) {
+                    clock.1 += (now - start).max(0);
+                }
+                clock.0 = None;
+                clock.2 = now;
+            }
+            _ => {}
+        }
+    }
     pub fn new() -> Arc<Self> {
         Arc::new(SharedState {
             running: AtomicBool::new(false),
+            pause_clock: Mutex::new((None, 0, 0)),
+            mic_continuous: AtomicBool::new(false),
+            target_window: AtomicIsize::new(0),
+            capture_options: AtomicU32::new(2 | 8 | 1),
             has_error: AtomicBool::new(false),
             ring_seconds: AtomicI32::new(60),
             fps: AtomicI32::new(30),
             res_w: AtomicI32::new(1280),
             res_h: AtomicI32::new(720),
             start_qpc: AtomicI64::new(0),
+            end_time: AtomicI64::new(0),
             frames_encoded: AtomicI64::new(0),
             frames_dropped: AtomicI64::new(0),
             audio_frames: AtomicI64::new(0),
@@ -239,7 +295,9 @@ impl SharedState {
     pub fn push_frame(&self, frame: RawFrame) {
         let mut q = self.raw.lock().unwrap_or_else(|e| e.into_inner());
         if q.len() >= MAX_RAW_QUEUE {
-            q.pop_front();
+            if let Some(old) = q.pop_front() {
+                self.recycle_bgra(old.bgra);
+            }
             self.n_queue_drop.fetch_add(1, Ordering::Relaxed);
             self.frames_dropped.fetch_add(1, Ordering::Relaxed);
         }
@@ -248,22 +306,24 @@ impl SharedState {
     }
 
     pub fn push_audio(&self, data: &[u8], frames: u32) {
+        self.push_audio_at(
+            data,
+            frames,
+            (qpc100ns() - self.start_qpc.load(Ordering::Acquire)).max(0),
+        );
+    }
+    pub fn push_audio_at(&self, data: &[u8], frames: u32, timestamp: i64) {
         if data.is_empty() || frames == 0 {
             return;
         }
-        let dur = (frames as i64 * SECOND_100NS) / AUDIO_RATE as i64;
+        let duration = frames as i64 * SECOND_100NS / AUDIO_RATE as i64;
         let pts = {
-            let mut next = self.audio_next_pts.lock().unwrap_or_else(|e| e.into_inner());
-            let cursor = *next;
-            let elapsed = qpc100ns() - self.start_qpc.load(Ordering::Relaxed);
-            let pts = if cursor == 0 {
-                elapsed.max(0)
-            } else if (elapsed - cursor).abs() > AUDIO_PTS_RESYNC {
-                elapsed.max(cursor)
-            } else {
-                cursor
-            };
-            *next = pts + dur;
+            let mut next = self
+                .audio_next_pts
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let pts = timestamp.max(*next);
+            *next = pts.saturating_add(duration);
             pts
         };
         let mut ring = self.aring.lock().unwrap_or_else(|e| e.into_inner());
@@ -277,28 +337,28 @@ impl SharedState {
         self.audio_frames
             .fetch_add(frames as i64, Ordering::Relaxed);
         self.audio_got_frames.store(1, Ordering::Relaxed);
-        self.sys_peak.fetch_max(peak_i16(data, 4), Ordering::Relaxed);
+        self.sys_peak
+            .fetch_max(peak_i16(data, 4), Ordering::Relaxed);
         let secs = self.ring_seconds.load(Ordering::Relaxed);
         trim_audio_ring(&mut ring, &self.aring_bytes, secs);
     }
 
     pub fn push_mic(&self, data: &[u8], frames: u32) {
+        self.push_mic_at(
+            data,
+            frames,
+            (qpc100ns() - self.start_qpc.load(Ordering::Acquire)).max(0),
+        );
+    }
+    pub fn push_mic_at(&self, data: &[u8], frames: u32, timestamp: i64) {
         if data.is_empty() || frames == 0 {
             return;
         }
-        let dur = (frames as i64 * SECOND_100NS) / AUDIO_RATE as i64;
+        let duration = frames as i64 * SECOND_100NS / AUDIO_RATE as i64;
         let pts = {
             let mut next = self.mic_next_pts.lock().unwrap_or_else(|e| e.into_inner());
-            let cursor = *next;
-            let elapsed = qpc100ns() - self.start_qpc.load(Ordering::Relaxed);
-            let pts = if cursor == 0 {
-                elapsed.max(0)
-            } else if (elapsed - cursor).abs() > AUDIO_PTS_RESYNC {
-                elapsed.max(cursor)
-            } else {
-                cursor
-            };
-            *next = pts + dur;
+            let pts = timestamp.max(*next);
+            *next = pts.saturating_add(duration);
             pts
         };
         let mut ring = self.mring.lock().unwrap_or_else(|e| e.into_inner());
@@ -309,25 +369,38 @@ impl SharedState {
         });
         self.mring_bytes
             .fetch_add(data.len() as i64, Ordering::Relaxed);
-        self.mic_frames
-            .fetch_add(frames as i64, Ordering::Relaxed);
+        self.mic_frames.fetch_add(frames as i64, Ordering::Relaxed);
         self.mic_got_frames.store(1, Ordering::Relaxed);
-        self.mic_peak.fetch_max(peak_i16(data, 2), Ordering::Relaxed);
+        self.mic_peak
+            .fetch_max(peak_i16(data, 2), Ordering::Relaxed);
         let secs = self.ring_seconds.load(Ordering::Relaxed);
         trim_audio_ring(&mut ring, &self.mring_bytes, secs);
     }
 
-    pub fn reset_for_start(&self, ring_seconds: i32, fps: i32, res_w: i32, res_h: i32, start_qpc: i64) {
+    pub fn reset_for_start(
+        &self,
+        ring_seconds: i32,
+        fps: i32,
+        res_w: i32,
+        res_h: i32,
+        start_qpc: i64,
+    ) {
         self.ring_seconds.store(ring_seconds, Ordering::Relaxed);
         self.fps.store(fps, Ordering::Relaxed);
         self.min_gap_100ns.store(
-            if fps > 0 { SECOND_100NS / fps as i64 } else { 0 },
+            if fps > 0 {
+                SECOND_100NS / fps as i64
+            } else {
+                0
+            },
             Ordering::Relaxed,
         );
         self.last_capture_pts.store(0, Ordering::Relaxed);
         self.res_w.store(res_w, Ordering::Relaxed);
         self.res_h.store(res_h, Ordering::Relaxed);
         self.start_qpc.store(start_qpc, Ordering::Relaxed);
+        *self.pause_clock.lock().unwrap_or_else(|e| e.into_inner()) = (None, 0, start_qpc);
+        self.end_time.store(0, Ordering::Relaxed);
         self.frames_encoded.store(0, Ordering::Relaxed);
         self.frames_dropped.store(0, Ordering::Relaxed);
         self.audio_frames.store(0, Ordering::Relaxed);
@@ -369,8 +442,14 @@ impl SharedState {
         self.gpu_frames.store(0, Ordering::Relaxed);
         self.enc_resolved.store(false, Ordering::Relaxed);
         self.enc_fail_hr.store(0, Ordering::Relaxed);
-        *self.keyframe_pending.lock().unwrap_or_else(|e| e.into_inner()) = true;
-        *self.audio_next_pts.lock().unwrap_or_else(|e| e.into_inner()) = 0;
+        *self
+            .keyframe_pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = true;
+        *self
+            .audio_next_pts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = 0;
         *self.mic_next_pts.lock().unwrap_or_else(|e| e.into_inner()) = 0;
     }
 }
@@ -443,7 +522,10 @@ enum GpuExit {
     Rebuild(Arc<encoder::GpuInput>),
 }
 
-fn wait_gpu_input(shared: &Arc<SharedState>, timeout: std::time::Duration) -> Option<Arc<encoder::GpuInput>> {
+fn wait_gpu_input(
+    shared: &Arc<SharedState>,
+    timeout: std::time::Duration,
+) -> Option<Arc<encoder::GpuInput>> {
     let deadline = Instant::now() + timeout;
     loop {
         if !shared.running.load(Ordering::Relaxed) {
@@ -452,7 +534,7 @@ fn wait_gpu_input(shared: &Arc<SharedState>, timeout: std::time::Duration) -> Op
         if let Some(g) = shared.gpu.lock().unwrap_or_else(|e| e.into_inner()).clone() {
             return Some(g);
         }
-        if Instant::now() >= deadline {
+        if Instant::now() >= deadline && shared.capture_options.load(Ordering::Acquire) & 32 == 0 {
             return None;
         }
         let q = shared.raw.lock().unwrap_or_else(|e| e.into_inner());
@@ -477,10 +559,12 @@ fn encoder_thread(
             let _ = tx.send(Ok((encoder::EncoderKind::HardwareGpu, 0)));
         }
         match wait_gpu_input(&shared, std::time::Duration::from_secs(4)) {
-            Some(input) => match encoder::GpuEncoder::create(input, cfg.w, cfg.h, cfg.fps, cfg.bps, improved) {
-                Ok(g) => gpu_enc = Some(g),
-                Err(hr) => shared.hw_init_hr.store(hr, Ordering::Relaxed),
-            },
+            Some(input) => {
+                match encoder::GpuEncoder::create(input, cfg.w, cfg.h, cfg.fps, cfg.bps, improved) {
+                    Ok(g) => gpu_enc = Some(g),
+                    Err(hr) => shared.hw_init_hr.store(hr, Ordering::Relaxed),
+                }
+            }
             None => shared.hw_init_hr.store(-110, Ordering::Relaxed),
         }
         if gpu_enc.is_none() {
@@ -498,7 +582,9 @@ fn encoder_thread(
                 } else if e.hw_init_hr != 0 && shared.hw_init_hr.load(Ordering::Relaxed) == 0 {
                     shared.hw_init_hr.store(e.hw_init_hr, Ordering::Relaxed);
                 }
-                shared.active_encoder.store(e.kind() as i32, Ordering::Relaxed);
+                shared
+                    .active_encoder
+                    .store(e.kind() as i32, Ordering::Relaxed);
                 cpu_enc = Some(e);
             }
             Err(hr) => {
@@ -525,7 +611,9 @@ fn encoder_thread(
                 GpuExit::Stop => return,
                 GpuExit::Rebuild(input) => {
                     drop(gpu_enc.take());
-                    match encoder::GpuEncoder::create(input, cfg.w, cfg.h, cfg.fps, cfg.bps, improved) {
+                    match encoder::GpuEncoder::create(
+                        input, cfg.w, cfg.h, cfg.fps, cfg.bps, improved,
+                    ) {
                         Ok(n) => {
                             gpu_enc = Some(n);
                             continue;
@@ -542,9 +630,14 @@ fn encoder_thread(
             *shared.gpu.lock().unwrap_or_else(|e| e.into_inner()) = None;
             match encoder::VideoEncoder::create(cfg.pref, cfg.w, cfg.h, cfg.fps, cfg.bps) {
                 Ok(e) => {
-                    shared.active_encoder.store(e.kind() as i32, Ordering::Relaxed);
+                    shared
+                        .active_encoder
+                        .store(e.kind() as i32, Ordering::Relaxed);
                     cpu_enc = Some(e);
-                    *shared.keyframe_pending.lock().unwrap_or_else(|e| e.into_inner()) = true;
+                    *shared
+                        .keyframe_pending
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner()) = true;
                 }
                 Err(_) => return,
             }
@@ -557,230 +650,157 @@ fn encoder_thread(
     }
 }
 
-fn gpu_loop(shared: &Arc<SharedState>, cfg: &EncoderConfig, enc: &mut encoder::GpuEncoder) -> GpuExit {
-    let gap = {
-        let g = shared.min_gap_100ns.load(Ordering::Relaxed);
-        if g > 0 { g } else { SECOND_100NS / cfg.fps.max(1) as i64 }
-    };
-    let start_qpc = shared.start_qpc.load(Ordering::Relaxed);
-    let mut out: Vec<encoder::EncodedFrame> = Vec::new();
-    let mut next_slot: i64 = qpc100ns() - start_qpc;
-    let mut seen = shared.gpu_frames.load(Ordering::Relaxed);
-    let mut seen_gen = shared.gpu_gen.load(Ordering::Relaxed);
-    let mut fails = 0u32;
-
-    loop {
-        if !shared.running.load(Ordering::Relaxed) {
-            return GpuExit::Stop;
-        }
-        let now = qpc100ns() - start_qpc;
-        if now < next_slot {
-            let remaining_ns = ((next_slot - now) * 100).max(0) as u64;
-            let t0 = Instant::now();
-            let q = shared.raw.lock().unwrap_or_else(|e| e.into_inner());
-            let _ = shared
-                .raw_wait
-                .wait_timeout(q, std::time::Duration::from_nanos(remaining_ns))
-                .unwrap_or_else(|e| e.into_inner());
-            shared
-                .t_wait_ns
-                .fetch_add(t0.elapsed().as_nanos() as i64, Ordering::Relaxed);
-            continue;
-        }
-
-        let frames = shared.gpu_frames.load(Ordering::Relaxed);
-        if frames > seen + 1 {
-            shared.n_superseded.fetch_add(frames - seen - 1, Ordering::Relaxed);
-        }
-        seen = frames;
-
-        let pts = next_slot;
-        next_slot += gap;
-        let after = qpc100ns() - start_qpc;
-        if after > next_slot {
-            shared.n_slot_resync.fetch_add(1, Ordering::Relaxed);
-            next_slot = after + gap;
-        }
-
-        let gen = shared.gpu_gen.load(Ordering::Relaxed);
-        if gen != seen_gen {
-            seen_gen = gen;
-            let Some(new_in) = shared.gpu.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
+fn gpu_loop(
+    shared: &Arc<SharedState>,
+    _cfg: &EncoderConfig,
+    enc: &mut encoder::GpuEncoder,
+) -> GpuExit {
+    let mut out = Vec::new();
+    let mut seen_gen = shared.gpu_gen.load(Ordering::Acquire);
+    let mut fails = 0;
+    while shared.running.load(Ordering::Acquire) {
+        let generation = shared.gpu_gen.load(Ordering::Acquire);
+        let sequence = shared.gpu_frames.load(Ordering::Acquire);
+        if generation != seen_gen {
+            seen_gen = generation;
+            let Some(input) = shared.gpu.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
                 return GpuExit::Fallback(-111);
             };
-            if enc.device_differs(&new_in) {
-                return GpuExit::Rebuild(new_in);
+            if enc.device_differs(&input) {
+                return GpuExit::Rebuild(input);
             }
-            if enc.rebind(new_in).is_err() {
+            if enc.rebind(input).is_err() {
                 return GpuExit::Fallback(-112);
             }
         }
-
-        let pending = *shared.keyframe_pending.lock().unwrap_or_else(|e| e.into_inner());
+        let pending = std::mem::take(
+            &mut *shared
+                .keyframe_pending
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()),
+        );
         if pending {
             enc.force_idr();
-            *shared.keyframe_pending.lock().unwrap_or_else(|e| e.into_inner()) = false;
         }
-
         out.clear();
-        let t_enc = Instant::now();
-        let result = enc.encode(pts, &mut out);
-        let total_ns = t_enc.elapsed().as_nanos() as i64;
-        let conv_ns = enc.take_convert_ns();
-        shared.t_convert_ns.fetch_add(conv_ns, Ordering::Relaxed);
-        shared
-            .t_encode_ns
-            .fetch_add((total_ns - conv_ns).max(0), Ordering::Relaxed);
-        shared.n_encode_calls.fetch_add(1, Ordering::Relaxed);
-
+        let start = Instant::now();
+        let result = enc.encode_latest(&mut out);
+        shared.t_convert_ns.fetch_add(enc.take_convert_ns(), Ordering::Relaxed);
         match result {
-            Ok(()) => fails = 0,
-            Err(code) => {
-                shared.frames_dropped.fetch_add(1, Ordering::Relaxed);
+            Ok(Some(_)) => {
+                fails = 0;
+                shared.n_encode_calls.fetch_add(1, Ordering::Relaxed);
+                shared
+                    .t_encode_ns
+                    .fetch_add(start.elapsed().as_nanos() as i64, Ordering::Relaxed);
+            }
+            Ok(None) => {}
+            Err(hr) => {
                 fails += 1;
+                shared.frames_dropped.fetch_add(1, Ordering::Relaxed);
                 if fails >= 8 {
-                    return GpuExit::Fallback(code);
+                    return GpuExit::Fallback(hr);
                 }
             }
         }
         for encoded in out.drain(..) {
             push_encoded(shared, encoded);
         }
+        let queue = shared.raw.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = shared
+            .raw_wait
+            .wait_timeout_while(queue, Duration::from_millis(10), |_| {
+                shared.running.load(Ordering::Acquire)
+                    && shared.gpu_frames.load(Ordering::Acquire) == sequence
+            })
+            .unwrap_or_else(|e| e.into_inner());
     }
+    enc.flush(&mut out);
+    for encoded in out.drain(..) {
+        push_encoded(shared, encoded);
+    }
+    GpuExit::Stop
 }
-
 fn cpu_loop(shared: &Arc<SharedState>, enc: &mut encoder::VideoEncoder) {
-    let mut out: Vec<encoder::EncodedFrame> = Vec::new();
-
-    let min_gap = shared.min_gap_100ns.load(Ordering::Relaxed).max(0);
-    let paced = min_gap > 0;
-    let start_qpc = shared.start_qpc.load(Ordering::Relaxed);
-    let mut next_slot: i64 = 0;
-    let mut primed = false;
-    let mut last: Option<RawFrame> = None;
-
-    'slots: loop {
-        let mut got: Option<RawFrame> = None;
-        {
-            let mut q = shared.raw.lock().unwrap_or_else(|e| e.into_inner());
-            loop {
-                if !shared.running.load(Ordering::Relaxed) {
-                    break 'slots;
-                }
-                if primed {
-                    let now = qpc100ns() - start_qpc;
-                    if now >= next_slot {
-                        while let Some(f) = q.pop_front() {
-                            if got.is_some() {
-                                shared.n_superseded.fetch_add(1, Ordering::Relaxed);
-                            }
-                            got = Some(f);
-                        }
-                        if got.is_some() {
-                            break;
-                        }
-                        break;
-                    }
-                    let remaining_ns = ((next_slot - now) * 100).max(0) as u64;
-                    let t0 = Instant::now();
-                    let (g, _) = shared
-                        .raw_wait
-                        .wait_timeout(q, std::time::Duration::from_nanos(remaining_ns))
-                        .unwrap_or_else(|e| e.into_inner());
-                    shared
-                        .t_wait_ns
-                        .fetch_add(t0.elapsed().as_nanos() as i64, Ordering::Relaxed);
-                    q = g;
-                    continue;
-                }
-                if let Some(f) = q.pop_front() {
-                    got = Some(f);
-                    break;
-                }
-                let t0 = Instant::now();
-                q = shared.raw_wait.wait(q).unwrap_or_else(|e| e.into_inner());
-                shared
-                    .t_wait_ns
-                    .fetch_add(t0.elapsed().as_nanos() as i64, Ordering::Relaxed);
+    let mut out = Vec::new();
+    let mut last_pts = -1;
+    while shared.running.load(Ordering::Acquire) {
+        let frame = {
+            let mut queue = shared.raw.lock().unwrap_or_else(|e| e.into_inner());
+            while queue.is_empty() && shared.running.load(Ordering::Acquire) {
+                let waited = shared
+                    .raw_wait
+                    .wait_timeout(queue, Duration::from_millis(100))
+                    .unwrap_or_else(|e| e.into_inner());
+                queue = waited.0;
             }
-        }
-
-        if !shared.running.load(Ordering::Relaxed) {
-            break 'slots;
-        }
-
-        let pts = if let Some(f) = got.as_ref() {
-            if paced {
-                let p = if primed { next_slot } else { f.pts100ns };
-                if primed {
-                    next_slot += min_gap;
-                } else {
-                    next_slot = f.pts100ns + min_gap;
-                    primed = true;
-                }
-                let now = qpc100ns() - start_qpc;
-                if now > next_slot {
-                    shared.n_slot_resync.fetch_add(1, Ordering::Relaxed);
-                    next_slot = now + min_gap;
-                }
-                p
-            } else {
-                f.pts100ns
+            let newest = queue.pop_back();
+            while let Some(old) = queue.pop_front() {
+                shared.recycle_bgra(old.bgra);
+                shared.n_superseded.fetch_add(1, Ordering::Relaxed);
             }
-        } else if paced {
-            let p = next_slot;
-            next_slot += min_gap;
-            p
-        } else {
+            newest
+        };
+        let Some(frame) = frame else {
             continue;
         };
-
-        let pending = *shared.keyframe_pending.lock().unwrap_or_else(|e| e.into_inner());
-        if pending {
+        if frame.pts100ns <= last_pts {
+            shared.recycle_bgra(frame.bgra);
+            continue;
+        }
+        last_pts = frame.pts100ns;
+        if std::mem::take(
+            &mut *shared
+                .keyframe_pending
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()),
+        ) {
             enc.force_idr();
-            *shared.keyframe_pending.lock().unwrap_or_else(|e| e.into_inner()) = false;
         }
-
-        if let Some(f) = got.take() {
-            if let Some(old) = last.replace(f) {
-                shared.recycle_bgra(old.bgra);
-            }
-        }
-        let src = last.as_ref().expect("a slot always has a frame to encode");
-
         out.clear();
-        let t_enc = Instant::now();
-        let result = enc.encode_bgra(&src.bgra, src.w, src.h, src.w * 4, pts, &mut out);
-        let total_ns = t_enc.elapsed().as_nanos() as i64;
-        let conv_ns = enc.take_convert_ns();
-        shared.t_convert_ns.fetch_add(conv_ns, Ordering::Relaxed);
+        let start = Instant::now();
+        let result = enc.encode_bgra(
+            &frame.bgra,
+            frame.w,
+            frame.h,
+            frame.w * 4,
+            frame.pts100ns,
+            &mut out,
+        );
+        shared.recycle_bgra(frame.bgra);
+        shared.n_encode_calls.fetch_add(1, Ordering::Relaxed);
         shared
             .t_encode_ns
-            .fetch_add((total_ns - conv_ns).max(0), Ordering::Relaxed);
-        shared.n_encode_calls.fetch_add(1, Ordering::Relaxed);
-        shared.active_encoder.store(enc.kind() as i32, Ordering::Relaxed);
-
+            .fetch_add(start.elapsed().as_nanos() as i64, Ordering::Relaxed);
+        shared
+            .active_encoder
+            .store(enc.kind() as i32, Ordering::Relaxed);
         if result.is_err() {
             shared.frames_dropped.fetch_add(1, Ordering::Relaxed);
         }
-
         for encoded in out.drain(..) {
-            push_encoded(&shared, encoded);
+            push_encoded(shared, encoded);
         }
     }
-
     out.clear();
     enc.flush(&mut out);
     for encoded in out.drain(..) {
-        push_encoded(&shared, encoded);
+        push_encoded(shared, encoded);
     }
 }
 
 fn push_encoded(shared: &Arc<SharedState>, encoded: encoder::EncodedFrame) {
     let bytes = encoded.data.len() as i64;
     let mut ring = shared.vring.lock().unwrap_or_else(|e| e.into_inner());
+    if ring
+        .last()
+        .is_some_and(|last| encoded.pts100ns <= last.pts100ns)
+    {
+        shared.frames_dropped.fetch_add(1, Ordering::Relaxed);
+        return;
+    }
     ring.push(RingVideo {
-        data: encoded.data,
+        data: Arc::new(encoded.data),
         keyframe: encoded.keyframe,
         pts100ns: encoded.pts100ns,
     });
@@ -793,6 +813,7 @@ fn push_encoded(shared: &Arc<SharedState>, encoded: encoder::EncodedFrame) {
 }
 
 #[derive(Debug, Default, Clone, Copy)]
+#[repr(C)]
 pub struct DebugStats {
     pub t_capture_ns: i64,
     pub n_capture: i64,
@@ -873,6 +894,9 @@ impl Engine {
         capture_method: i32,
         start_qpc_out: &mut i64,
     ) -> i32 {
+        if !self.shared.running.load(Ordering::Acquire) {
+            self.stop();
+        }
         let _guard = self.op.lock().unwrap_or_else(|e| e.into_inner());
         if self.shared.running.load(Ordering::Relaxed) {
             *start_qpc_out = self.shared.start_qpc.load(Ordering::Relaxed);
@@ -883,11 +907,25 @@ impl Engine {
             self.note_fail(STAGE_CREATE_ITEM, 0);
             return IR_FAIL;
         };
-        let (res_w, res_h) = fit_resolution(mon.w, mon.h, cap_w, cap_h);
+        let target = self.shared.target_window.load(Ordering::Acquire);
+        let dimensions = if target != 0 {
+            unsafe {
+                capture::window_size(
+                    windows::Win32::Foundation::HWND(target as *mut _),
+                    self.shared.capture_options.load(Ordering::Relaxed) & 1 != 0,
+                )
+            }
+        } else {
+            Some((mon.w, mon.h))
+        };
+        let Some((width, height)) = dimensions else {
+            self.note_fail(STAGE_CREATE_ITEM, -1);
+            return IR_FAIL;
+        };
+        let (res_w, res_h) = fit_resolution(width, height, cap_w, cap_h);
         let fps = fps.clamp(15, 240);
         let pref = encoder::EncoderPref::from_i32(encoder_pref).resolved();
         let gpu_path = pref != encoder::EncoderPref::Software
-            && capture::CaptureMethod::from_i32(capture_method) == capture::CaptureMethod::Wgc
             && std::env::var("IR_GPU").map_or(true, |v| v != "0");
         let bps = (bitrate_kbps.max(1) as i32).max(1) as u32 * 1000;
 
@@ -895,7 +933,12 @@ impl Engine {
         *start_qpc_out = start_qpc;
         self.shared
             .reset_for_start(ring_seconds.max(1), fps, res_w, res_h, start_qpc);
-        self.shared.gpu_mode.store(gpu_path as i32, Ordering::Relaxed);
+        self.shared
+            .mic_continuous
+            .store(capture_mic != 0, Ordering::Release);
+        self.shared
+            .gpu_mode
+            .store(gpu_path as i32, Ordering::Relaxed);
         self.shared.running.store(true, Ordering::Relaxed);
         self.fail_stage.store(0, Ordering::Relaxed);
         self.fail_hr.store(0, Ordering::Relaxed);
@@ -929,7 +972,9 @@ impl Engine {
             }
             match rx.recv_timeout(std::time::Duration::from_secs(15)) {
                 Ok(Ok((kind, hw_hr))) => {
-                    self.shared.active_encoder.store(kind as i32, Ordering::Relaxed);
+                    self.shared
+                        .active_encoder
+                        .store(kind as i32, Ordering::Relaxed);
                     self.shared.hw_init_hr.store(hw_hr, Ordering::Relaxed);
                 }
                 Ok(Err(hr)) => {
@@ -970,7 +1015,7 @@ impl Engine {
             }
         }
 
-        if gpu_path {
+        if gpu_path && self.shared.capture_options.load(Ordering::Acquire) & 32 == 0 {
             let deadline = Instant::now() + std::time::Duration::from_secs(6);
             while !self.shared.enc_resolved.load(Ordering::Acquire) && Instant::now() < deadline {
                 std::thread::sleep(std::time::Duration::from_millis(5));
@@ -979,7 +1024,12 @@ impl Engine {
             if hr != 0 || !self.shared.enc_resolved.load(Ordering::Acquire) {
                 self.shared.running.store(false, Ordering::Relaxed);
                 self.shared.raw_wait.notify_all();
-                if let Some(mut cap) = self.capture.lock().unwrap_or_else(|e| e.into_inner()).take() {
+                if let Some(mut cap) = self
+                    .capture
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take()
+                {
                     cap.stop();
                 }
                 self.note_fail(STAGE_ENCODER, hr as i64);
@@ -1018,9 +1068,7 @@ impl Engine {
         loop {
             let settled = self.shared.mic_fail_hr.load(Ordering::Relaxed) != 0
                 || self.shared.mic_got_frames.load(Ordering::Relaxed) != 0;
-            if settled
-                || Instant::now() >= deadline
-                || !self.shared.running.load(Ordering::Relaxed)
+            if settled || Instant::now() >= deadline || !self.shared.running.load(Ordering::Relaxed)
             {
                 return;
             }
@@ -1030,22 +1078,43 @@ impl Engine {
 
     pub fn stop(&self) -> i32 {
         let _guard = self.op.lock().unwrap_or_else(|e| e.into_inner());
-        if !self.shared.running.load(Ordering::Relaxed) {
-            return IR_OK;
+        if self.shared.running.swap(false, Ordering::AcqRel) {
+            self.shared
+                .end_time
+                .store(self.shared.timeline_now(), Ordering::Release);
         }
-        self.shared.running.store(false, Ordering::Relaxed);
 
-        if let Some(mut cap) = self.capture.lock().unwrap_or_else(|e| e.into_inner()).take() {
+        if let Some(mut cap) = self
+            .capture
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
             cap.stop();
         }
-        if let Some(t) = self.audio_thread.lock().unwrap_or_else(|e| e.into_inner()).take() {
+        if let Some(t) = self
+            .audio_thread
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
             let _ = t.join();
         }
-        if let Some(t) = self.mic_thread.lock().unwrap_or_else(|e| e.into_inner()).take() {
+        if let Some(t) = self
+            .mic_thread
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
             let _ = t.join();
         }
         self.shared.raw_wait.notify_all();
-        if let Some(t) = self.enc_thread.lock().unwrap_or_else(|e| e.into_inner()).take() {
+        if let Some(t) = self
+            .enc_thread
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
             let _ = t.join();
         }
         self.shared.active_encoder.store(0, Ordering::Relaxed);
@@ -1054,20 +1123,21 @@ impl Engine {
 
     pub fn save(&self, path: &str, seconds_back: i32) -> i32 {
         let _guard = self.op.lock().unwrap_or_else(|e| e.into_inner());
-
-        let video: Vec<muxer::VideoSample> = {
+        let audio_bytes = self.shared.aring_bytes.load(Ordering::Relaxed).max(0) as u64
+            + self.shared.mring_bytes.load(Ordering::Relaxed).max(0) as u64;
+        if !save_memory_available(audio_bytes) {
+            return IR_LOW_MEMORY;
+        }
+        let snapshot: Vec<RingVideo> = {
             let v = self.shared.vring.lock().unwrap_or_else(|e| e.into_inner());
             if v.is_empty() {
                 return IR_NOT_ENOUGH_DATA;
             }
-            v.iter()
-                .map(|f| muxer::VideoSample {
-                    data: f.data.clone(),
-                    keyframe: f.keyframe,
-                    pts100ns: f.pts100ns,
-                })
-                .collect()
+            v.clone()
         };
+        let video: Vec<muxer::VideoSample> = snapshot.iter().map(|f| muxer::VideoSample {
+            data: f.data.as_slice(), keyframe: f.keyframe, pts100ns: f.pts100ns,
+        }).collect();
         let (sys, mic) = {
             let a = self.shared.aring.lock().unwrap_or_else(|e| e.into_inner());
             let m = self.shared.mring.lock().unwrap_or_else(|e| e.into_inner());
@@ -1079,9 +1149,9 @@ impl Engine {
             * AUDIO_RATE as i64;
         let mixed = audio::mix(&sys, &mic, max_frames);
         let audio: Vec<muxer::AudioSample> = mixed
-            .iter()
+            .into_iter()
             .map(|f| muxer::AudioSample {
-                data: f.data.clone(),
+                data: f.data,
                 frames: f.frames,
                 pts100ns: f.pts100ns,
             })
@@ -1090,7 +1160,15 @@ impl Engine {
         let fps = self.shared.fps.load(Ordering::Relaxed).max(1);
         let res_w = self.shared.res_w.load(Ordering::Relaxed).max(2) as u32;
         let res_h = self.shared.res_h.load(Ordering::Relaxed).max(2) as u32;
-        let rc = muxer::mux_to_mp4(
+        let end = if self.shared.running.load(Ordering::Acquire) {
+            self.shared.timeline_now()
+        } else {
+            self.shared
+                .end_time
+                .load(Ordering::Acquire)
+                .max(self.shared.last_capture_pts.load(Ordering::Acquire))
+        };
+        let rc = muxer::mux_to_mp4_until(
             path,
             &video,
             &audio,
@@ -1100,6 +1178,7 @@ impl Engine {
             res_w,
             res_h,
             seconds_back,
+            end,
         );
         if rc != IR_OK {
             self.note_fail(STAGE_MUX, 0);
@@ -1219,7 +1298,7 @@ fn fit_resolution(desk_w: i32, desk_h: i32, cap_w: i32, cap_h: i32) -> (i32, i32
     (w, h)
 }
 
-pub use muxer::{IR_FAIL, IR_NOT_ENOUGH_DATA, IR_OK};
+pub use muxer::{IR_FAIL, IR_LOW_MEMORY, IR_NOT_ENOUGH_DATA, IR_OK};
 
 macro_rules! guard {
     ($body:expr) => {
@@ -1285,7 +1364,9 @@ pub unsafe extern "C" fn IR_Start(
         let device: Option<String> = if len == 0 {
             None
         } else {
-            Some(String::from_utf16_lossy(std::slice::from_raw_parts(mic_device, len)))
+            Some(String::from_utf16_lossy(std::slice::from_raw_parts(
+                mic_device, len,
+            )))
         };
         let mut origin = 0i64;
         let rc = (*engine).start(
@@ -1341,6 +1422,15 @@ pub unsafe extern "C" fn IR_Save(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[no_mangle]
+pub unsafe extern "C" fn IR_GetDebugStats(engine: *mut Engine, stats: *mut DebugStats) -> i32 {
+    guard!({
+        if engine.is_null() || stats.is_null() { return IR_FAIL; }
+        *stats = (*engine).debug_stats();
+        IR_OK
+    })
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn IR_GetStatus(
     engine: *mut Engine,
@@ -1502,7 +1592,7 @@ pub unsafe extern "C" fn IR_HwInitHr(engine: *mut Engine) -> i32 {
 
 #[no_mangle]
 pub unsafe extern "C" fn IR_Version() -> *const c_char {
-    b"rust-1.1\0".as_ptr() as *const c_char
+    b"rust-wcap-2.0\0".as_ptr() as *const c_char
 }
 
 unsafe fn copy_wide(text: &str, out: *mut u16, cap: i32) {
@@ -1578,6 +1668,159 @@ pub unsafe extern "C" fn IR_MicStatus(
                 .unwrap_or_else(|e| e.into_inner())
                 .clone();
             copy_wide(&text, active_name, active_cap);
+        }
+    }));
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn IR_SetCaptureTarget(
+    engine: *mut Engine,
+    window: isize,
+    options: u32,
+) -> i32 {
+    guard!({
+        let Some(engine) = engine.as_ref() else {
+            return IR_FAIL;
+        };
+        let _op = engine.op.lock().unwrap_or_else(|e| e.into_inner());
+        if engine.is_running() {
+            return IR_FAIL;
+        }
+        if window != 0
+            && capture::window_size(
+                windows::Win32::Foundation::HWND(window as *mut _),
+                options & 1 != 0,
+            )
+            .is_none()
+        {
+            return IR_FAIL;
+        }
+        engine.shared.target_window.store(window, Ordering::Release);
+        engine
+            .shared
+            .capture_options
+            .store(options & 127, Ordering::Release);
+        IR_OK
+    })
+}
+#[no_mangle]
+pub unsafe extern "C" fn IR_GetWindowCount() -> i32 {
+    guard!(capture::enumerate_windows().len() as i32)
+}
+#[no_mangle]
+pub unsafe extern "C" fn IR_SetPaused(engine: *mut Engine, paused: i32) -> i32 {
+    guard!({
+        let Some(engine) = engine.as_ref() else {
+            return IR_FAIL;
+        };
+        let _op = engine.op.lock().unwrap_or_else(|e| e.into_inner());
+        engine.shared.pause_at(paused != 0, qpc100ns());
+        IR_OK
+    })
+}
+#[cfg(test)]
+mod pause_tests {
+    use super::*;
+    #[test]
+    fn replay_save_requires_commit_reserve_including_audio_workspace() {
+        let reserve = 512 * 1024 * 1024;
+        assert!(!save_headroom_sufficient(reserve - 1, 0));
+        assert!(save_headroom_sufficient(reserve, 0));
+        let audio = 24 * 1024 * 1024;
+        assert!(!save_headroom_sufficient(reserve + audio * 3 - 1, audio));
+        assert!(save_headroom_sufficient(reserve + audio * 3, audio));
+    }
+
+    #[test]
+    fn snapshot_keeps_encoded_packets_alive_when_the_ring_is_trimmed() {
+        let state = SharedState::new();
+        push_encoded(&state, encoder::EncodedFrame {
+            data: vec![0, 0, 1, 0x65, 0x88], keyframe: true, pts100ns: 1,
+        });
+        let snapshot = state.vring.lock().unwrap().clone();
+        let packet = snapshot[0].data.as_ptr();
+        state.vring.lock().unwrap().clear();
+        assert_eq!(snapshot[0].data.as_ptr(), packet);
+        assert_eq!(Arc::strong_count(&snapshot[0].data), 1);
+        assert_eq!(snapshot[0].data.as_slice(), &[0, 0, 1, 0x65, 0x88]);
+    }
+    #[test]
+    fn pause_removes_absent_time_and_rejects_stale_packets() {
+        let state = SharedState::new();
+        state.reset_for_start(60, 60, 640, 480, 100);
+        assert_eq!(state.capture_time(200), Some(100));
+        state.pause_at(true, 250);
+        assert_eq!(state.capture_time(300), None);
+        state.pause_at(true, 350);
+        state.pause_at(false, 750);
+        assert_eq!(state.capture_time(749), None);
+        assert_eq!(state.capture_time(750), Some(150));
+        assert_eq!(state.capture_time(800), Some(200));
+        state.pause_at(true, 850);
+        state.pause_at(false, 950);
+        assert_eq!(state.capture_time(1000), Some(300));
+    }
+    #[test]
+    fn restart_clears_pause_and_old_epoch() {
+        let state = SharedState::new();
+        state.reset_for_start(60, 60, 640, 480, 100);
+        state.pause_at(true, 200);
+        state.reset_for_start(60, 60, 640, 480, 1000);
+        assert_eq!(state.capture_time(999), None);
+        assert_eq!(state.capture_time(1100), Some(100));
+    }
+    #[test]
+    fn microphone_keeps_its_timeline_while_game_audio_and_video_pause() {
+        let state = SharedState::new();
+        state.reset_for_start(60, 60, 640, 480, 100);
+        state.mic_continuous.store(true, Ordering::Release);
+        state.pause_at(true, 200);
+        assert_eq!(state.capture_time(400), None);
+        assert_eq!(state.microphone_time(400), Some(300));
+        state.push_mic_at(&[0; 96], 48, state.microphone_time(400).unwrap());
+        assert_eq!(state.mic_frames.load(Ordering::Relaxed), 48);
+        assert_eq!(state.audio_frames.load(Ordering::Relaxed), 0);
+        state.pause_at(false, 700);
+        assert_eq!(state.capture_time(750), Some(650));
+        assert_eq!(state.microphone_time(750), Some(650));
+    }
+}
+#[no_mangle]
+pub unsafe extern "C" fn IR_GetWindowInfo(
+    index: i32,
+    window: *mut isize,
+    title: *mut u16,
+    capacity: i32,
+    width: *mut i32,
+    height: *mut i32,
+) {
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        if !window.is_null() {
+            *window = 0;
+        }
+        if !title.is_null() && capacity > 0 {
+            *title = 0;
+        }
+        let list = capture::enumerate_windows();
+        if let Some(info) = list.get(index.max(0) as usize) {
+            if !window.is_null() {
+                *window = info.handle;
+            }
+            if !width.is_null() {
+                *width = info.w;
+            }
+            if !height.is_null() {
+                *height = info.h;
+            }
+            if !title.is_null() && capacity > 0 {
+                let text: Vec<u16> = info
+                    .title
+                    .encode_utf16()
+                    .take(capacity as usize - 1)
+                    .collect();
+                std::ptr::copy_nonoverlapping(text.as_ptr(), title, text.len());
+                *title.add(text.len()) = 0;
+            }
         }
     }));
 }

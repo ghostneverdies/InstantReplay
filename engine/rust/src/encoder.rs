@@ -1,6 +1,4 @@
-use rayon::prelude::*;
 use std::time::Instant;
-
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum EncoderPref {
@@ -110,7 +108,10 @@ impl VideoEncoder {
         }
     }
 
-    pub fn flush(&mut self, _out: &mut Vec<EncodedFrame>) {}
+    pub fn flush(&mut self, out: &mut Vec<EncodedFrame>) {
+        let Inner::Mf(mf) = &mut self.inner;
+        let _ = mf.finish(out);
+    }
 
     pub fn force_idr(&mut self) {
         match &mut self.inner {
@@ -180,17 +181,18 @@ impl VideoEncoder {
     }
 }
 
-
 mod mf {
     use super::{bgra_to_nv12, EncodedFrame};
     use std::mem::ManuallyDrop;
     use std::time::{Duration, Instant};
-    use windows::core::{GUID, Interface};
+    use windows::core::{Interface, GUID};
     use windows::Win32::Graphics::Direct3D11::ID3D11Device;
     use windows::Win32::Graphics::Dxgi::IDXGIDevice;
     use windows::Win32::Media::MediaFoundation::*;
+    use windows::Win32::System::Com::{
+        CoInitializeEx, CoTaskMemFree, CoUninitialize, COINIT_MULTITHREADED,
+    };
     use windows::Win32::System::Variant::VARIANT;
-    use windows::Win32::System::Com::{CoInitializeEx, CoTaskMemFree, CoUninitialize, COINIT_MULTITHREADED};
 
     type R<T> = Result<T, i32>;
 
@@ -210,13 +212,20 @@ mod mf {
         Ok(b)
     }
 
-    pub fn surface_sample(tex: &windows::Win32::Graphics::Direct3D11::ID3D11Texture2D) -> R<Sample> {
+    pub fn surface_sample(
+        tex: &windows::Win32::Graphics::Direct3D11::ID3D11Texture2D,
+    ) -> R<Sample> {
         unsafe {
-            let buf = MFCreateDXGISurfaceBuffer(&windows::Win32::Graphics::Direct3D11::ID3D11Texture2D::IID, tex, 0, false)
-                .map_err(e)?;
+            let buf = MFCreateDXGISurfaceBuffer(
+                &windows::Win32::Graphics::Direct3D11::ID3D11Texture2D::IID,
+                tex,
+                0,
+                false,
+            )
+            .map_err(e)?;
             let max = buf.GetMaxLength().map_err(e)?;
             buf.SetCurrentLength(max).map_err(e)?;
-            let s = MFCreateSample().map_err(e)?;
+            let s: IMFSample = MFCreateTrackedSample().map_err(e)?.cast().map_err(e)?;
             s.AddBuffer(&buf).map_err(e)?;
             Ok(s)
         }
@@ -335,7 +344,11 @@ mod mf {
                 let mut acts: *mut Option<IMFActivate> = std::ptr::null_mut();
                 let mut count = 0u32;
                 let mut mgr: Option<IMFDXGIDeviceManager> = None;
-                let hw = if want_hardware { MFT_ENUM_FLAG_HARDWARE } else { MFT_ENUM_FLAG(0) };
+                let hw = if want_hardware {
+                    MFT_ENUM_FLAG_HARDWARE
+                } else {
+                    MFT_ENUM_FLAG_SYNCMFT
+                };
                 match device {
                     None => {
                         MFTEnumEx(
@@ -367,7 +380,10 @@ mod mf {
 
                         let mut token = 0u32;
                         MFCreateDXGIDeviceManager(&mut token, &mut mgr).map_err(e)?;
-                        mgr.as_ref().ok_or(-122)?.ResetDevice(dev, token).map_err(e)?;
+                        mgr.as_ref()
+                            .ok_or(-122)?
+                            .ResetDevice(dev, token)
+                            .map_err(e)?;
                     }
                 }
 
@@ -419,7 +435,8 @@ mod mf {
 
             let attrs = transform.GetAttributes().map_err(e)?;
             let _ = attrs.SetUINT32(&MF_TRANSFORM_ASYNC_UNLOCK, 1);
-            let _ = attrs.SetUINT32(&MF_LOW_LATENCY, 1);
+            let low_latency = 1;
+            let _ = attrs.SetUINT32(&MF_LOW_LATENCY, low_latency);
 
             if let Some(m) = mgr {
                 transform
@@ -429,20 +446,28 @@ mod mf {
 
             let codec = transform.cast::<ICodecAPI>().ok();
             if let Some(c) = &codec {
-                codec_u32(c, &CODECAPI_AVLowLatencyMode, 1);
-                codec_u32(c, &CODECAPI_AVEncCommonRateControlMode, 0);
+                codec_u32(c, &CODECAPI_AVLowLatencyMode, low_latency);
+                codec_u32(c, &CODECAPI_AVEncCommonRateControlMode, eAVEncCommonRateControlMode_UnconstrainedVBR.0 as u32);
                 codec_u32(c, &CODECAPI_AVEncCommonMeanBitRate, bps);
                 codec_u32(c, &CODECAPI_AVEncMPVGOPSize, fps.max(1));
                 codec_u32(c, &CODECAPI_AVEncMPVDefaultBPictureCount, 0);
             }
 
             let out_t = MFCreateMediaType().map_err(e)?;
-            out_t.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video).map_err(e)?;
-            out_t.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_H264).map_err(e)?;
+            out_t
+                .SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)
+                .map_err(e)?;
+            out_t
+                .SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_H264)
+                .map_err(e)?;
             out_t.SetUINT32(&MF_MT_AVG_BITRATE, bps).map_err(e)?;
             out_t.SetUINT64(&MF_MT_FRAME_SIZE, pack(w, h)).map_err(e)?;
-            out_t.SetUINT64(&MF_MT_FRAME_RATE, pack(fps.max(1), 1)).map_err(e)?;
-            out_t.SetUINT64(&MF_MT_PIXEL_ASPECT_RATIO, pack(1, 1)).map_err(e)?;
+            out_t
+                .SetUINT64(&MF_MT_FRAME_RATE, pack(fps.max(1), 1))
+                .map_err(e)?;
+            out_t
+                .SetUINT64(&MF_MT_PIXEL_ASPECT_RATIO, pack(1, 1))
+                .map_err(e)?;
             out_t
                 .SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32)
                 .map_err(e)?;
@@ -459,13 +484,16 @@ mod mf {
             transform.SetOutputType(0, &out_t, 0).map_err(e)?;
 
             let in_t = MFCreateMediaType().map_err(e)?;
-            in_t.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video).map_err(e)?;
-            in_t.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_NV12).map_err(e)?;
+            in_t.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)
+                .map_err(e)?;
+            in_t.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_NV12)
+                .map_err(e)?;
             in_t.SetUINT64(&MF_MT_FRAME_SIZE, pack(w, h)).map_err(e)?;
-            in_t.SetUINT64(&MF_MT_FRAME_RATE, pack(fps.max(1), 1)).map_err(e)?;
-            in_t.SetUINT64(&MF_MT_PIXEL_ASPECT_RATIO, pack(1, 1)).map_err(e)?;
-            in_t
-                .SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32)
+            in_t.SetUINT64(&MF_MT_FRAME_RATE, pack(fps.max(1), 1))
+                .map_err(e)?;
+            in_t.SetUINT64(&MF_MT_PIXEL_ASPECT_RATIO, pack(1, 1))
+                .map_err(e)?;
+            in_t.SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32)
                 .map_err(e)?;
             transform.SetInputType(0, &in_t, 0).map_err(e)?;
 
@@ -504,7 +532,10 @@ mod mf {
                 submitted: 0,
                 received: 0,
                 _mgr: None,
-                _rt: MfRuntime { com: false, mf: false },
+                _rt: MfRuntime {
+                    com: false,
+                    mf: false,
+                },
             })
         }
 
@@ -512,7 +543,11 @@ mod mf {
             if let Ok(ty) = t.GetOutputCurrentType(0) {
                 if let Ok(n) = ty.GetBlobSize(&MF_MT_MPEG_SEQUENCE_HEADER) {
                     let mut b = vec![0u8; n as usize];
-                    if n > 4 && ty.GetBlob(&MF_MT_MPEG_SEQUENCE_HEADER, &mut b, None).is_ok() {
+                    if n > 4
+                        && ty
+                            .GetBlob(&MF_MT_MPEG_SEQUENCE_HEADER, &mut b, None)
+                            .is_ok()
+                    {
                         if b.starts_with(&[0, 0, 0, 1]) || b.starts_with(&[0, 0, 1]) {
                             return b;
                         }
@@ -522,6 +557,29 @@ mod mf {
             Vec::new()
         }
 
+        pub fn finish(&mut self, out: &mut Vec<EncodedFrame>) -> R<()> {
+            unsafe {
+                self.transform
+                    .ProcessMessage(MFT_MESSAGE_NOTIFY_END_OF_STREAM, 0)
+                    .map_err(e)?;
+                self.transform
+                    .ProcessMessage(MFT_MESSAGE_COMMAND_DRAIN, 0)
+                    .map_err(e)?;
+                let deadline = Instant::now() + Duration::from_secs(2);
+                loop {
+                    if self.events.is_some() {
+                        self.pump(out)?;
+                    } else {
+                        self.drain_sync(out)?;
+                    }
+                    if self.received >= self.submitted || Instant::now() >= deadline {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Ok(())
+            }
+        }
         pub fn force_idr(&mut self) {
             if let Some(c) = &self.codec {
                 unsafe { codec_u32(c, &CODECAPI_AVEncVideoForceKeyFrame, 1) };
@@ -562,7 +620,16 @@ mod mf {
                 mb.Lock(&mut p, None, None).map_err(e)?;
                 let dst = std::slice::from_raw_parts_mut(p, len);
                 let t = Instant::now();
-                let ok = bgra_to_nv12(bgra, src_w, src_h, pitch, self.width, self.height, dst, &mut self.tmp_i420);
+                let ok = bgra_to_nv12(
+                    bgra,
+                    src_w,
+                    src_h,
+                    pitch,
+                    self.width,
+                    self.height,
+                    dst,
+                    &mut self.tmp_i420,
+                );
                 self.convert_ns += t.elapsed().as_nanos() as i64;
                 let _ = mb.Unlock();
                 if !ok {
@@ -596,7 +663,12 @@ mod mf {
             }
         }
 
-        pub fn encode_surface(&mut self, sample: &Sample, pts100ns: i64, out: &mut Vec<EncodedFrame>) -> R<()> {
+        pub fn encode_surface(
+            &mut self,
+            sample: &Sample,
+            pts100ns: i64,
+            out: &mut Vec<EncodedFrame>,
+        ) -> R<()> {
             unsafe {
                 sample.SetSampleTime(pts100ns).map_err(e)?;
                 sample.SetSampleDuration(self.frame_dur).map_err(e)?;
@@ -638,7 +710,12 @@ mod mf {
                 return Ok(());
             }
             loop {
-                let ev = match self.events.as_ref().expect("checked above").GetEvent(MF_EVENT_FLAG_NO_WAIT) {
+                let ev = match self
+                    .events
+                    .as_ref()
+                    .expect("checked above")
+                    .GetEvent(MF_EVENT_FLAG_NO_WAIT)
+                {
                     Ok(ev) => ev,
                     Err(er) => {
                         if er.code() == MF_E_NO_EVENTS_AVAILABLE {
@@ -688,7 +765,8 @@ mod mf {
             let mb = sample.ConvertToContiguousBuffer().map_err(e)?;
             let mut p: *mut u8 = std::ptr::null_mut();
             let mut len = 0u32;
-            mb.Lock(&mut p, None, Some(&mut len as *mut u32)).map_err(e)?;
+            mb.Lock(&mut p, None, Some(&mut len as *mut u32))
+                .map_err(e)?;
             let mut data = if p.is_null() {
                 Vec::new()
             } else {
@@ -727,13 +805,14 @@ mod mf {
     impl Drop for MfEncoder {
         fn drop(&mut self) {
             unsafe {
-                let _ = self.transform.ProcessMessage(MFT_MESSAGE_NOTIFY_END_OF_STREAM, 0);
+                let _ = self
+                    .transform
+                    .ProcessMessage(MFT_MESSAGE_NOTIFY_END_OF_STREAM, 0);
                 let _ = self.transform.ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, 0);
             }
         }
     }
 }
-
 
 const GPU_RING: usize = 8;
 
@@ -744,6 +823,7 @@ pub struct GpuInput {
     latest: windows::Win32::Graphics::Direct3D11::ID3D11Texture2D,
     pub w: u32,
     pub h: u32,
+    stamp: std::sync::Mutex<(u64, i64)>,
 }
 
 impl GpuInput {
@@ -756,17 +836,20 @@ impl GpuInput {
         gpu::create_input(device, context, w, h)
     }
 
-    pub fn submit(&self, frame: &windows::Win32::Graphics::Direct3D11::ID3D11Texture2D) {
-        gpu::submit(self, frame)
+    pub fn submit(&self, frame: &windows::Win32::Graphics::Direct3D11::ID3D11Texture2D, pts: i64) {
+        let mut stamp = self.stamp.lock().unwrap_or_else(|e| e.into_inner());
+        gpu::submit(self, frame);
+        stamp.0 = stamp.0.wrapping_add(1);
+        stamp.1 = pts;
     }
 }
 
 pub struct GpuEncoder {
-    samples: Vec<mf::Sample>,
+    samples: tracked::SamplePool,
     conv: gpu::Converter,
     mf: mf::MfEncoder,
     input: std::sync::Arc<GpuInput>,
-    counter: u64,
+    last_pts: i64,
     convert_ns: i64,
 }
 
@@ -786,7 +869,14 @@ impl GpuEncoder {
         for o in conv.outputs() {
             samples.push(mf::surface_sample(&o.tex)?);
         }
-        Ok(GpuEncoder { samples, conv, mf, input, counter: 0, convert_ns: 0 })
+        Ok(GpuEncoder {
+            samples: tracked::SamplePool::new(samples),
+            conv,
+            mf,
+            input,
+            last_pts: -1,
+            convert_ns: 0,
+        })
     }
 
     pub fn device_differs(&self, other: &GpuInput) -> bool {
@@ -808,22 +898,37 @@ impl GpuEncoder {
         std::mem::take(&mut self.convert_ns)
     }
 
-    pub fn encode(&mut self, pts100ns: i64, out: &mut Vec<EncodedFrame>) -> Result<(), i32> {
+    pub fn encode_latest(&mut self, out: &mut Vec<EncodedFrame>) -> Result<Option<i64>, i32> {
         self.mf.wait_room(GPU_RING as u64 - 1, out)?;
-        let idx = (self.counter % GPU_RING as u64) as usize;
-        let t = Instant::now();
-        self.conv.run(idx)?;
-        self.convert_ns += t.elapsed().as_nanos() as i64;
-        self.counter += 1;
-        self.mf.encode_surface(&self.samples[idx], pts100ns, out)
+        let Some(lease) = self.samples.try_take() else {
+            return Ok(None);
+        };
+        let input = self.input.clone();
+        let started = Instant::now();
+        let stamp = input.stamp.lock().unwrap_or_else(|e| e.into_inner());
+        if stamp.1 <= self.last_pts {
+            return Ok(None);
+        }
+        let pts = stamp.1;
+        self.conv.run(lease.index)?;
+        self.convert_ns += started.elapsed().as_nanos() as i64;
+        drop(stamp);
+        unsafe {
+            lease.submit_transform(|sample| self.mf.encode_surface(sample, pts, out))?;
+        }
+        self.last_pts = pts;
+        Ok(Some(pts))
+    }
+    pub fn flush(&mut self, out: &mut Vec<EncodedFrame>) {
+        let _ = self.mf.finish(out);
     }
 }
 
 mod gpu {
     use super::{GpuInput, GPU_RING};
     use std::ffi::c_void;
-    use windows::core::{s, Interface, PCSTR};
-    use windows::Win32::Graphics::Direct3D::Fxc::D3DCompile;
+    use windows::core::Interface;
+    use windows::Win32::Graphics::Direct3D::Fxc::D3DDecompressShaders;
     use windows::Win32::Graphics::Direct3D::{ID3DBlob, D3D_SRV_DIMENSION_TEXTURE2D};
     use windows::Win32::Graphics::Direct3D11::*;
     use windows::Win32::Graphics::Dxgi::Common::*;
@@ -833,8 +938,6 @@ mod gpu {
     fn e(er: windows::core::Error) -> i32 {
         er.code().0
     }
-
-    const HLSL: &str = include_str!("../shaders/wcap_shaders.hlsl");
 
     const BT709: [[f32; 4]; 6] = [
         [0.2126, 0.7152, 0.0722, 0.0],
@@ -857,39 +960,45 @@ mod gpu {
         (a + b - 1) / b
     }
 
-    unsafe fn compile(dev: &ID3D11Device, entry: PCSTR) -> R<ID3D11ComputeShader> {
-        let mut code: Option<ID3DBlob> = None;
-        let mut errs: Option<ID3DBlob> = None;
-        D3DCompile(
-            HLSL.as_ptr() as *const c_void,
-            HLSL.len(),
-            s!("wcap_shaders.hlsl"),
-            None,
-            None,
-            entry,
-            s!("cs_5_0"),
-            1 << 15,
+    unsafe fn shader(dev: &ID3D11Device, bytes: &[u8]) -> R<ID3D11ComputeShader> {
+        let mut blob: Option<ID3DBlob> = None;
+        D3DDecompressShaders(
+            bytes.as_ptr() as _,
+            bytes.len(),
+            1,
             0,
-            &mut code,
-            Some(&mut errs as *mut Option<ID3DBlob>),
+            None,
+            0,
+            &mut blob,
+            None,
         )
         .map_err(e)?;
-        let blob = code.ok_or(-130)?;
-        let bytes = std::slice::from_raw_parts(blob.GetBufferPointer() as *const u8, blob.GetBufferSize());
-        let mut cs: Option<ID3D11ComputeShader> = None;
-        dev.CreateComputeShader(bytes, None, Some(&mut cs as *mut Option<ID3D11ComputeShader>))
+        let blob = blob.ok_or(-130)?;
+        let bytes =
+            std::slice::from_raw_parts(blob.GetBufferPointer() as *const u8, blob.GetBufferSize());
+        let mut shader = None;
+        dev.CreateComputeShader(bytes, None, Some(&mut shader))
             .map_err(e)?;
-        cs.ok_or(-131)
+        shader.ok_or(-131)
     }
 
-    unsafe fn texture(dev: &ID3D11Device, w: u32, h: u32, fmt: DXGI_FORMAT, bind: u32) -> R<ID3D11Texture2D> {
+    unsafe fn texture(
+        dev: &ID3D11Device,
+        w: u32,
+        h: u32,
+        fmt: DXGI_FORMAT,
+        bind: u32,
+    ) -> R<ID3D11Texture2D> {
         let desc = D3D11_TEXTURE2D_DESC {
             Width: w,
             Height: h,
             MipLevels: 1,
             ArraySize: 1,
             Format: fmt,
-            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
             Usage: D3D11_USAGE_DEFAULT,
             BindFlags: bind,
             CPUAccessFlags: 0,
@@ -901,21 +1010,36 @@ mod gpu {
         t.ok_or(-132)
     }
 
-    unsafe fn srv(dev: &ID3D11Device, tex: &ID3D11Texture2D, fmt: DXGI_FORMAT) -> R<ID3D11ShaderResourceView> {
+    unsafe fn srv(
+        dev: &ID3D11Device,
+        tex: &ID3D11Texture2D,
+        fmt: DXGI_FORMAT,
+    ) -> R<ID3D11ShaderResourceView> {
         let desc = D3D11_SHADER_RESOURCE_VIEW_DESC {
             Format: fmt,
             ViewDimension: D3D_SRV_DIMENSION_TEXTURE2D,
             Anonymous: D3D11_SHADER_RESOURCE_VIEW_DESC_0 {
-                Texture2D: D3D11_TEX2D_SRV { MostDetailedMip: 0, MipLevels: 1 },
+                Texture2D: D3D11_TEX2D_SRV {
+                    MostDetailedMip: 0,
+                    MipLevels: 1,
+                },
             },
         };
         let mut v: Option<ID3D11ShaderResourceView> = None;
-        dev.CreateShaderResourceView(tex, Some(&desc), Some(&mut v as *mut Option<ID3D11ShaderResourceView>))
-            .map_err(e)?;
+        dev.CreateShaderResourceView(
+            tex,
+            Some(&desc),
+            Some(&mut v as *mut Option<ID3D11ShaderResourceView>),
+        )
+        .map_err(e)?;
         v.ok_or(-133)
     }
 
-    unsafe fn uav(dev: &ID3D11Device, tex: &ID3D11Texture2D, fmt: DXGI_FORMAT) -> R<ID3D11UnorderedAccessView> {
+    unsafe fn uav(
+        dev: &ID3D11Device,
+        tex: &ID3D11Texture2D,
+        fmt: DXGI_FORMAT,
+    ) -> R<ID3D11UnorderedAccessView> {
         let desc = D3D11_UNORDERED_ACCESS_VIEW_DESC {
             Format: fmt,
             ViewDimension: D3D11_UAV_DIMENSION_TEXTURE2D,
@@ -924,17 +1048,40 @@ mod gpu {
             },
         };
         let mut v: Option<ID3D11UnorderedAccessView> = None;
-        dev.CreateUnorderedAccessView(tex, Some(&desc), Some(&mut v as *mut Option<ID3D11UnorderedAccessView>))
-            .map_err(e)?;
+        dev.CreateUnorderedAccessView(
+            tex,
+            Some(&desc),
+            Some(&mut v as *mut Option<ID3D11UnorderedAccessView>),
+        )
+        .map_err(e)?;
         v.ok_or(-134)
     }
 
-    pub fn create_input(dev: &ID3D11Device, ctx: &ID3D11DeviceContext, w: u32, h: u32) -> R<GpuInput> {
+    pub fn create_input(
+        dev: &ID3D11Device,
+        ctx: &ID3D11DeviceContext,
+        w: u32,
+        h: u32,
+    ) -> R<GpuInput> {
         unsafe {
             let mt: ID3D11Multithread = ctx.cast().map_err(e)?;
             let _ = mt.SetMultithreadProtected(true);
-            let latest = texture(dev, w, h, DXGI_FORMAT_B8G8R8A8_TYPELESS, D3D11_BIND_SHADER_RESOURCE.0 as u32)?;
-            Ok(GpuInput { device: dev.clone(), context: ctx.clone(), mt, latest, w, h })
+            let latest = texture(
+                dev,
+                w,
+                h,
+                DXGI_FORMAT_B8G8R8A8_TYPELESS,
+                D3D11_BIND_SHADER_RESOURCE.0 as u32,
+            )?;
+            Ok(GpuInput {
+                device: dev.clone(),
+                context: ctx.clone(),
+                mt,
+                latest,
+                w,
+                h,
+                stamp: std::sync::Mutex::new((0, -1)),
+            })
         }
     }
 
@@ -1004,14 +1151,35 @@ mod gpu {
                     SysMemSlicePitch: 0,
                 };
                 let mut cb: Option<ID3D11Buffer> = None;
-                dev.CreateBuffer(&cb_desc, Some(&cb_init), Some(&mut cb as *mut Option<ID3D11Buffer>))
-                    .map_err(e)?;
+                dev.CreateBuffer(
+                    &cb_desc,
+                    Some(&cb_init),
+                    Some(&mut cb as *mut Option<ID3D11Buffer>),
+                )
+                .map_err(e)?;
                 let cb = cb.ok_or(-135)?;
 
                 let (single, pass1, pass2) = if improved {
-                    (None, Some(compile(dev, s!("ConvertPass1"))?), Some(compile(dev, s!("ConvertPass2"))?))
+                    (
+                        None,
+                        Some(shader(
+                            dev,
+                            super::embedded_shaders::CONVERT_PASS1_SHADER_BYTES,
+                        )?),
+                        Some(shader(
+                            dev,
+                            super::embedded_shaders::CONVERT_PASS2_SHADER_BYTES,
+                        )?),
+                    )
                 } else {
-                    (Some(compile(dev, s!("ConvertSinglePass"))?), None, None)
+                    (
+                        Some(shader(
+                            dev,
+                            super::embedded_shaders::CONVERT_SINGLE_PASS_SHADER_BYTES,
+                        )?),
+                        None,
+                        None,
+                    )
                 };
 
                 let mut outs = Vec::with_capacity(GPU_RING);
@@ -1071,12 +1239,30 @@ mod gpu {
             }
             unsafe {
                 if self.resize_h.is_none() {
-                    self.resize_h = Some(compile(&self.dev, s!("ResizePassH"))?);
-                    self.resize_v = Some(compile(&self.dev, s!("ResizePassV"))?);
+                    self.resize_h = Some(shader(
+                        &self.dev,
+                        super::embedded_shaders::RESIZE_PASS_H_SHADER_BYTES,
+                    )?);
+                    self.resize_v = Some(shader(
+                        &self.dev,
+                        super::embedded_shaders::RESIZE_PASS_V_SHADER_BYTES,
+                    )?);
                 }
                 let bind = (D3D11_BIND_SHADER_RESOURCE.0 | D3D11_BIND_UNORDERED_ACCESS.0) as u32;
-                let mid = texture(&self.dev, self.out_w, self.in_h, DXGI_FORMAT_B8G8R8A8_TYPELESS, bind)?;
-                let out = texture(&self.dev, self.out_w, self.out_h, DXGI_FORMAT_B8G8R8A8_TYPELESS, bind)?;
+                let mid = texture(
+                    &self.dev,
+                    self.out_w,
+                    self.in_h,
+                    DXGI_FORMAT_B8G8R8A8_TYPELESS,
+                    bind,
+                )?;
+                let out = texture(
+                    &self.dev,
+                    self.out_w,
+                    self.out_h,
+                    DXGI_FORMAT_B8G8R8A8_TYPELESS,
+                    bind,
+                )?;
                 self.resize = Some(Resize {
                     mid_srv: srv(&self.dev, &mid, DXGI_FORMAT_B8G8R8A8_UNORM)?,
                     mid_uav: uav(&self.dev, &mid, DXGI_FORMAT_R32_UINT)?,
@@ -1134,7 +1320,10 @@ mod gpu {
                     ctx.ClearState();
                     ctx.CSSetShader(Some(p2), None);
                     ctx.CSSetConstantBuffers(0, Some(&cbs));
-                    ctx.CSSetShaderResources(0, Some(&[Some(conv_in.clone()), Some(out.srv_uv.clone())]));
+                    ctx.CSSetShaderResources(
+                        0,
+                        Some(&[Some(conv_in.clone()), Some(out.srv_uv.clone())]),
+                    );
                     let u = [Some(out.uav_y.clone())];
                     ctx.CSSetUnorderedAccessViews(0, 1, Some(u.as_ptr()), None);
                     ctx.Dispatch(div_up(self.out_w, 16), div_up(self.out_h, 16), 1);
@@ -1168,7 +1357,16 @@ mod nv12_tests {
             let mut nv12 = vec![0u8; n];
             let mut tmp = Vec::new();
             assert!(bgra_to_i420(&bgra, w, h, w * 4, dw, dh, &mut i420));
-            assert!(bgra_to_nv12(&bgra, w, h, w * 4, dw, dh, &mut nv12, &mut tmp));
+            assert!(bgra_to_nv12(
+                &bgra,
+                w,
+                h,
+                w * 4,
+                dw,
+                dh,
+                &mut nv12,
+                &mut tmp
+            ));
             let ys = (dw * dh) as usize;
             assert_eq!(&i420[..ys], &nv12[..ys]);
             let cs = ys / 4;
@@ -1180,13 +1378,11 @@ mod nv12_tests {
     }
 }
 
-
 pub struct EncodedFrame {
     pub data: Vec<u8>,
     pub keyframe: bool,
     pub pts100ns: i64,
 }
-
 
 pub fn bgra_to_i420(
     bgra: &[u8],
@@ -1260,9 +1456,9 @@ fn bgra_to_i420_scaled(
     let mut cr_full = vec![0u8; dw * dh];
 
     y_plane
-        .par_chunks_mut(dw)
-        .zip(cb_full.par_chunks_mut(dw))
-        .zip(cr_full.par_chunks_mut(dw))
+        .chunks_mut(dw)
+        .zip(cb_full.chunks_mut(dw))
+        .zip(cr_full.chunks_mut(dw))
         .enumerate()
         .for_each(|(y, ((y_row, cb_row), cr_row))| {
             let row0 = &bgra[row_y0[y] * row_pitch as usize..];
@@ -1286,15 +1482,19 @@ fn bgra_to_i420_scaled(
                 let g = lerp(lerp(g00, g10, fx), lerp(g01, g11, fx), fy);
                 let b = lerp(lerp(b00, b10, fx), lerp(b01, b11, fx), fy);
 
-                y_row[x] = clamp_u8(16.0 + 65.738 / 256.0 * r + 129.057 / 256.0 * g + 25.064 / 256.0 * b);
-                cb_row[x] = clamp_u8(-37.945 / 256.0 * r - 74.494 / 256.0 * g + 112.439 / 256.0 * b + 128.0);
-                cr_row[x] = clamp_u8(112.439 / 256.0 * r - 94.154 / 256.0 * g - 18.285 / 256.0 * b + 128.0);
+                y_row[x] =
+                    clamp_u8(16.0 + 65.738 / 256.0 * r + 129.057 / 256.0 * g + 25.064 / 256.0 * b);
+                cb_row[x] = clamp_u8(
+                    -37.945 / 256.0 * r - 74.494 / 256.0 * g + 112.439 / 256.0 * b + 128.0,
+                );
+                cr_row[x] =
+                    clamp_u8(112.439 / 256.0 * r - 94.154 / 256.0 * g - 18.285 / 256.0 * b + 128.0);
             }
         });
 
     u_plane
-        .par_chunks_mut(cw)
-        .zip(v_plane.par_chunks_mut(cw))
+        .chunks_mut(cw)
+        .zip(v_plane.chunks_mut(cw))
         .enumerate()
         .for_each(|(c, (u_row, v_row))| {
             let top = (c * 2) * dw;
@@ -1303,11 +1503,15 @@ fn bgra_to_i420_scaled(
             let (cr_top, cr_bot) = (&cr_full[top..top + dw], &cr_full[bot..bot + dw]);
             for x in 0..cw {
                 let x2 = x * 2;
-                u_row[x] = ((cb_top[x2] as u32 + cb_top[x2 + 1] as u32 + cb_bot[x2] as u32
+                u_row[x] = ((cb_top[x2] as u32
+                    + cb_top[x2 + 1] as u32
+                    + cb_bot[x2] as u32
                     + cb_bot[x2 + 1] as u32
                     + 2)
                     >> 2) as u8;
-                v_row[x] = ((cr_top[x2] as u32 + cr_top[x2 + 1] as u32 + cr_bot[x2] as u32
+                v_row[x] = ((cr_top[x2] as u32
+                    + cr_top[x2 + 1] as u32
+                    + cr_bot[x2] as u32
                     + cr_bot[x2 + 1] as u32
                     + 2)
                     >> 2) as u8;
@@ -1324,9 +1528,9 @@ fn bgra_to_i420_1to1(bgra: &[u8], w: usize, h: usize, row_pitch: u32, dst: &mut 
     let (u_plane, v_plane) = uv.split_at_mut(cw * (h / 2));
 
     y_plane
-        .par_chunks_mut(2 * w)
-        .zip(u_plane.par_chunks_mut(cw))
-        .zip(v_plane.par_chunks_mut(cw))
+        .chunks_mut(2 * w)
+        .zip(u_plane.chunks_mut(cw))
+        .zip(v_plane.chunks_mut(cw))
         .enumerate()
         .for_each(|(c, ((y_pair, u_row), v_row))| {
             let (y_top, y_bot) = y_pair.split_at_mut(w);
@@ -1419,8 +1623,8 @@ pub fn bgra_to_nv12(
     if src_w as usize == dw && src_h as usize == dh {
         let (y_plane, uv_plane) = dst[..needed].split_at_mut(dw * dh);
         y_plane
-            .par_chunks_mut(2 * dw)
-            .zip(uv_plane.par_chunks_mut(dw))
+            .chunks_mut(2 * dw)
+            .zip(uv_plane.chunks_mut(dw))
             .enumerate()
             .for_each(|(c, (y_pair, uv_row))| {
                 let (y_top, y_bot) = y_pair.split_at_mut(dw);
@@ -1437,9 +1641,12 @@ pub fn bgra_to_nv12(
                 for x in 0..dw / 2 {
                     let o = x * 8;
                     let (p00, p01, p10, p11) = (&rt[o..], &rt[o + 4..], &rb[o..], &rb[o + 4..]);
-                    let b = (p00[0] as i32 + p01[0] as i32 + p10[0] as i32 + p11[0] as i32 + 2) >> 2;
-                    let g = (p00[1] as i32 + p01[1] as i32 + p10[1] as i32 + p11[1] as i32 + 2) >> 2;
-                    let r = (p00[2] as i32 + p01[2] as i32 + p10[2] as i32 + p11[2] as i32 + 2) >> 2;
+                    let b =
+                        (p00[0] as i32 + p01[0] as i32 + p10[0] as i32 + p11[0] as i32 + 2) >> 2;
+                    let g =
+                        (p00[1] as i32 + p01[1] as i32 + p10[1] as i32 + p11[1] as i32 + 2) >> 2;
+                    let r =
+                        (p00[2] as i32 + p01[2] as i32 + p10[2] as i32 + p11[2] as i32 + 2) >> 2;
                     uv_row[2 * x] = u601(r, g, b);
                     uv_row[2 * x + 1] = v601(r, g, b);
                 }
@@ -1450,7 +1657,15 @@ pub fn bgra_to_nv12(
     if tmp.len() < needed {
         tmp.resize(needed, 0);
     }
-    if !bgra_to_i420_scaled(bgra, src_w as usize, src_h as usize, row_pitch, dw, dh, &mut tmp[..needed]) {
+    if !bgra_to_i420_scaled(
+        bgra,
+        src_w as usize,
+        src_h as usize,
+        row_pitch,
+        dw,
+        dh,
+        &mut tmp[..needed],
+    ) {
         return false;
     }
     let ys = dw * dh;
@@ -1459,7 +1674,7 @@ pub fn bgra_to_nv12(
     dst[..ys].copy_from_slice(&tmp[..ys]);
     let (u, v) = (&tmp[ys..ys + cs], &tmp[ys + cs..needed]);
     dst[ys..needed]
-        .par_chunks_mut(dw)
+        .chunks_mut(dw)
         .enumerate()
         .for_each(|(r, row)| {
             for x in 0..cw {
@@ -1491,12 +1706,7 @@ mod tests {
     }
 
     fn close(a: u8, b: i32) {
-        assert!(
-            (a as i32 - b).abs() <= 1,
-            "expected ~{}, got {}",
-            b,
-            a
-        );
+        assert!((a as i32 - b).abs() <= 1, "expected ~{}, got {}", b, a);
     }
 
     #[test]
@@ -1567,12 +1777,7 @@ mod tests {
     fn chroma_is_averaged_over_2x2_blocks() {
         let w = 4u32;
         let h = 4u32;
-        let quads: [[u8; 3]; 4] = [
-            [255, 0, 0],
-            [0, 255, 0],
-            [0, 0, 255],
-            [255, 255, 255],
-        ];
+        let quads: [[u8; 3]; 4] = [[255, 0, 0], [0, 255, 0], [0, 0, 255], [255, 255, 255]];
         let mut src = Vec::new();
         for y in 0..h {
             for x in 0..w {
@@ -1634,10 +1839,26 @@ mod tests {
         let n = w * h * 3 / 2;
 
         let mut fast = vec![0u8; n];
-        assert!(bgra_to_i420(&src, w as u32, h as u32, (w * 4) as u32, w as u32, h as u32, &mut fast));
+        assert!(bgra_to_i420(
+            &src,
+            w as u32,
+            h as u32,
+            (w * 4) as u32,
+            w as u32,
+            h as u32,
+            &mut fast
+        ));
 
         let mut scaled = vec![0u8; n];
-        assert!(bgra_to_i420_scaled(&src, w, h, (w * 4) as u32, w, h, &mut scaled));
+        assert!(bgra_to_i420_scaled(
+            &src,
+            w,
+            h,
+            (w * 4) as u32,
+            w,
+            h,
+            &mut scaled
+        ));
 
         let mut worst_y = 0i32;
         let mut worst_c = 0i32;
@@ -1650,7 +1871,10 @@ mod tests {
             }
         }
         assert!(worst_y <= 1, "luma diverged by {worst_y} levels (limit 1)");
-        assert!(worst_c <= 1, "chroma diverged by {worst_c} levels (limit 1)");
+        assert!(
+            worst_c <= 1,
+            "chroma diverged by {worst_c} levels (limit 1)"
+        );
     }
 
     #[test]
@@ -1661,5 +1885,553 @@ mod tests {
         let mut tiny = vec![0u8; 8 * 8 * 3 / 2 - 1];
         assert!(!bgra_to_i420(&src, 8, 8, 8 * 4, 8, 8, &mut tiny));
         assert!(!bgra_to_i420(&src, 1, 8, 4, 8, 8, &mut dst));
+    }
+}
+
+//wcap shaders bytecode start
+mod embedded_shaders {
+    pub const RESIZE_PASS_H_SHADER_BYTES: &[u8] = &[
+        0x42, 0x53, 0x43, 0x44, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x4d, 0x53, 0x43, 0x46, 0x00, 0x00, 0x00, 0x00, 0xc3, 0x02, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x2c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x01, 0x01, 0x00,
+        0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x43, 0x00, 0x00, 0x00, 0x01, 0x00, 0x03,
+        0x15, 0x80, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x53, 0x53, 0x48, 0x45, 0x58, 0x21, 0x00, 0xa9, 0x74, 0x9d, 0xdf, 0x78, 0x02,
+        0x80, 0x07, 0x5b, 0x80, 0x80, 0x8d, 0x00, 0x20, 0x09, 0x78, 0xb4, 0x10, 0x00, 0xc1, 0x00,
+        0x00, 0x44, 0x02, 0x00, 0x56, 0x46, 0x00, 0xbe, 0x0f, 0xfb, 0xf6, 0xef, 0xdb, 0xb6, 0x67,
+        0x96, 0xbd, 0x26, 0xc5, 0x26, 0x55, 0x50, 0xe6, 0x15, 0xd9, 0x5b, 0xe1, 0x96, 0x61, 0x6e,
+        0xe6, 0xdc, 0x63, 0x37, 0x88, 0x0a, 0x57, 0x93, 0x28, 0x18, 0x38, 0x65, 0xce, 0x9c, 0x6d,
+        0x2e, 0x28, 0x70, 0x75, 0xd5, 0x24, 0x55, 0xf8, 0x42, 0x6f, 0x6f, 0xea, 0xe2, 0x02, 0x17,
+        0x42, 0x10, 0x1a, 0x00, 0x00, 0x33, 0x00, 0x60, 0x34, 0x06, 0x00, 0xfb, 0x50, 0x96, 0xb5,
+        0x38, 0x77, 0x40, 0x77, 0x9a, 0x9a, 0x5f, 0xb4, 0x16, 0xc9, 0x95, 0x10, 0x89, 0xa5, 0x89,
+        0x08, 0xd4, 0x6d, 0x9d, 0x53, 0x3b, 0x71, 0xf1, 0xb2, 0x24, 0x35, 0x89, 0x49, 0x64, 0x57,
+        0xe8, 0xac, 0xc1, 0x16, 0xb8, 0x49, 0x98, 0xa5, 0x6f, 0x22, 0x27, 0xc5, 0x8d, 0xe0, 0x27,
+        0xf8, 0xef, 0xbf, 0xfe, 0xfb, 0x82, 0xff, 0x00, 0x20, 0x00, 0x00, 0x04, 0x00, 0x20, 0x34,
+        0x20, 0x00, 0x4e, 0x15, 0x38, 0x77, 0x30, 0x3c, 0xdf, 0x07, 0x7e, 0xbf, 0x13, 0xfc, 0x02,
+        0x88, 0x18, 0x01, 0x05, 0x20, 0x40, 0xd9, 0x17, 0x0f, 0x01, 0x68, 0x79, 0xc1, 0x04, 0xb0,
+        0x30, 0x78, 0x6e, 0x7c, 0x3d, 0x8e, 0xdd, 0x19, 0xd5, 0xfd, 0xb8, 0xd0, 0x71, 0xd8, 0x10,
+        0x8d, 0x5e, 0x39, 0xcf, 0x69, 0xd0, 0xb5, 0x76, 0x44, 0x88, 0x59, 0xf6, 0x09, 0xe7, 0xc2,
+        0x14, 0x45, 0x98, 0x3b, 0x20, 0x3b, 0x97, 0x1b, 0x75, 0x99, 0x30, 0xb8, 0xe5, 0x8e, 0xdb,
+        0xe4, 0x39, 0x5c, 0x55, 0x11, 0x1e, 0x39, 0x3f, 0x5d, 0x76, 0x38, 0xfc, 0xee, 0x2e, 0x28,
+        0x31, 0xd5, 0x89, 0x18, 0x38, 0x3f, 0xe6, 0x72, 0xa8, 0x2c, 0xf8, 0xb9, 0xf5, 0x6e, 0x91,
+        0xbf, 0x8d, 0x29, 0x43, 0x08, 0x8f, 0xc5, 0x86, 0x9f, 0x5e, 0x8e, 0x10, 0x55, 0x0c, 0xca,
+        0x4f, 0xbc, 0x14, 0xf1, 0x2f, 0x73, 0x4b, 0x76, 0x4a, 0x50, 0xa4, 0x2b, 0x92, 0x96, 0xdc,
+        0xa1, 0xeb, 0x1f, 0x59, 0x99, 0x85, 0xe1, 0x5e, 0x0b, 0x1f, 0xa7, 0x5a, 0xe3, 0x4e, 0x87,
+        0x71, 0x9b, 0x71, 0x9b, 0x1a, 0xf4, 0xa9, 0x23, 0x8e, 0x74, 0xaf, 0xec, 0x69, 0x55, 0x06,
+        0x4b, 0xdd, 0x0c, 0x4c, 0x22, 0x82, 0x5a, 0xc5, 0xb0, 0xac, 0xa7, 0x76, 0x22, 0x20, 0x3f,
+        0xa0, 0x5f, 0x2d, 0xc3, 0x94, 0x5f, 0xf6, 0x9a, 0xb4, 0x0c, 0xc4, 0xce, 0x3c, 0xd0, 0xb2,
+        0xc0, 0xcc, 0xf3, 0xca, 0x1b, 0x3d, 0x05, 0x96, 0x4a, 0x55, 0xe6, 0x92, 0x06, 0x49, 0xa5,
+        0x61, 0x3d, 0x29, 0x55, 0xfa, 0x28, 0xd2, 0xb8, 0xdd, 0x9d, 0xd0, 0x89, 0x08, 0x3b, 0xbb,
+        0xb7, 0x2c, 0x64, 0xd7, 0xd1, 0xe2, 0x77, 0x55, 0x19, 0xc0, 0xbc, 0xf7, 0xdb, 0x45, 0x00,
+        0x86, 0x32, 0xd7, 0xab, 0x57, 0x97, 0xb8, 0xa7, 0xc4, 0x43, 0x54, 0x56, 0x8f, 0xb2, 0x2d,
+        0x1b, 0x7c, 0x27, 0xd2, 0xdf, 0x4d, 0xdf, 0xdc, 0x6e, 0xdf, 0x44, 0x15, 0x68, 0xb5, 0xaa,
+        0x38, 0x47, 0xee, 0x00, 0x55, 0x2d, 0x9b, 0x1b, 0xc3, 0xd9, 0x1d, 0x56, 0xbc, 0x16, 0xdf,
+        0xf7, 0x46, 0x3e, 0x55, 0xc3, 0xaf, 0x83, 0xbf, 0xb9, 0xf6, 0x06, 0xdc, 0x2b, 0xf1, 0x14,
+        0x5c, 0x0a, 0xed, 0xc3, 0x87, 0x6f, 0x34, 0x4d, 0x68, 0x60, 0x02, 0x9a, 0x15, 0x5e, 0xa9,
+        0x83, 0x5d, 0x70, 0x25, 0x37, 0x96, 0x24, 0xd4, 0x33, 0x63, 0x1e, 0x96, 0xef, 0x0b, 0xc7,
+        0xc8, 0x9f, 0xdf, 0xb6, 0xd1, 0x89, 0x90, 0xa7, 0x72, 0x7f, 0xa6, 0xc5, 0xe8, 0xa9, 0xeb,
+        0x6f, 0xc6, 0xa2, 0x57, 0xe9, 0x94, 0xda, 0xb3, 0x6e, 0x6e, 0x5e, 0xd7, 0x3d, 0xd3, 0xf8,
+        0xf2, 0x1a, 0x76, 0x04, 0xa1, 0xb4, 0x93, 0x60, 0xf2, 0x01, 0xd6, 0xd4, 0xa5, 0x82, 0xd3,
+        0xb2, 0x07, 0x17, 0x29, 0xeb, 0xcc, 0x05, 0xf4, 0x7d, 0xbd, 0xc5, 0x77, 0xae, 0x55, 0xaf,
+        0x60, 0x1c, 0x4f, 0x86, 0xdf, 0x4e, 0x35, 0xa8, 0x2e, 0x09, 0x94, 0xe4, 0x36, 0xbc, 0xfc,
+        0x4d, 0x38, 0x78, 0xa2, 0x01, 0xcc, 0x3f, 0x74, 0xbf, 0x58, 0x1d, 0x14, 0xf4, 0x64, 0x13,
+        0xe0, 0x13, 0xf8, 0xa5, 0x67, 0xfb, 0x4c, 0xe9, 0xe6, 0xdc, 0x13, 0x2d, 0xa3, 0x49, 0x88,
+        0xd0, 0xa9, 0x9b, 0x8a, 0xc5, 0xfd, 0xc1, 0xb9, 0x4f, 0x3e, 0x97, 0xc4, 0x54, 0xf2, 0x97,
+        0xdb, 0x12, 0x46, 0x22, 0xac, 0x74, 0x6d, 0xf5, 0x92, 0x5e, 0x3d, 0xfa, 0x9d, 0xe0, 0xf5,
+        0xf8, 0x35, 0x05, 0xf4, 0xc9, 0xe7, 0xc4, 0xff, 0xb7, 0x38, 0xa6, 0x80, 0x81, 0x5b, 0xe5,
+        0x20, 0x86, 0x00, 0x80,
+    ];
+
+    pub const RESIZE_PASS_V_SHADER_BYTES: &[u8] = &[
+        0x42, 0x53, 0x43, 0x44, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x4d, 0x53, 0x43, 0x46, 0x00, 0x00, 0x00, 0x00, 0xcf, 0x02, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x2c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x01, 0x01, 0x00,
+        0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x43, 0x00, 0x00, 0x00, 0x01, 0x00, 0x03,
+        0x15, 0x80, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x53, 0x53, 0x48, 0x45, 0x58, 0x21, 0x00, 0x76, 0x47, 0x4b, 0x83, 0x84, 0x02,
+        0x80, 0x07, 0x5b, 0x80, 0x80, 0x8d, 0x00, 0x20, 0x0b, 0x78, 0xb0, 0x10, 0x00, 0xc1, 0x00,
+        0x00, 0x44, 0x02, 0x00, 0x56, 0x46, 0x00, 0xbd, 0x0f, 0xf7, 0xed, 0xbe, 0xbd, 0x6e, 0xcf,
+        0x73, 0x37, 0x93, 0x62, 0xc4, 0x6a, 0xca, 0xdc, 0x22, 0x1b, 0x2b, 0xbc, 0x32, 0x6d, 0xcf,
+        0xdc, 0x37, 0x66, 0x23, 0x91, 0x70, 0x75, 0x89, 0xa2, 0x06, 0x2e, 0x99, 0x33, 0x5c, 0x5b,
+        0x21, 0x28, 0xab, 0x71, 0x31, 0x89, 0x15, 0x7e, 0x2e, 0x5a, 0xd4, 0x45, 0x05, 0xde, 0x84,
+        0xc4, 0x8d, 0x33, 0x00, 0x08, 0x00, 0x00, 0x9a, 0x19, 0x00, 0x30, 0xb0, 0x02, 0xdb, 0x7d,
+        0xdf, 0x58, 0x97, 0x34, 0x81, 0xb7, 0x4b, 0x2c, 0x4b, 0x93, 0x46, 0xe2, 0x31, 0x84, 0xc4,
+        0xd2, 0x56, 0x44, 0x6c, 0x8b, 0x73, 0x2a, 0x23, 0xaf, 0x4e, 0x76, 0xa5, 0x2d, 0xb0, 0x5d,
+        0xaa, 0x89, 0x6b, 0x66, 0x69, 0xe0, 0x76, 0xe2, 0x6e, 0x21, 0xbb, 0xf0, 0xa2, 0xc6, 0xff,
+        0x0d, 0xff, 0xff, 0xff, 0xff, 0x9c, 0xff, 0x00, 0x20, 0x00, 0x00, 0x08, 0x00, 0x6a, 0xa6,
+        0x61, 0x00, 0xfc, 0xe5, 0xa4, 0x96, 0xe0, 0x10, 0xfd, 0xed, 0xfd, 0xfd, 0x17, 0xfc, 0x04,
+        0x20, 0x18, 0x82, 0x07, 0xc0, 0xb0, 0x40, 0xca, 0x0d, 0x80, 0xdc, 0x60, 0x80, 0x02, 0xdc,
+        0xf7, 0x23, 0xd7, 0xfe, 0xeb, 0x67, 0x6f, 0x43, 0x03, 0x17, 0x3c, 0x00, 0x98, 0xbc, 0x84,
+        0xe6, 0xf9, 0x1c, 0x53, 0x91, 0x81, 0x5d, 0xb3, 0x10, 0xc3, 0xd2, 0x78, 0x1f, 0xac, 0x1e,
+        0xc1, 0x20, 0x7f, 0xbf, 0x01, 0xb7, 0xfe, 0xb9, 0xaf, 0xcf, 0x25, 0x41, 0x47, 0xf7, 0xdd,
+        0x32, 0xc9, 0x64, 0x90, 0x84, 0x11, 0xa2, 0xb3, 0xb4, 0xed, 0x26, 0x8d, 0xe2, 0xf1, 0x18,
+        0x13, 0x55, 0x33, 0x51, 0x1f, 0xa3, 0x04, 0x7e, 0x86, 0x64, 0x61, 0x69, 0x6f, 0xf1, 0xcf,
+        0x7d, 0xba, 0x5a, 0x48, 0x00, 0x13, 0x85, 0x87, 0xf5, 0x66, 0x88, 0x86, 0x75, 0x95, 0xd6,
+        0xa7, 0x14, 0xd4, 0xb2, 0xcf, 0xf2, 0x4c, 0xf8, 0x49, 0x90, 0x93, 0x2f, 0x0d, 0x46, 0x06,
+        0x71, 0x3f, 0xf8, 0x65, 0x49, 0xc9, 0x24, 0x43, 0xfe, 0x14, 0xd3, 0x32, 0x36, 0x4f, 0xe7,
+        0xe7, 0x9a, 0x8f, 0x46, 0xd2, 0x86, 0xe8, 0x65, 0x7a, 0xf2, 0xe5, 0xa3, 0x7a, 0x57, 0x3d,
+        0xdc, 0x7c, 0x93, 0x7d, 0x26, 0xfc, 0x75, 0x54, 0x5e, 0x92, 0xb2, 0x6d, 0xcf, 0x38, 0x40,
+        0xa8, 0xf8, 0xd8, 0x74, 0x36, 0xcb, 0xda, 0x93, 0xf4, 0x9e, 0xbd, 0xcb, 0x55, 0x3e, 0xef,
+        0x80, 0xaf, 0x2b, 0xa9, 0x84, 0xa4, 0xc0, 0xc8, 0x93, 0xdf, 0xfa, 0x95, 0xe5, 0x21, 0x21,
+        0x84, 0xf6, 0x0d, 0x35, 0x0a, 0xe6, 0x95, 0xc8, 0x6e, 0x81, 0xb6, 0xe4, 0x95, 0xc8, 0x0a,
+        0xd0, 0xef, 0xf3, 0xd0, 0xc2, 0x01, 0x1e, 0xea, 0x26, 0xf3, 0x25, 0x5d, 0xa5, 0xde, 0x0a,
+        0xb6, 0xc7, 0x3e, 0xb7, 0x15, 0xce, 0x2d, 0xaa, 0x78, 0xb1, 0x2e, 0x82, 0x35, 0x10, 0xa5,
+        0xda, 0x58, 0x4e, 0xb2, 0x47, 0xf1, 0x8d, 0x52, 0x2c, 0xcc, 0xef, 0x8e, 0xb3, 0x26, 0x6c,
+        0x3a, 0x90, 0x97, 0xc3, 0x46, 0x09, 0x02, 0x6f, 0xa9, 0xcf, 0x27, 0xfb, 0x79, 0x5f, 0x4d,
+        0x77, 0xc9, 0x10, 0x43, 0xe2, 0x3c, 0x7f, 0xb3, 0x9e, 0x01, 0x1d, 0xe9, 0xc4, 0x8c, 0xe6,
+        0x56, 0xec, 0xe6, 0xdf, 0x98, 0x11, 0xd3, 0x83, 0x6c, 0xd4, 0x28, 0xb7, 0xe6, 0x16, 0x99,
+        0x36, 0x77, 0x9a, 0xf1, 0xb1, 0x20, 0x08, 0xaa, 0x23, 0xec, 0x18, 0x09, 0x67, 0xb7, 0xd3,
+        0x65, 0x7c, 0x79, 0x57, 0x08, 0x98, 0xb3, 0x88, 0xa0, 0xcd, 0x69, 0xd7, 0x8d, 0xf3, 0xe6,
+        0xd6, 0x70, 0xde, 0xd0, 0xc2, 0xc9, 0xd3, 0x11, 0x3f, 0x66, 0xb5, 0xd0, 0x5f, 0xda, 0x5e,
+        0x1b, 0x0b, 0xb5, 0x5e, 0xa1, 0xf0, 0x6b, 0xf7, 0x77, 0x79, 0x07, 0x97, 0x2a, 0x7a, 0x04,
+        0xbb, 0x95, 0xe8, 0x21, 0xb5, 0x64, 0x2a, 0xed, 0x1c, 0x56, 0x3d, 0xd2, 0xd0, 0xc5, 0x35,
+        0x71, 0x71, 0x92, 0x7f, 0x33, 0xc7, 0xfd, 0x35, 0xb7, 0xd2, 0xd2, 0x06, 0xc2, 0xde, 0xf9,
+        0x48, 0x47, 0xa8, 0xbd, 0x42, 0x83, 0x98, 0xb2, 0x11, 0x38, 0x37, 0xd0, 0xb9, 0x6a, 0xf3,
+        0x73, 0xe2, 0x90, 0x69, 0x2e, 0xa6, 0xfa, 0x7f, 0x44, 0x28, 0xac, 0x6d, 0x65, 0x3b, 0x40,
+        0x8c, 0x8e, 0x8d, 0x71, 0xf7, 0x5a, 0xf2, 0x74, 0xef, 0x43, 0x15, 0x53, 0x64, 0x04, 0xe8,
+        0xaa, 0xa9, 0x64, 0xc3, 0x69, 0xd3, 0xe9, 0x3e, 0x83, 0x5f, 0xb5, 0xde, 0x48, 0x78, 0x76,
+        0x03, 0x69, 0x01, 0xeb, 0xca, 0xc0, 0x62, 0x84, 0x63, 0x10, 0x06, 0xe0, 0xa7, 0x30, 0xea,
+        0x90, 0xa3, 0x04, 0xed, 0x1c, 0xaf, 0xfa, 0x36, 0x91, 0xb8, 0x52, 0xc0, 0x1d, 0x57, 0x00,
+        0x47,
+    ];
+
+    pub const CONVERT_SINGLE_PASS_SHADER_BYTES: &[u8] = &[
+        0x42, 0x53, 0x43, 0x44, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x4d, 0x53, 0x43, 0x46, 0x00, 0x00, 0x00, 0x00, 0x07, 0x02, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x2c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x01, 0x01, 0x00,
+        0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x43, 0x00, 0x00, 0x00, 0x01, 0x00, 0x03,
+        0x15, 0xf4, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x53, 0x53, 0x48, 0x45, 0x58, 0x21, 0x00, 0x31, 0x3d, 0x20, 0xbd, 0xbc, 0x01,
+        0xf4, 0x04, 0x5b, 0x80, 0x80, 0x8d, 0x00, 0x20, 0x47, 0x4f, 0xb1, 0x48, 0x00, 0x01, 0x00,
+        0x00, 0x23, 0x00, 0x60, 0x56, 0x40, 0x00, 0xfd, 0x0f, 0xf7, 0xed, 0x5e, 0xab, 0xde, 0x66,
+        0x25, 0xa2, 0xcd, 0xc0, 0x28, 0x70, 0xc2, 0x83, 0xaf, 0x11, 0x19, 0x55, 0x20, 0x71, 0x54,
+        0xd9, 0xc0, 0x2d, 0x70, 0xc9, 0xcc, 0x25, 0xb7, 0x9e, 0x06, 0x0b, 0x57, 0xe7, 0x5c, 0x12,
+        0xa9, 0xcb, 0xde, 0x0d, 0xa0, 0xa1, 0xcd, 0xdc, 0x10, 0xd0, 0x00, 0x00, 0x62, 0x00, 0x00,
+        0x35, 0x05, 0x00, 0xdc, 0x56, 0xb7, 0xfd, 0x64, 0x39, 0x89, 0xdb, 0x8a, 0xad, 0x74, 0x33,
+        0x2d, 0xd8, 0xd3, 0xb5, 0x5a, 0x50, 0xb0, 0xb0, 0x97, 0xa4, 0x48, 0x30, 0x6d, 0xd3, 0x37,
+        0x83, 0x34, 0xc1, 0x19, 0x23, 0xe8, 0x16, 0xd0, 0x25, 0x41, 0x57, 0xf7, 0x3e, 0xff, 0xfd,
+        0xdf, 0x7f, 0x02, 0xf4, 0x00, 0x00, 0x00, 0x00, 0x06, 0x00, 0xa0, 0xa6, 0x1e, 0x86, 0xa5,
+        0x5f, 0xe5, 0x55, 0x09, 0x7a, 0xd6, 0xbf, 0xfb, 0x9b, 0xec, 0xfb, 0x20, 0xa0, 0x8c, 0x16,
+        0xa2, 0x01, 0x06, 0x9c, 0x94, 0xcc, 0x73, 0x89, 0x61, 0x55, 0x34, 0x01, 0x6f, 0x86, 0x12,
+        0x0b, 0x99, 0xba, 0x80, 0x77, 0xd2, 0x20, 0x97, 0xe8, 0x43, 0xaf, 0xdb, 0x5d, 0x97, 0x7b,
+        0x28, 0x97, 0xc1, 0xc5, 0x67, 0x9f, 0x39, 0xa2, 0xe1, 0x71, 0x2e, 0xa1, 0xa6, 0x23, 0x40,
+        0xd6, 0x86, 0x5e, 0xf0, 0x90, 0x50, 0x4b, 0xb6, 0x69, 0xdc, 0xe8, 0xf7, 0x85, 0x5c, 0x60,
+        0x39, 0xed, 0x1c, 0x8a, 0xb5, 0x8b, 0xd7, 0x3a, 0xea, 0xd1, 0xf6, 0x5c, 0x4c, 0x43, 0x38,
+        0x84, 0xde, 0x0f, 0x24, 0x4a, 0x92, 0xb7, 0x38, 0xa2, 0x3a, 0x98, 0x6e, 0x23, 0x5b, 0x95,
+        0x88, 0x0a, 0x8d, 0x52, 0x64, 0xbd, 0x92, 0xe0, 0xcd, 0x9e, 0xa0, 0x64, 0x65, 0xd4, 0x6d,
+        0x80, 0xd3, 0x74, 0x02, 0x3a, 0x4f, 0x44, 0xab, 0x81, 0x9c, 0xd7, 0xfe, 0xac, 0xfb, 0x01,
+        0x3f, 0x19, 0x08, 0xfb, 0x8d, 0x72, 0x99, 0xc6, 0x7b, 0xfe, 0x2d, 0xae, 0x14, 0x05, 0x25,
+        0x9a, 0x33, 0x8a, 0xdb, 0x95, 0xcb, 0x71, 0xdd, 0x13, 0x8c, 0x53, 0xd5, 0xd5, 0xec, 0x69,
+        0x7b, 0x58, 0xfd, 0x1d, 0xa9, 0x58, 0xf9, 0xcb, 0x1d, 0x74, 0xec, 0xe6, 0x92, 0x4c, 0x5a,
+        0x26, 0x81, 0xa6, 0x8d, 0x90, 0x39, 0x8b, 0x7e, 0xce, 0xb8, 0xbc, 0xd1, 0x81, 0x45, 0x53,
+        0x20, 0x61, 0x3f, 0x46, 0x69, 0xd9, 0xd5, 0xb6, 0xa2, 0x64, 0x0a, 0x1e, 0x2d, 0x0d, 0x12,
+        0x4f, 0x9f, 0x7a, 0x63, 0x52, 0x1e, 0x9b, 0xf3, 0xa9, 0x84, 0x33, 0x1e, 0x76, 0x8e, 0xfd,
+        0x28, 0xae, 0xf9, 0x20, 0xdb, 0x33, 0x8c, 0x84, 0x65, 0x0f, 0xdd, 0x6d, 0xe3, 0xcc, 0xf7,
+        0x06, 0xab, 0xb1, 0x6e, 0x7e, 0xa5, 0x1a, 0xdf, 0x21, 0x13, 0x24, 0x45, 0xcd, 0x52, 0xb6,
+        0x76, 0xb7, 0x3f, 0x0f, 0xf1, 0x26, 0x2a, 0xdf, 0xec, 0x11, 0xb3, 0xb9, 0x61, 0x22, 0x8f,
+        0x68, 0x9f, 0xf0, 0x86, 0xfe, 0xd2, 0xb5, 0x2f, 0x92, 0x7d, 0x61, 0x10, 0x91, 0x5f, 0xe2,
+        0x05, 0xd0, 0x01, 0xd6, 0xf7, 0xfd, 0x74, 0xff, 0x80, 0x6a, 0xab, 0x6c, 0xb6, 0xd6, 0x2b,
+        0x49, 0x4e, 0xba, 0x80, 0x0e, 0x8e, 0xc0, 0x4a, 0x0c, 0x80, 0x0f,
+    ];
+
+    pub const CONVERT_PASS1_SHADER_BYTES: &[u8] = &[
+        0x42, 0x53, 0x43, 0x44, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x4d, 0x53, 0x43, 0x46, 0x00, 0x00, 0x00, 0x00, 0x77, 0x01, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x2c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x01, 0x01, 0x00,
+        0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x43, 0x00, 0x00, 0x00, 0x01, 0x00, 0x03,
+        0x15, 0x38, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x53, 0x53, 0x48, 0x45, 0x58, 0x21, 0x00, 0x08, 0x98, 0xd2, 0x44, 0x2c, 0x01,
+        0x38, 0x02, 0x5b, 0x80, 0x80, 0x8d, 0x00, 0x10, 0x81, 0x23, 0x00, 0x00, 0x00, 0x00, 0x45,
+        0x33, 0x00, 0x06, 0x0f, 0x36, 0xe9, 0xbd, 0xce, 0x3a, 0x56, 0x91, 0x42, 0xf7, 0x13, 0x13,
+        0x0a, 0x97, 0x5c, 0x63, 0x7b, 0xab, 0x9c, 0xaa, 0x90, 0xb8, 0x24, 0x3a, 0x2e, 0x81, 0x4c,
+        0x24, 0x89, 0x08, 0x1d, 0x91, 0x15, 0x6e, 0xce, 0x0e, 0x12, 0xb7, 0x85, 0xfe, 0x0e, 0xfd,
+        0x73, 0xa1, 0x80, 0x2e, 0x00, 0x80, 0x00, 0x00, 0x22, 0x12, 0x00, 0x80, 0x07, 0x2a, 0xc6,
+        0xb4, 0xbe, 0x6f, 0xc6, 0x0a, 0x84, 0x5a, 0xbf, 0x31, 0x85, 0x36, 0x2f, 0x36, 0x0a, 0x8a,
+        0x44, 0xb4, 0x46, 0x4a, 0x31, 0x61, 0x8c, 0x98, 0xc1, 0x6f, 0xf6, 0x85, 0xfe, 0x5d, 0x7f,
+        0xff, 0xdf, 0xbf, 0x08, 0xe0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xc0, 0x08, 0x30, 0xc8,
+        0x9f, 0x23, 0x7e, 0x03, 0xfb, 0xfd, 0x8d, 0xf0, 0x80, 0xd0, 0x1b, 0x68, 0x10, 0x91, 0x00,
+        0x4e, 0x57, 0x35, 0x40, 0x69, 0xd4, 0x1c, 0xc3, 0x81, 0xd3, 0xe0, 0xd5, 0x4b, 0xed, 0x6f,
+        0x61, 0xfb, 0xe5, 0xcb, 0xc1, 0x30, 0x61, 0xec, 0x30, 0x6d, 0x13, 0x47, 0xdc, 0x4c, 0xcb,
+        0x4f, 0xc3, 0x34, 0x18, 0x8e, 0x7a, 0xbe, 0xeb, 0xbf, 0x02, 0xbf, 0xdb, 0x07, 0x1f, 0x6e,
+        0xe4, 0x5f, 0x09, 0xb4, 0xaa, 0x7f, 0xde, 0x2a, 0xaf, 0xeb, 0xf6, 0x16, 0x32, 0x04, 0xe3,
+        0x0d, 0x3d, 0x4e, 0x46, 0x6b, 0x8b, 0x66, 0x40, 0x1b, 0x62, 0xf1, 0x94, 0x2d, 0x73, 0xae,
+        0xa5, 0xc4, 0x5b, 0x1f, 0xab, 0x3e, 0x0f, 0x9b, 0x3b, 0x52, 0x98, 0x44, 0x8c, 0x19, 0xce,
+        0xdc, 0x1d, 0x13, 0xe8, 0x61, 0xff, 0xbd, 0x7e, 0x54, 0x4a, 0xcd, 0x43, 0x3b, 0x12, 0xbf,
+        0xc1, 0x3f, 0x93, 0x8a, 0x0c, 0x34, 0x62, 0xf1, 0x5f, 0xd3, 0x8d, 0xc9, 0x85, 0xdd, 0xca,
+        0xcb, 0x3e, 0xf7, 0x6c, 0x37, 0x3b, 0x22, 0xca, 0x31, 0x9a, 0xaa, 0x91, 0x5d, 0x8e, 0x29,
+        0xbf, 0xa5, 0x52, 0xa6, 0xdf, 0xee, 0xe9, 0x86, 0xdd, 0xb6, 0x7b, 0x35, 0xd3, 0xe3, 0x64,
+        0x54, 0xd5, 0x2b, 0x81, 0x2c, 0xeb, 0x22, 0xbc, 0x69, 0x70, 0x81, 0xd0, 0x4a, 0xe7, 0xa9,
+        0x00, 0x20,
+    ];
+
+    pub const CONVERT_PASS2_SHADER_BYTES: &[u8] = &[
+        0x42, 0x53, 0x43, 0x44, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x4d, 0x53, 0x43, 0x46, 0x00, 0x00, 0x00, 0x00, 0xf7, 0x01, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x2c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x01, 0x01, 0x00,
+        0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x43, 0x00, 0x00, 0x00, 0x01, 0x00, 0x03,
+        0x15, 0xf8, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x53, 0x53, 0x48, 0x45, 0x58, 0x21, 0x00, 0x86, 0xfe, 0x9e, 0xc7, 0xac, 0x01,
+        0xf8, 0x03, 0x5b, 0x80, 0x80, 0x8d, 0x00, 0x20, 0x86, 0x3f, 0x0d, 0x08, 0x00, 0x01, 0x00,
+        0x00, 0x23, 0x06, 0x60, 0x50, 0x40, 0x00, 0xfd, 0x0f, 0xbd, 0xed, 0xf6, 0xbe, 0x6b, 0xc3,
+        0x52, 0x62, 0x66, 0xe0, 0x24, 0x2e, 0x54, 0x18, 0xde, 0xc6, 0x1e, 0xd5, 0x08, 0x52, 0xb5,
+        0x34, 0xe2, 0x0a, 0x81, 0x4b, 0xe4, 0x32, 0xa8, 0x67, 0x28, 0x84, 0x1f, 0x9f, 0xb8, 0x22,
+        0xe7, 0x92, 0xc6, 0x45, 0xd0, 0x8d, 0x5a, 0xb9, 0x81, 0x8b, 0x97, 0xb9, 0x08, 0x32, 0x00,
+        0x00, 0x39, 0x00, 0xb0, 0x1b, 0x02, 0x00, 0x7c, 0x28, 0xbe, 0xc5, 0x5a, 0xff, 0x2c, 0x6b,
+        0x85, 0xcb, 0x8d, 0xab, 0x02, 0xb7, 0xaa, 0xd4, 0x2a, 0x14, 0x28, 0x59, 0x4d, 0x96, 0x86,
+        0xbf, 0x9b, 0x52, 0x13, 0x6c, 0x29, 0x44, 0x83, 0x88, 0x02, 0x37, 0x6e, 0x22, 0xef, 0x37,
+        0xdf, 0x7f, 0xfd, 0xf7, 0x44, 0xff, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x86, 0x84, 0x61,
+        0x06, 0x03, 0xdd, 0xd0, 0xe2, 0x22, 0x1a, 0xef, 0x00, 0xef, 0xef, 0xdd, 0xef, 0x00, 0x2d,
+        0xd3, 0xa0, 0x5e, 0x01, 0x04, 0x16, 0xdd, 0x33, 0x9b, 0x51, 0xac, 0x88, 0x92, 0x35, 0x5b,
+        0x41, 0x10, 0x89, 0x52, 0x5d, 0x2d, 0x74, 0xfa, 0xa9, 0xbd, 0xa0, 0x99, 0xe4, 0xda, 0x32,
+        0x1a, 0xf9, 0x0e, 0x99, 0x54, 0x74, 0x8a, 0xf7, 0xb7, 0x61, 0x25, 0x22, 0xe4, 0x6e, 0xe1,
+        0x2e, 0xf3, 0xc4, 0xfe, 0x58, 0xe6, 0x5d, 0x29, 0x68, 0xf4, 0x08, 0xc4, 0xbd, 0x6c, 0x98,
+        0x96, 0x58, 0x87, 0x3d, 0x2d, 0xd0, 0x94, 0x5e, 0x96, 0x87, 0xed, 0xfc, 0x6e, 0x2b, 0x22,
+        0x59, 0x14, 0x39, 0x62, 0x09, 0x4a, 0xb0, 0xac, 0x23, 0xee, 0xa4, 0x50, 0xe3, 0x31, 0x0e,
+        0x13, 0xeb, 0x67, 0x3a, 0xa7, 0x9a, 0x87, 0x30, 0x26, 0x7f, 0x84, 0xd3, 0xb3, 0xde, 0x8b,
+        0x97, 0x40, 0x08, 0x83, 0x75, 0x50, 0x2a, 0x08, 0x9a, 0x4e, 0x94, 0xa7, 0x2f, 0x9e, 0x8c,
+        0x0d, 0x60, 0xab, 0x98, 0xf0, 0x13, 0x21, 0xdd, 0xd6, 0x48, 0xf4, 0xba, 0x2f, 0x39, 0x9c,
+        0x2d, 0x1c, 0x64, 0xbe, 0xed, 0x29, 0x66, 0x9b, 0x90, 0x2a, 0x31, 0x25, 0x9b, 0xb0, 0x59,
+        0x14, 0x8f, 0x5a, 0x1e, 0x93, 0xa0, 0xd8, 0xbf, 0x76, 0x3f, 0x29, 0x45, 0x16, 0x47, 0x46,
+        0x0d, 0xbc, 0x36, 0x43, 0x69, 0x67, 0x2b, 0xa3, 0x59, 0x5f, 0xa2, 0xdd, 0x70, 0x36, 0x79,
+        0xc1, 0x07, 0xd9, 0x99, 0xd8, 0x6c, 0xa6, 0x33, 0x33, 0xac, 0x43, 0x1b, 0xbc, 0xfa, 0x65,
+        0x10, 0xd9, 0x43, 0xd8, 0xe2, 0x71, 0x17, 0x61, 0x32, 0x5c, 0x1d, 0xae, 0xfe, 0xeb, 0x70,
+        0xb5, 0x7d, 0x6e, 0x45, 0x6d, 0x71, 0xfa, 0x9c, 0xbb, 0x0d, 0xfc, 0xaa, 0x69, 0x2a, 0x27,
+        0xe1, 0x9a, 0xe0, 0x4a, 0xfd, 0x78, 0x20, 0x7d, 0xb0, 0xb3, 0xfa, 0x8f, 0xca, 0x7f, 0x7e,
+        0x22, 0x66, 0x68, 0xbb, 0x2b, 0x90, 0xdd, 0x02, 0xf9, 0x2e, 0xe5, 0x88, 0x25, 0x02, 0x8a,
+        0xf1, 0xac, 0x89, 0xf7, 0xf6, 0x6f, 0x06, 0xe7, 0x57, 0xbf, 0x1c, 0xf4, 0x24, 0x5f, 0x9a,
+        0x46, 0xf9, 0x4f, 0x94, 0x1a, 0x1f, 0x17, 0x61, 0x00, 0xc0,
+    ];
+}
+//wcap shaders bytecode end
+
+mod tracked {
+    use std::sync::{Arc, Condvar, Mutex, Weak};
+    use windows::{
+        core::*,
+        Win32::{Foundation::*, Media::MediaFoundation::*},
+    };
+
+    #[derive(Default)]
+    pub struct SamplePool {
+        state: Arc<PoolState>,
+    }
+    #[derive(Default)]
+    struct PoolState {
+        slots: Mutex<Vec<Option<IMFSample>>>,
+        ready: Condvar,
+    }
+    impl SamplePool {
+        pub fn new(samples: Vec<IMFSample>) -> Self {
+            Self {
+                state: Arc::new(PoolState {
+                    slots: Mutex::new(samples.into_iter().map(Some).collect()),
+                    ready: Condvar::new(),
+                }),
+            }
+        }
+        pub fn try_take(&self) -> Option<SampleLease> {
+            let mut slots = self.state.slots.lock().unwrap_or_else(|p| p.into_inner());
+            let index = slots.iter().position(Option::is_some)?;
+            Some(SampleLease {
+                sample: slots[index].take(),
+                state: self.state.clone(),
+                index,
+            })
+        }
+    }
+
+    pub struct SampleLease {
+        sample: Option<IMFSample>,
+        state: Arc<PoolState>,
+        pub index: usize,
+    }
+    impl SampleLease {
+        pub fn sample(&self) -> &IMFSample {
+            self.sample.as_ref().unwrap()
+        }
+        pub unsafe fn submit_transform(
+            mut self,
+            submit: impl FnOnce(&IMFSample) -> std::result::Result<(), i32>,
+        ) -> std::result::Result<(), i32> {
+            let callback: IMFAsyncCallback = ReturnSample {
+                state: Arc::downgrade(&self.state),
+                index: self.index,
+            }
+            .into();
+            let tracked: IMFTrackedSample = self.sample().cast().map_err(|e| e.code().0)?;
+            tracked
+                .SetAllocator(&callback, None)
+                .map_err(|e| e.code().0)?;
+            let sample = self.sample.take().unwrap();
+            let result = submit(&sample);
+            drop(tracked);
+            drop(sample);
+            result
+        }
+    }
+    impl Drop for SampleLease {
+        fn drop(&mut self) {
+            if let Some(sample) = self.sample.take() {
+                self.state.slots.lock().unwrap_or_else(|p| p.into_inner())[self.index] =
+                    Some(sample);
+                self.state.ready.notify_one();
+            }
+        }
+    }
+    #[implement(IMFAsyncCallback)]
+    struct ReturnSample {
+        state: Weak<PoolState>,
+        index: usize,
+    }
+    impl IMFAsyncCallback_Impl for ReturnSample_Impl {
+        fn GetParameters(&self, _: *mut u32, _: *mut u32) -> Result<()> {
+            Err(Error::from_hresult(E_NOTIMPL))
+        }
+        fn Invoke(&self, result: Ref<'_, IMFAsyncResult>) -> Result<()> {
+            let Some(state) = self.state.upgrade() else {
+                return Ok(());
+            };
+            let sample: IMFSample = unsafe { result.ok()?.GetObject()?.cast()? };
+            state.slots.lock().unwrap_or_else(|p| p.into_inner())[self.index] = Some(sample);
+            state.ready.notify_one();
+            Ok(())
+        }
+    }
+}
+
+#[cfg(test)]
+mod native_regression_tests {
+    use super::*;
+    use windows::Win32::{
+        Foundation::*,
+        Graphics::{Direct3D::*, Direct3D11::*, Dxgi::Common::*},
+        System::Com::*,
+    };
+    #[test]
+    fn software_mf_encodes_sparse_timestamps_without_filler() {
+        unsafe {
+            CoInitializeEx(None, COINIT_MULTITHREADED).ok().unwrap();
+        }
+        let mut encoder = VideoEncoder::create(EncoderPref::Software, 64, 48, 30, 500_000).unwrap();
+        assert_eq!(encoder.kind(), EncoderKind::Software);
+        let mut out = Vec::new();
+        for pts in [0, 333_333, 20_000_000] {
+            let pixels = [20u8, 40, 200, 255].repeat(64 * 48);
+            encoder
+                .encode_bgra(&pixels, 64, 48, 256, pts, &mut out)
+                .unwrap();
+        }
+        encoder.flush(&mut out);
+        assert_eq!(
+            out.iter().map(|f| f.pts100ns).collect::<Vec<_>>(),
+            vec![0, 333_333, 20_000_000]
+        );
+        assert!(out[0].keyframe);
+        assert!(out.iter().all(|f| !f.data.is_empty()));
+        let path =
+            std::env::temp_dir().join(format!("ir-static-regression-{}.mp4", std::process::id()));
+        let path = path.to_string_lossy().into_owned();
+        let video: Vec<crate::muxer::VideoSample> = out
+            .iter()
+            .map(|f| crate::muxer::VideoSample {
+                data: &f.data,
+                keyframe: f.keyframe,
+                pts100ns: f.pts100ns,
+            })
+            .collect();
+        assert_eq!(
+            crate::muxer::mux_to_mp4_until(
+                &path,
+                &video,
+                &[],
+                48000,
+                2,
+                30,
+                64,
+                48,
+                30,
+                1_200_000_000
+            ),
+            crate::IR_OK
+        );
+        let bytes = std::fs::read(&path).unwrap();
+        let mvhd = bytes.windows(4).position(|tag| tag == b"mvhd").unwrap();
+        assert_eq!(
+            u32::from_be_bytes(bytes[mvhd + 20..mvhd + 24].try_into().unwrap()),
+            30_000
+        );
+        let elst = bytes.windows(4).position(|tag| tag == b"elst").unwrap();
+        assert_eq!(
+            u32::from_be_bytes(bytes[elst + 16..elst + 20].try_into().unwrap()),
+            90_000
+        );
+        assert_eq!(
+            crate::muxer::mux_to_mp4_until(
+                &path,
+                &video,
+                &[],
+                48000,
+                2,
+                30,
+                64,
+                48,
+                30,
+                1_200_000_000
+            ),
+            crate::IR_FAIL
+        );
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            bytes,
+            "A failed save must preserve an existing file"
+        );
+        std::fs::remove_file(path).unwrap();
+
+        drop(encoder);
+        unsafe {
+            CoUninitialize();
+        }
+    }
+    #[test]
+    fn embedded_shaders_resize_and_convert_on_warp() {
+        unsafe {
+            let mut device = None;
+            let mut context = None;
+            D3D11CreateDevice(
+                None,
+                D3D_DRIVER_TYPE_WARP,
+                HMODULE::default(),
+                D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                None,
+                D3D11_SDK_VERSION,
+                Some(&mut device),
+                None,
+                Some(&mut context),
+            )
+            .unwrap();
+            let device = device.unwrap();
+            let context = context.unwrap();
+            let mt: ID3D11Multithread = windows::core::Interface::cast(&context).unwrap();
+            let _ = mt.SetMultithreadProtected(true);
+            let input = GpuInput::create(&device, &context, 64, 48).unwrap();
+            let pixels = [0u8, 0, 255, 255].repeat(64 * 48);
+            let desc = D3D11_TEXTURE2D_DESC {
+                Width: 64,
+                Height: 48,
+                MipLevels: 1,
+                ArraySize: 1,
+                Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                SampleDesc: DXGI_SAMPLE_DESC {
+                    Count: 1,
+                    Quality: 0,
+                },
+                Usage: D3D11_USAGE_DEFAULT,
+                ..Default::default()
+            };
+            let initial = D3D11_SUBRESOURCE_DATA {
+                pSysMem: pixels.as_ptr() as _,
+                SysMemPitch: 256,
+                SysMemSlicePitch: 0,
+            };
+            let mut texture = None;
+            device
+                .CreateTexture2D(&desc, Some(&initial), Some(&mut texture))
+                .unwrap();
+            input.submit(&texture.unwrap(), 123);
+            for improved in [false, true] {
+                let converter = gpu::Converter::create(&input, 32, 24, improved).unwrap();
+                converter.run(0).unwrap();
+                let out = &converter.outputs()[0].tex;
+                let mut desc = D3D11_TEXTURE2D_DESC::default();
+                out.GetDesc(&mut desc);
+                desc.Usage = D3D11_USAGE_STAGING;
+                desc.BindFlags = 0;
+                desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ.0 as u32;
+                desc.MiscFlags = 0;
+                let mut staging = None;
+                device
+                    .CreateTexture2D(&desc, None, Some(&mut staging))
+                    .unwrap();
+                let staging = staging.unwrap();
+                context.CopyResource(&staging, out);
+                let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+                context
+                    .Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))
+                    .unwrap();
+                let ptr = mapped.pData as *const u8;
+                let y = *ptr.add(12 * mapped.RowPitch as usize + 16);
+                let u = *ptr.add(24 * mapped.RowPitch as usize + 6 * mapped.RowPitch as usize + 16);
+                let v = *ptr.add(24 * mapped.RowPitch as usize + 6 * mapped.RowPitch as usize + 17);
+                context.Unmap(&staging, 0);
+                assert!((y as i32 - 81).abs() <= 3, "Y={y}, improved={improved}");
+                assert!((u as i32 - 90).abs() <= 3, "U={u}, improved={improved}");
+                assert!((v as i32 - 240).abs() <= 3, "V={v}, improved={improved}");
+            }
+        }
+    }
+    #[test]
+    fn software_and_auto_encode_real_4k_frames() {
+        unsafe {
+            CoInitializeEx(None, COINIT_MULTITHREADED).ok().unwrap();
+        }
+        let pixels = [20u8, 40, 200, 255].repeat(3840 * 2160);
+        for preference in [EncoderPref::Software, EncoderPref::Auto] {
+            let mut encoder = VideoEncoder::create(preference, 3840, 2160, 30, 4_500_000).unwrap();
+            let mut out = Vec::new();
+            for pts in [0, 333_333] {
+                encoder
+                    .encode_bgra(&pixels, 3840, 2160, 3840 * 4, pts, &mut out)
+                    .unwrap();
+            }
+            encoder.flush(&mut out);
+            assert_eq!(
+                out.iter().map(|f| f.pts100ns).collect::<Vec<_>>(),
+                vec![0, 333_333]
+            );
+            assert!(out[0].keyframe);
+            assert!(out.iter().all(|f| !f.data.is_empty()));
+            let video: Vec<crate::muxer::VideoSample> = out
+                .iter()
+                .map(|f| crate::muxer::VideoSample {
+                    data: &f.data,
+                    keyframe: f.keyframe,
+                    pts100ns: f.pts100ns,
+                })
+                .collect();
+            let path = std::env::temp_dir().join(format!(
+                "ir-4k-{:?}-{}.mp4",
+                preference,
+                std::process::id()
+            ));
+            assert_eq!(
+                crate::muxer::mux_to_mp4_until(
+                    &path.to_string_lossy(),
+                    &video,
+                    &[],
+                    48000,
+                    2,
+                    30,
+                    3840,
+                    2160,
+                    30,
+                    10_000_000,
+                ),
+                crate::IR_OK
+            );
+            eprintln!(
+                "4K {:?}: {:?}, {}",
+                preference,
+                encoder.kind(),
+                path.display()
+            );
+        }
+        unsafe {
+            CoUninitialize();
+        }
     }
 }

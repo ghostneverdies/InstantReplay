@@ -7,6 +7,7 @@ using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Microsoft.VisualBasic.FileIO;
+using Windows.Media.Editing;
 using Windows.Storage;
 using Windows.Storage.FileProperties;
 using Windows.Storage.Streams;
@@ -256,23 +257,72 @@ public sealed class ReplayLibrary
     private static async Task EnsureThumbnailAsync(ReplayItem item, StorageFile video)
     {
         string thumbPath = item.ThumbPath;
-        if (!File.Exists(thumbPath))
+        if (File.Exists(thumbPath))
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(thumbPath)!);
-
-            using StorageItemThumbnail thumb =
-                await video.GetThumbnailAsync(ThumbnailMode.VideosView, 480, ThumbnailOptions.UseCurrentScale);
-            if (thumb == null || thumb.Type != ThumbnailType.Image || thumb.Size == 0) return;
-
-            var bytes = new byte[thumb.Size];
-            using (var reader = new DataReader(thumb.GetInputStreamAt(0)))
+            try
             {
-                await reader.LoadAsync((uint)thumb.Size);
-                reader.ReadBytes(bytes);
+                await LoadThumbnailAsync(item, thumbPath);
+                return;
             }
-            await File.WriteAllBytesAsync(thumbPath, bytes);
+            catch (Exception ex)
+            {
+                Logger.Debug($"Gallery: regenerating unreadable thumbnail '{thumbPath}': {ex.Message}");
+            }
         }
 
+        Directory.CreateDirectory(Path.GetDirectoryName(thumbPath)!);
+        byte[]? bytes = null;
+        try
+        {
+            using StorageItemThumbnail thumb =
+                await video.GetThumbnailAsync(ThumbnailMode.VideosView, 480, ThumbnailOptions.UseCurrentScale);
+            if (thumb != null && thumb.Type == ThumbnailType.Image && thumb.Size > 0)
+                bytes = await ReadThumbnailBytesAsync(thumb);
+        }
+        catch (Exception ex)
+        {
+            Logger.Debug($"Gallery: shell thumbnail unavailable for '{item.VideoPath}': {ex.Message}");
+        }
+
+        if (bytes == null)
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            var clip = await MediaClip.CreateFromFileAsync(video).AsTask(timeout.Token);
+            var composition = new MediaComposition();
+            composition.Clips.Add(clip);
+            TimeSpan position = TimeSpan.FromSeconds(Math.Min(1, clip.OriginalDuration.TotalSeconds / 2));
+            using var image = await composition.GetThumbnailAsync(position, 480, 0,
+                VideoFramePrecision.NearestKeyFrame).AsTask(timeout.Token);
+            bytes = await ReadThumbnailBytesAsync(image);
+        }
+
+        string temporary = thumbPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            await File.WriteAllBytesAsync(temporary, bytes);
+            File.Move(temporary, thumbPath, overwrite: true);
+        }
+        finally
+        {
+            try { File.Delete(temporary); } catch { }
+        }
+        await LoadThumbnailAsync(item, thumbPath);
+    }
+
+    private static async Task<byte[]> ReadThumbnailBytesAsync(IRandomAccessStream stream)
+    {
+        if (stream.Size == 0 || stream.Size > 16 * 1024 * 1024)
+            throw new InvalidDataException("The thumbnail image is empty or too large.");
+        var bytes = new byte[(int)stream.Size];
+        using var reader = new DataReader(stream.GetInputStreamAt(0));
+        uint loaded = await reader.LoadAsync((uint)bytes.Length);
+        if (loaded != bytes.Length) throw new InvalidDataException("The thumbnail image is incomplete.");
+        reader.ReadBytes(bytes);
+        return bytes;
+    }
+
+    private static async Task LoadThumbnailAsync(ReplayItem item, string thumbPath)
+    {
         StorageFile thumbFile = await StorageFile.GetFileFromPathAsync(thumbPath);
         using IRandomAccessStream stream = await thumbFile.OpenReadAsync();
         var bmp = new BitmapImage { DecodePixelWidth = 480 };

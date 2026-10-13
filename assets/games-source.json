@@ -1,0 +1,13 @@
+{
+  "source": "https://discord.com/api/v9/applications/detectable",
+  "retrieved": "2026-10-13",
+  "sourceSha256": "6f39a516317fe00b64a70d46e0e3c1ced6f676cff9707d903794bc3eaa3b739a",
+  "games": 8460,
+  "executableRules": 8967,
+  "filter": "Windows non-launcher executables with game themes; no popularity ranking. Names and executable identifiers only, no artwork or descriptions.",
+  "notice": "Factual detection metadata from Discord public detectable applications catalog. No Discord code, images, trademarks or endorsement included.",
+  "localRules": {
+    "description": "Minecraft Java game-window title rules for vanilla, Fast, Silent, Lunar, Badlion, Feather, TLauncher and Legacy Launcher. Native LWJGL, GLFW30 or SDL_app game surface required; launcher windows are excluded. Launcher-started games retaining a Minecraft title use the vanilla rule.",
+    "updated": "2026-10-13"
+  }
+}

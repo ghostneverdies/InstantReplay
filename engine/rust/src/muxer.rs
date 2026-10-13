@@ -4,8 +4,8 @@ use std::path::Path;
 pub const SECOND_100NS: i64 = 10_000_000;
 
 #[derive(Clone)]
-pub struct VideoSample {
-    pub data: Vec<u8>,
+pub struct VideoSample<'a> {
+    pub data: &'a [u8],
     pub keyframe: bool,
     pub pts100ns: i64,
 }
@@ -17,9 +17,16 @@ pub struct AudioSample {
     pub pts100ns: i64,
 }
 
+struct AudioSlice<'a> {
+    data: &'a [u8],
+    frames: u32,
+    pts100ns: i64,
+}
+
 pub const IR_OK: i32 = 0;
 pub const IR_FAIL: i32 = -1;
 pub const IR_NOT_ENOUGH_DATA: i32 = -30;
+pub const IR_LOW_MEMORY: i32 = -31;
 
 struct BeWriter {
     v: Vec<u8>,
@@ -198,7 +205,7 @@ fn write_stsz(w: &mut BeWriter, sizes: impl Iterator<Item = usize>, count: u32) 
     }
 }
 
-fn write_stts_audio(w: &mut BeWriter, a: &[AudioSample]) {
+fn write_stts_audio(w: &mut BeWriter, a: &[AudioSlice]) {
     let frames: Vec<u32> = a.iter().map(|s| s.frames).collect();
     let runs = rle_deltas(&frames);
     write_stts(w, &runs);
@@ -375,8 +382,30 @@ fn write_stsd_audio(w: &mut BeWriter, rate: u32, ch: u32) {
     w.bytes(&tmp.v);
 }
 
-fn build_video_trak(w: &mut BeWriter, v: &[VideoSample], duration_ms: u32, w_: u32, h_: u32,
-                    config: &[u8], offsets: &[u32], deltas_ms: &[u32]) {
+fn write_edits(w: &mut BeWriter, entries: &[(u32, i32)]) {
+    be_box(w, 24 + entries.len() as u32 * 12, b"edts");
+    be_box(w, 16 + entries.len() as u32 * 12, b"elst");
+    w.u32(0);
+    w.u32(entries.len() as u32);
+    for &(duration, media_time) in entries {
+        w.u32(duration);
+        w.u32(media_time as u32);
+        w.u16(1);
+        w.u16(0);
+    }
+}
+fn build_video_trak(
+    w: &mut BeWriter,
+    v: &[VideoSample],
+    sizes: &[usize],
+    duration_ms: u32,
+    w_: u32,
+    h_: u32,
+    config: &[u8],
+    offsets: &[u32],
+    deltas_ms: &[u32],
+    skip_ms: u32,
+) {
     let mut inner = BeWriter::new();
 
     be_box(&mut inner, 92, b"tkhd");
@@ -404,8 +433,14 @@ fn build_video_trak(w: &mut BeWriter, v: &[VideoSample], duration_ms: u32, w_: u
     inner.u32(w_ << 16);
     inner.u32(h_ << 16);
 
+    if skip_ms > 0 {
+        write_edits(
+            &mut inner,
+            &[(duration_ms, skip_ms.min(i32::MAX as u32) as i32)],
+        );
+    }
     let mut mdia = BeWriter::new();
-    write_mdhd(&mut mdia, 1000, duration_ms);
+    write_mdhd(&mut mdia, 1000, deltas_ms.iter().copied().sum());
     write_hdlr(&mut mdia, b"vide", b"VideoHandler");
     {
         let mut minf = BeWriter::new();
@@ -422,7 +457,7 @@ fn build_video_trak(w: &mut BeWriter, v: &[VideoSample], duration_ms: u32, w_: u
             write_stts(&mut stbl, &rle_deltas(deltas_ms));
             write_stss(&mut stbl, v);
             write_stsc(&mut stbl);
-            write_stsz(&mut stbl, v.iter().map(|s| s.data.len()), v.len() as u32);
+            write_stsz(&mut stbl, sizes.iter().copied(), v.len() as u32);
             write_stco(&mut stbl, offsets);
             be_box(&mut minf, 8 + stbl.v.len() as u32, b"stbl");
             minf.bytes(&stbl.v);
@@ -437,7 +472,14 @@ fn build_video_trak(w: &mut BeWriter, v: &[VideoSample], duration_ms: u32, w_: u
     w.bytes(&inner.v);
 }
 
-fn build_audio_trak(w: &mut BeWriter, a: &[AudioSample], rate: u32, ch: u32, offsets: &[u32]) {
+fn build_audio_trak(
+    w: &mut BeWriter,
+    a: &[AudioSlice],
+    rate: u32,
+    ch: u32,
+    offsets: &[u32],
+    delay_ms: u32,
+) {
     let duration: u64 = a.iter().map(|s| s.frames as u64).sum();
 
     let mut inner = BeWriter::new();
@@ -448,7 +490,9 @@ fn build_audio_trak(w: &mut BeWriter, a: &[AudioSample], rate: u32, ch: u32, off
     inner.u32(0);
     inner.u32(2);
     inner.u32(0);
-    inner.u32(duration as u32);
+    inner.u32(
+        delay_ms.saturating_add((duration * 1000 / rate.max(1) as u64).min(u32::MAX as u64) as u32),
+    );
     inner.u32(0);
     inner.u32(0);
     inner.u16(0);
@@ -467,6 +511,18 @@ fn build_audio_trak(w: &mut BeWriter, a: &[AudioSample], rate: u32, ch: u32, off
     inner.u32(0);
     inner.u32(0);
 
+    if delay_ms > 0 {
+        write_edits(
+            &mut inner,
+            &[
+                (delay_ms, -1),
+                (
+                    (duration * 1000 / rate.max(1) as u64).min(u32::MAX as u64) as u32,
+                    0,
+                ),
+            ],
+        );
+    }
     let mut mdia = BeWriter::new();
     write_mdhd(&mut mdia, rate, duration as u32);
     write_hdlr(&mut mdia, b"soun", b"SoundHandler");
@@ -497,14 +553,39 @@ fn build_audio_trak(w: &mut BeWriter, a: &[AudioSample], rate: u32, ch: u32, off
     w.bytes(&inner.v);
 }
 
-fn build_moov(w: &mut BeWriter, v: &[VideoSample], a: &[AudioSample], a_rate: u32, a_ch: u32,
-              w_: u32, h_: u32, config: &[u8], v_offsets: &[u32], a_offsets: &[u32],
-              duration_ms: u32, deltas_ms: &[u32]) {
+fn build_moov(
+    w: &mut BeWriter,
+    v: &[VideoSample],
+    sizes: &[usize],
+    a: &[AudioSlice],
+    a_rate: u32,
+    a_ch: u32,
+    w_: u32,
+    h_: u32,
+    config: &[u8],
+    v_offsets: &[u32],
+    a_offsets: &[u32],
+    duration_ms: u32,
+    deltas_ms: &[u32],
+    skip_ms: u32,
+    audio_delay_ms: u32,
+) {
     let mut inner = BeWriter::new();
     write_mvhd(&mut inner, 1000, duration_ms);
-    build_video_trak(&mut inner, v, duration_ms, w_, h_, config, v_offsets, deltas_ms);
+    build_video_trak(
+        &mut inner,
+        v,
+        sizes,
+        duration_ms,
+        w_,
+        h_,
+        config,
+        v_offsets,
+        deltas_ms,
+        skip_ms,
+    );
     if !a.is_empty() {
-        build_audio_trak(&mut inner, a, a_rate, a_ch, a_offsets);
+        build_audio_trak(&mut inner, a, a_rate, a_ch, a_offsets, audio_delay_ms);
     }
     be_box(w, 8 + inner.v.len() as u32, b"moov");
     w.bytes(&inner.v);
@@ -516,10 +597,10 @@ fn clip_audio_to_window(
     last_end: i64,
     a_sample_rate: u32,
     a_channels: u32,
-) -> Vec<AudioSample> {
+) -> Vec<AudioSlice<'_>> {
     let bpf = (a_channels.max(1) as usize) * 2;
     let arate = a_sample_rate.max(1) as i64;
-    let mut out: Vec<AudioSample> = Vec::new();
+    let mut out: Vec<AudioSlice> = Vec::new();
     for c in a {
         if c.frames == 0 || c.data.is_empty() {
             continue;
@@ -549,8 +630,8 @@ fn clip_audio_to_window(
         if frames == 0 {
             continue;
         }
-        out.push(AudioSample {
-            data: data.to_vec(),
+        out.push(AudioSlice {
+            data,
             frames,
             pts100ns: c.pts100ns + (skip as i64 * SECOND_100NS) / arate,
         });
@@ -569,7 +650,11 @@ fn video_deltas_ms(v: &[VideoSample], fps: u32) -> Vec<u32> {
 
     let mut deltas: Vec<u32> = (0..n)
         .map(|i| {
-            let d = if i + 1 < n { cum_ms(i + 1) - cum_ms(i) } else { 0 };
+            let d = if i + 1 < n {
+                cum_ms(i + 1) - cum_ms(i)
+            } else {
+                0
+            };
             if d >= 1 {
                 d as u32
             } else {
@@ -586,8 +671,45 @@ fn video_deltas_ms(v: &[VideoSample], fps: u32) -> Vec<u32> {
     deltas
 }
 
-pub fn mux_to_mp4(path: &str, v: &[VideoSample], a: &[AudioSample], a_sample_rate: u32,
-                  a_channels: u32, fps: i32, w_: u32, h_: u32, seconds_back: i32) -> i32 {
+pub fn mux_to_mp4(
+    path: &str,
+    v: &[VideoSample],
+    a: &[AudioSample],
+    a_sample_rate: u32,
+    a_channels: u32,
+    fps: i32,
+    w_: u32,
+    h_: u32,
+    seconds_back: i32,
+) -> i32 {
+    let end = v.last().map_or(0, |sample| {
+        sample.pts100ns + SECOND_100NS / fps.max(1) as i64
+    });
+    mux_to_mp4_until(
+        path,
+        v,
+        a,
+        a_sample_rate,
+        a_channels,
+        fps,
+        w_,
+        h_,
+        seconds_back,
+        end,
+    )
+}
+pub fn mux_to_mp4_until(
+    path: &str,
+    v: &[VideoSample],
+    a: &[AudioSample],
+    a_sample_rate: u32,
+    a_channels: u32,
+    fps: i32,
+    w_: u32,
+    h_: u32,
+    seconds_back: i32,
+    end_time: i64,
+) -> i32 {
     if v.is_empty() {
         return IR_NOT_ENOUGH_DATA;
     }
@@ -597,7 +719,7 @@ pub fn mux_to_mp4(path: &str, v: &[VideoSample], a: &[AudioSample], a_sample_rat
 
     let mut trim_start = i64::MIN;
     if seconds_back > 0 {
-        let newest_end = v.last().map(|f| f.pts100ns).unwrap_or(0);
+        let newest_end = end_time;
         trim_start = newest_end - seconds_back as i64 * SECOND_100NS;
     }
 
@@ -618,22 +740,25 @@ pub fn mux_to_mp4(path: &str, v: &[VideoSample], a: &[AudioSample], a_sample_rat
         };
     }
 
-    if v.len() - start < 2 {
-        return IR_NOT_ENOUGH_DATA;
-    }
-    let first_pts = v[start].pts100ns;
-    let last_end = v.last().unwrap().pts100ns;
+    let first_pts = if v.len() - start == 1 && trim_start != i64::MIN {
+        v[start].pts100ns.max(trim_start)
+    } else {
+        v[start].pts100ns
+    };
+    let last_end = end_time.max(v.last().unwrap().pts100ns + SECOND_100NS / fps.max(1) as i64);
     if last_end - first_pts < SECOND_100NS / 2 {
         return IR_NOT_ENOUGH_DATA;
     }
 
     let mut vsamples: Vec<VideoSample> = Vec::with_capacity(v.len() - start);
+    let mut sample_sizes = Vec::with_capacity(v.len() - start);
+    let mut converted = Vec::new();
     let mut avcc: Vec<u8> = Vec::new();
     let mut sps: Vec<u8> = Vec::new();
     let mut pps: Vec<u8> = Vec::new();
     for s in &v[start..] {
-        let mut data = Vec::new();
-        if !annexb_to_avcc(&s.data, &mut data) {
+        converted.clear();
+        if !annexb_to_avcc(s.data, &mut converted) {
             continue;
         }
         if avcc.is_empty() {
@@ -643,20 +768,34 @@ pub fn mux_to_mp4(path: &str, v: &[VideoSample], a: &[AudioSample], a_sample_rat
             }
         }
         vsamples.push(VideoSample {
-            data,
+            data: s.data,
             keyframe: s.keyframe,
-            pts100ns: s.pts100ns,
+            pts100ns: s.pts100ns.max(first_pts),
         });
+        sample_sizes.push(converted.len());
     }
     if avcc.is_empty() || vsamples.is_empty() {
         return IR_FAIL;
     }
     let config: &[u8] = &avcc;
 
-    let asamples = clip_audio_to_window(a, first_pts, last_end, a_sample_rate, a_channels);
+    let presentation_start = first_pts.max(trim_start);
+    let skip_ms = ((presentation_start - first_pts) / 10000).clamp(0, u32::MAX as i64) as u32;
+    let asamples = clip_audio_to_window(a, presentation_start, last_end, a_sample_rate, a_channels);
+    let audio_delay_ms = asamples.first().map_or(0, |sample| {
+        ((sample.pts100ns - presentation_start) / 10000).clamp(0, u32::MAX as i64) as u32
+    });
 
-    let deltas_ms = video_deltas_ms(&vsamples, fps);
-    let duration_ms: u32 = deltas_ms.iter().sum();
+    let mut deltas_ms = video_deltas_ms(&vsamples, fps);
+    if let Some(tail) = deltas_ms.last_mut() {
+        *tail = ((last_end - vsamples.last().unwrap().pts100ns + 9999) / 10000)
+            .clamp(1, u32::MAX as i64) as u32;
+    }
+    let duration_ms: u32 = deltas_ms
+        .iter()
+        .copied()
+        .sum::<u32>()
+        .saturating_sub(skip_ms);
 
     let mut items: Vec<(bool, usize, i64)> = Vec::with_capacity(vsamples.len() + asamples.len());
     for i in 0..vsamples.len() {
@@ -677,8 +816,23 @@ pub fn mux_to_mp4(path: &str, v: &[VideoSample], a: &[AudioSample], a_sample_rat
     let zero_v = vec![0u32; vsamples.len()];
     let zero_a = vec![0u32; asamples.len()];
     let mut moov0 = BeWriter::new();
-    build_moov(&mut moov0, &vsamples, &asamples, a_sample_rate, a_channels, w_, h_, config,
-               &zero_v, &zero_a, duration_ms, &deltas_ms);
+    build_moov(
+        &mut moov0,
+        &vsamples,
+        &sample_sizes,
+        &asamples,
+        a_sample_rate,
+        a_channels,
+        w_,
+        h_,
+        config,
+        &zero_v,
+        &zero_a,
+        duration_ms,
+        &deltas_ms,
+        skip_ms,
+        audio_delay_ms,
+    );
     let mdat_start: u64 = ftyp_size as u64 + moov0.v.len() as u64;
 
     let mut v_offsets = vec![0u32; vsamples.len()];
@@ -687,7 +841,7 @@ pub fn mux_to_mp4(path: &str, v: &[VideoSample], a: &[AudioSample], a_sample_rat
     for &(is_video, idx, _) in &items {
         if is_video {
             v_offsets[idx] = running as u32;
-            running += vsamples[idx].data.len() as u64;
+            running += sample_sizes[idx] as u64;
         } else {
             a_offsets[idx] = running as u32;
             running += asamples[idx].data.len() as u64;
@@ -695,14 +849,36 @@ pub fn mux_to_mp4(path: &str, v: &[VideoSample], a: &[AudioSample], a_sample_rat
     }
 
     let mut moov = BeWriter::new();
-    build_moov(&mut moov, &vsamples, &asamples, a_sample_rate, a_channels, w_, h_, config,
-               &v_offsets, &a_offsets, duration_ms, &deltas_ms);
+    build_moov(
+        &mut moov,
+        &vsamples,
+        &sample_sizes,
+        &asamples,
+        a_sample_rate,
+        a_channels,
+        w_,
+        h_,
+        config,
+        &v_offsets,
+        &a_offsets,
+        duration_ms,
+        &deltas_ms,
+        skip_ms,
+        audio_delay_ms,
+    );
     if moov.v.len() != moov0.v.len() {
         return IR_FAIL;
     }
 
+    let mut created = false;
     let result = (|| -> std::io::Result<()> {
-        let mut out = std::io::BufWriter::new(std::fs::File::create(Path::new(path))?);
+        let mut out = std::io::BufWriter::new(
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(Path::new(path))?,
+        );
+        created = true;
         let mut ftyp = BeWriter::new();
         be_box(&mut ftyp, ftyp_size, b"ftyp");
         ftyp.fourcc(b"isom");
@@ -720,7 +896,11 @@ pub fn mux_to_mp4(path: &str, v: &[VideoSample], a: &[AudioSample], a_sample_rat
 
         for &(is_video, idx, _) in &items {
             if is_video {
-                out.write_all(&vsamples[idx].data)?;
+                converted.clear();
+                if !annexb_to_avcc(vsamples[idx].data, &mut converted) || converted.len() != sample_sizes[idx] {
+                    return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid video sample"));
+                }
+                out.write_all(&converted)?;
             } else {
                 out.write_all(&asamples[idx].data)?;
             }
@@ -732,7 +912,9 @@ pub fn mux_to_mp4(path: &str, v: &[VideoSample], a: &[AudioSample], a_sample_rat
     match result {
         Ok(()) => IR_OK,
         Err(_) => {
-            let _ = std::fs::remove_file(Path::new(path));
+            if created {
+                let _ = std::fs::remove_file(Path::new(path));
+            }
             IR_FAIL
         }
     }
@@ -743,6 +925,43 @@ mod tests {
     use super::*;
 
     const RATE: u32 = 48_000;
+
+    #[test]
+    fn streamed_annexb_samples_have_correct_sizes_offsets_and_payloads() {
+        let first = [0, 0, 1, 0x67, 0x42, 0, 0x1e, 0, 0, 1, 0x68, 0xce, 0, 0, 1, 0x65, 0x88];
+        let second = [0, 0, 1, 0x41, 0x99, 0xaa];
+        let samples = [VideoSample { data: &first, keyframe: true, pts100ns: 0 },
+            VideoSample { data: &second, keyframe: false, pts100ns: 333_333 }];
+        let path = std::env::temp_dir().join(format!("ir-streamed-mux-{}.mp4", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(mux_to_mp4_until(&path.to_string_lossy(), &samples, &[], RATE, 2, 30, 64, 48, 0, SECOND_100NS), IR_OK);
+        let bytes = std::fs::read(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        let stsz = bytes.windows(4).position(|b| b == b"stsz").unwrap();
+        let read = |at| u32::from_be_bytes(bytes[at..at + 4].try_into().unwrap());
+        assert_eq!(read(stsz + 12), 2);
+        let mut expected_first = Vec::new();
+        let mut expected_second = Vec::new();
+        assert!(annexb_to_avcc(&first, &mut expected_first));
+        assert!(annexb_to_avcc(&second, &mut expected_second));
+        assert_eq!(read(stsz + 16) as usize, expected_first.len());
+        assert_eq!(read(stsz + 20) as usize, expected_second.len());
+        let stco = bytes.windows(4).position(|b| b == b"stco").unwrap();
+        let first_offset = read(stco + 12) as usize;
+        let second_offset = read(stco + 16) as usize;
+        assert_eq!(second_offset, first_offset + expected_first.len());
+        assert_eq!(&bytes[first_offset..second_offset], expected_first.as_slice());
+        assert_eq!(&bytes[second_offset..second_offset + expected_second.len()], expected_second.as_slice());
+    }
+
+    #[test]
+    fn clipped_audio_borrows_the_original_packet_storage() {
+        let packet = pkt(0, 480, 7);
+        let sliced = clip_audio_to_window(std::slice::from_ref(&packet), 50_000, 100_000, RATE, 2);
+        assert_eq!(sliced.len(), 1);
+        assert_eq!(sliced[0].data.as_ptr(), unsafe { packet.data.as_ptr().add(240 * BPF) });
+        assert_eq!(sliced[0].frames, 240);
+    }
     const CH: u32 = 2;
     const BPF: usize = 4;
 
@@ -809,7 +1028,10 @@ mod tests {
         }
         assert!(out.first().unwrap().pts100ns >= ms(25));
         let total_frames: u32 = out.iter().map(|s| s.frames).sum();
-        assert!(total_frames <= 4800, "clipped audio cannot exceed the window");
+        assert!(
+            total_frames <= 4800,
+            "clipped audio cannot exceed the window"
+        );
         for s in &out {
             assert_eq!(s.data.len(), s.frames as usize * BPF);
         }

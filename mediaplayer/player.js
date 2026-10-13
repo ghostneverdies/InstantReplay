@@ -26,8 +26,9 @@ const cur = document.getElementById("cur");
 const dur = document.getElementById("dur");
 const seek = document.getElementById("seek");
 const mute = document.getElementById("mute");
-const icWave = document.getElementById("icWave");
-const icSlash = document.getElementById("icSlash");
+const icWaveLow = document.getElementById("icWaveLow");
+const icWaveHigh = document.getElementById("icWaveHigh");
+const icMuted = document.getElementById("icMuted");
 const vol = document.getElementById("vol");
 const fsBtn = document.getElementById("fs");
 const icExpand = document.getElementById("icExpand");
@@ -35,6 +36,7 @@ const icCompress = document.getElementById("icCompress");
 
 let scrubbing = false;
 let mutedByUser = null;
+let lastAudibleVolume = 1;
 
 function fmt(t) {
   if (!isFinite(t) || t < 0) t = 0;
@@ -63,8 +65,14 @@ function updateIcons() {
   icPlay.style.display = v.paused ? "" : "none";
   icPause.style.display = v.paused ? "none" : "";
   const muted = v.muted || v.volume <= 0.004;
-  icSlash.style.display = muted ? "" : "none";
-  icWave.style.opacity = muted ? "0" : Math.min(1, v.volume * 1.25).toFixed(3);
+  if (v.volume > 0.004) lastAudibleVolume = v.volume;
+  icMuted.style.opacity = muted ? "1" : "0";
+  icWaveLow.style.opacity = muted ? "0" : String(Math.min(1, v.volume * 2));
+  icWaveHigh.style.opacity = muted ? "0" : String(Math.max(0, v.volume * 2 - 1));
+  const action = muted ? "Unmute" : "Mute";
+  mute.title = `${action} (M)`;
+  mute.setAttribute("aria-label", action);
+  mute.setAttribute("aria-pressed", String(muted));
 
   if (MODE === "fullscreen") {
     icExpand.style.display = "none";
@@ -82,6 +90,8 @@ function updateIcons() {
 function postState() {
   post({
     type: "state",
+    width: v.videoWidth,
+    height: v.videoHeight,
     playing: !v.paused && !v.ended && v.readyState >= 2,
     t: v.currentTime,
     d: isFinite(v.duration) ? v.duration : 0,
@@ -162,6 +172,7 @@ retryBtn.addEventListener("click", () => {
 });
 
 closeBtn.addEventListener("click", () => {
+  postState();
   post({ type: "close" });
 });
 
@@ -183,21 +194,27 @@ vol.addEventListener("input", () => {
   }
   updateVolFill();
   updateIcons();
-  try { localStorage.setItem("ir_vol", String(v.volume)); } catch (_) { }
+  try { localStorage.setItem("ir_vol", String(v.volume)); localStorage.setItem("ir_muted", v.muted ? "1" : "0"); } catch (_) { }
   postState();
 });
 
-mute.addEventListener("click", () => {
-  mutedByUser = !v.muted;
-  v.muted = mutedByUser;
-  try { localStorage.setItem("ir_muted", v.muted ? "1" : "0"); } catch (_) { }
-  postState();
-  updateIcons();
-});
+function toggleMute() {
+  const wasMuted = v.muted || v.volume <= 0.004;
+  if (wasMuted) {
+    if (v.volume <= 0.004) { v.volume = lastAudibleVolume > 0.004 ? lastAudibleVolume : 1; vol.value = v.volume; }
+    v.muted = false;
+  } else v.muted = true;
+  mutedByUser = v.muted;
+  try { localStorage.setItem("ir_muted", v.muted ? "1" : "0"); localStorage.setItem("ir_vol", String(v.volume)); } catch (_) { }
+  updateVolFill(); updateIcons(); postState();
+}
+mute.addEventListener("click", toggleMute);
+
 
 fsBtn.addEventListener("click", toggleFullscreen);
 
 function toggleFullscreen() {
+  postState();
   if (MODE === "fullscreen") post({ type: "fs", act: "exit" });
   else post({ type: "fs", act: "enter" });
 }
@@ -297,13 +314,24 @@ if (!SRC) {
   v.src = SRC;
   applyStoredVolume();
   updateIcons();
-  tryPlay();
+  const volume = Number(params.get("volume"));
+  if (params.has("volume") && Number.isFinite(volume)) { v.volume = Math.max(0, Math.min(1, volume)); vol.value = v.volume; }
+  if (params.has("muted")) { v.muted = params.get("muted") === "1"; mutedByUser = v.muted; }
+  updateVolFill(); updateIcons();
+  if (params.get("autoplay") !== "0") tryPlay();
 }
 
 window.receiveCommand = function (cmd) {
   if (!cmd) return;
   try {
     switch (cmd.c) {
+      case "restore":
+        if (Number.isFinite(cmd.t)) v.currentTime = cmd.t;
+        if (Number.isFinite(cmd.v)) { v.volume = Math.max(0, Math.min(1, cmd.v)); vol.value = v.volume; }
+        v.muted = !!cmd.m; mutedByUser = v.muted;
+        if (cmd.playing) v.play().catch(() => {}); else v.pause();
+        updateVolFill(); updateSeekFill(); updateIcons();
+        break;
       case "play":
         v.play();
         break;

@@ -123,6 +123,14 @@ public partial class MainWindow : Window
     private bool _galleryRefreshAgain;
 
     private PlayerFullScreenWindow? _fsWindow;
+    private WebView2? _inlinePlayer;
+    private double _playerTime;
+    private bool _playerPlaying = true;
+    private double _playerVolume = 1;
+    private bool _playerMuted;
+    private bool _switchingPlayer;
+    private int _viewerGeneration;
+    private double _playerAspect = 16.0 / 9.0;
 
     private Storyboard? _heroStoryboard;
 
@@ -186,6 +194,7 @@ public partial class MainWindow : Window
 
         _settings = Settings.Load();
         Logger.Init(_settings.DebugLogging);
+        UpdateWebView2Requirement();
         _baseline = CapturePending();
 
         _tempDir = Path.Combine(Path.GetTempPath(), "instant replay");
@@ -201,15 +210,16 @@ public partial class MainWindow : Window
         InitQualitySegments();
         InitEncoderSegments();
         InitCaptureSegments();
+        InitCaptureTargets();
         UpdateHotkeyButtonDisplay();
 
         StartupToggle.IsOn = StartupManager.IsEnabled();
         DebugToggle.IsOn = _settings.DebugLogging;
-        BackdropCombo.SelectedIndex = _settings.Backdrop switch { BackdropKind.Mica => 1, _ => 0 };
         ThemeToggle.IsOn = _settings.DarkMode;
         SaveLocationBox.Text = _settings.GetEffectiveSaveDestination();
 
         _initializing = false;
+        _baseline = CapturePending();
 
         GalleryGrid.ItemsSource = _library.Items;
         GalleryGrid.ContainerContentChanging += GalleryGrid_ContainerContentChanging;
@@ -240,12 +250,13 @@ public partial class MainWindow : Window
         SetupSettingsGear();
         SetupTrayIcon();
         RefreshAppBadge();
+        InitializeUpdates();
 
         _debugStatsTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(30) };
         _debugStatsTimer.Tick += (_, _) => { LogDebugStats(); CheckForMemoryLeak(); };
         _debugStatsTimer.Start();
 
-        _bufferHealthTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
+        _bufferHealthTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
         _bufferHealthTimer.Tick += (_, _) => CheckBufferHealth();
         _bufferHealthTimer.Start();
 
@@ -361,6 +372,37 @@ public partial class MainWindow : Window
 
     private void CloseTitleButton_Click(object sender, RoutedEventArgs e) => Close();
 
+    private void UpdateWebView2Requirement()
+    {
+        bool installed;
+        try
+        {
+            string version = Microsoft.Web.WebView2.Core.CoreWebView2Environment.GetAvailableBrowserVersionString();
+            installed = !string.IsNullOrWhiteSpace(version);
+            if (installed) Logger.Info($"WebView2 Runtime available: {version}");
+        }
+        catch (Exception ex)
+        {
+            installed = false;
+            Logger.Warn($"WebView2 Runtime unavailable: {ex.Message}");
+        }
+        WebViewRequirementBar.IsOpen = !installed;
+        WebViewRequirementBar.Visibility = installed ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    private async void DownloadWebView2Button_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            await Windows.System.Launcher.LaunchUriAsync(new Uri("https://developer.microsoft.com/en-us/microsoft-edge/webview2/"));
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"Could not open the WebView2 download page: {ex.Message}");
+            ShowInfoBar(InfoBarSeverity.Error, "Couldn't open download page", "Open Microsoft's WebView2 page in your browser to install the Runtime.");
+        }
+    }
+
     private async void GitHubTitleButton_Click(object sender, RoutedEventArgs e)
     {
         try
@@ -402,7 +444,7 @@ public partial class MainWindow : Window
 
     private void ApplyBackdrop()
     {
-        Chrome.ApplyBackdrop(this, _settings.Backdrop);
+        Chrome.ApplyBackdrop(this);
 
         Brush transparent = new SolidColorBrush(Colors.Transparent);
 
@@ -456,6 +498,13 @@ public partial class MainWindow : Window
         string QualityPreset,
         string EncoderChoice,
         string CaptureMethod,
+        string CaptureTarget,
+        int CaptureMonitorIndex,
+        bool CaptureClientArea,
+        bool CaptureCursor,
+        bool CaptureBorder,
+        bool CaptureRoundedCorners,
+        bool CaptureSecondaryWindows,
         string Microphone,
         string SaveDestination,
         bool RecordSystemAudio,
@@ -467,6 +516,13 @@ public partial class MainWindow : Window
         _settings.QualityPreset,
         _settings.EncoderChoice,
         _settings.CaptureMethod,
+        _settings.CaptureTarget,
+        _settings.CaptureMonitorIndex,
+        _settings.CaptureClientArea,
+        _settings.CaptureCursor,
+        _settings.CaptureBorder,
+        _settings.CaptureRoundedCorners,
+        _settings.CaptureSecondaryWindows,
         _settings.Microphone,
         _settings.SaveDestination,
         _settings.RecordSystemAudio,
@@ -533,24 +589,32 @@ public partial class MainWindow : Window
         if (args.WindowActivationState != WindowActivationState.Deactivated)
         {
             RefreshStartupToggleState();
+            _dq.TryEnqueue(async () => await ShowUpdateReminderAsync());
             _taskbarBadge?.StopFlashing();
             if (ReferenceEquals(_currentPage, GalleryPage)) _ = RefreshGalleryAsync();
         }
     }
 
-    private void NavView_SelectionChanged(NavigationView sender, NavigationViewSelectionChangedEventArgs args)
+    private async void NavView_SelectionChanged(NavigationView sender, NavigationViewSelectionChangedEventArgs args)
     {
         if (_initializing) return;
         FrameworkElement target =
-            ReferenceEquals(sender.SelectedItem, NavSettingsItem) ? SettingsPage
+            ReferenceEquals(sender.SelectedItem, NavUpdatesItem) ? UpdatesPage
+            : ReferenceEquals(sender.SelectedItem, NavGamesItem) ? GamesPage
+            : ReferenceEquals(sender.SelectedItem, NavSettingsItem) ? SettingsPage
             : ReferenceEquals(sender.SelectedItem, NavGalleryItem) ? GalleryPage
             : HomePage;
+        if (ReferenceEquals(target, GamesPage) && _dirty) await SaveChangesAsync();
+        if (ReferenceEquals(target, GamesPage)) RefreshGamesPage();
+        if (ReferenceEquals(target, UpdatesPage)) { NavUpdatesItem.InfoBadge = null; RefreshUpdatesPage(); }
         PlaySound(PageOrder(target) >= PageOrder(_currentPage ?? HomePage) ? ElementSoundKind.MoveNext : ElementSoundKind.GoBack);
         NavigateTo(target);
     }
 
     private int PageOrder(FrameworkElement page) =>
-        ReferenceEquals(page, SettingsPage) ? 2
+        ReferenceEquals(page, UpdatesPage) ? 4
+        : ReferenceEquals(page, SettingsPage) ? 3
+        : ReferenceEquals(page, GamesPage) ? 2
         : ReferenceEquals(page, GalleryPage) || ReferenceEquals(page, ViewerPage) ? 1
         : 0;
 
@@ -558,6 +622,14 @@ public partial class MainWindow : Window
     {
         if (ReferenceEquals(args.InvokedItemContainer, NavGalleryItem) && ReferenceEquals(_currentPage, ViewerPage))
             CloseViewer();
+    }
+
+    private static void ResetPageScroll(DependencyObject root)
+    {
+        if (root is ScrollViewer scroll) scroll.ChangeView(0, 0, null, disableAnimation: true);
+        int children = Microsoft.UI.Xaml.Media.VisualTreeHelper.GetChildrenCount(root);
+        for (int i = 0; i < children; i++)
+            ResetPageScroll(Microsoft.UI.Xaml.Media.VisualTreeHelper.GetChild(root, i));
     }
 
     private void NavigateTo(FrameworkElement newPage, bool fadeOnly = false)
@@ -586,6 +658,7 @@ public partial class MainWindow : Window
         if (oldPage != null) Canvas.SetZIndex(oldPage, 0);
 
         newPage.Visibility = Visibility.Visible;
+        _dq.TryEnqueue(() => { if (ReferenceEquals(_currentPage, newPage)) ResetPageScroll(newPage); });
         newPage.Opacity = 0;
         AnimateDouble(newPage, "Opacity", 0, 1, TimeSpan.FromMilliseconds(240), TimeSpan.Zero,
             new CubicEase { EasingMode = EasingMode.EaseOut });
@@ -642,6 +715,8 @@ public partial class MainWindow : Window
             return SettingsContent.Children.OfType<FrameworkElement>().ToList();
         if (ReferenceEquals(page, GalleryPage))
             return new FrameworkElement[] { GalleryHeader, GalleryBody };
+        if (ReferenceEquals(page, UpdatesPage))
+            return UpdatesContent.Children.OfType<FrameworkElement>().ToList();
         return Array.Empty<FrameworkElement>();
     }
 
@@ -976,11 +1051,97 @@ public partial class MainWindow : Window
 
     private async void OpenViewer(ReplayItem item)
     {
+        StopViewerPlayback();
         _viewerItem = item;
-
+        _playerTime = 0;
+        _playerPlaying = true;
+        PopulateViewer(item);
+        NavigateTo(ViewerPage);
+        int generation = _viewerGeneration;
         if (!item.MetadataLoaded) await _library.EnsureAsync(item);
+        if (generation != _viewerGeneration || !ReferenceEquals(_currentPage, ViewerPage)) return;
+        _playerAspect = item.VideoWidth > 0 && item.VideoHeight > 0 ? (double)item.VideoWidth / item.VideoHeight : 16.0 / 9.0;
+        UpdateInlinePlayerBounds();
+        await OpenInlinePlayerAsync(item, generation);
+    }
 
-        _ = OpenFullscreenPlayerAsync(item);
+    private async Task OpenInlinePlayerAsync(ReplayItem item, int generation)
+    {
+        WebView2? web = null;
+        try
+        {
+            if (!File.Exists(item.VideoPath)) throw new FileNotFoundException("The replay was moved or deleted.");
+            web = new WebView2 { DefaultBackgroundColor = Colors.Transparent };
+            _inlinePlayer = web;
+            InlinePlayerHost.Children.Add(web);
+            await PlayerWebViewShared.WaitForLoadedAsync(web, TimeSpan.FromSeconds(6));
+            await web.EnsureCoreWebView2Async();
+            if (generation != _viewerGeneration || !ReferenceEquals(web, _inlinePlayer)) return;
+            var core = web.CoreWebView2!;
+            core.Settings.IsZoomControlEnabled = false;
+            core.Settings.AreBrowserAcceleratorKeysEnabled = false;
+            core.WebMessageReceived += (_, e) =>
+            {
+                if (ReferenceEquals(web, _inlinePlayer) && _fsWindow == null && !_switchingPlayer)
+                    HandlePlayerMessage(PlayerWebViewShared.ToPlainJson(e.WebMessageAsJson ?? ""), false);
+            };
+            core.NavigationCompleted += (_, e) =>
+            {
+                if (!ReferenceEquals(web, _inlinePlayer)) return;
+                if (e.IsSuccess) { ViewerPoster.Visibility = Visibility.Collapsed; SendAccentInline(); }
+                else ShowInfoBar(InfoBarSeverity.Error, "Couldn't play replay", "The player could not load this replay.", "play");
+            };
+            core.Navigate(BuildPlayerUrl(item.VideoPath, _playerTime, false));
+            web.Focus(FocusState.Programmatic);
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("Inline player failed", ex);
+            if (generation == _viewerGeneration)
+                ShowInfoBar(InfoBarSeverity.Error, "Couldn't play replay", "The replay or WebView2 player could not be opened.", "play");
+        }
+    }
+
+    private void PlayerViewport_SizeChanged(object sender, SizeChangedEventArgs e) => UpdateInlinePlayerBounds();
+    private void UpdateInlinePlayerBounds()
+    {
+        if (PlayerViewport == null || PlayerCard == null || InlinePlayerHost == null) return;
+        double availableWidth = PlayerViewport.ActualWidth;
+        double availableHeight = PlayerViewport.ActualHeight;
+        if (availableWidth <= 0 || availableHeight <= 0 || _playerAspect <= 0) return;
+        double width = Math.Min(availableWidth, availableHeight * _playerAspect);
+        double height = width / _playerAspect;
+        PlayerCard.Width = width;
+        PlayerCard.Height = height;
+        var visual = Microsoft.UI.Xaml.Hosting.ElementCompositionPreview.GetElementVisual(InlinePlayerHost);
+        var geometry = visual.Compositor.CreateRoundedRectangleGeometry();
+        geometry.Size = new Vector2((float)width, (float)height);
+        geometry.CornerRadius = new Vector2(12);
+        visual.Clip = visual.Compositor.CreateGeometricClip(geometry);
+    }
+
+    private void SendAccentInline()
+    {
+        string? accent = GetAccentHex();
+        if (accent != null) SendScriptInline($"receiveCommand({{\"c\":\"accent\",\"v\":\"{accent}\"}})");
+    }
+    private void SendScriptInline(string script)
+    {
+        try { if (_inlinePlayer?.CoreWebView2 is { } core) _ = core.ExecuteScriptAsync(script); }
+        catch (Exception ex) { Logger.Warn($"Inline player command failed: {ex.Message}"); }
+    }
+    private void ReadPlayerState(JsonElement state)
+    {
+        if (state.TryGetProperty("width", out var width) && state.TryGetProperty("height", out var height)
+            && width.TryGetInt32(out int w) && height.TryGetInt32(out int h) && w > 0 && h > 0)
+        {
+            double aspect = (double)w / h;
+            if (Math.Abs(aspect - _playerAspect) > 0.001) { _playerAspect = aspect; UpdateInlinePlayerBounds(); }
+        }
+        if (state.TryGetProperty("t", out var t) && t.TryGetDouble(out double seconds) && double.IsFinite(seconds)) _playerTime = Math.Max(seconds, 0);
+        if (state.TryGetProperty("playing", out var playing)) _playerPlaying = playing.ValueKind == JsonValueKind.True;
+        if (state.TryGetProperty("v", out var volume) && volume.TryGetDouble(out double value) && double.IsFinite(value)) _playerVolume = Math.Clamp(value, 0, 1);
+        if (state.TryGetProperty("m", out var mute)) _playerMuted = mute.ValueKind == JsonValueKind.True;
     }
 
     private void ViewerBackButton_Click(object sender, RoutedEventArgs e)
@@ -989,7 +1150,7 @@ public partial class MainWindow : Window
         CloseViewer();
     }
 
-    private async void CloseViewer()
+    private void CloseViewer()
     {
         StopViewerPlayback();
         NavigateTo(GalleryPage, fadeOnly: true);
@@ -997,7 +1158,11 @@ public partial class MainWindow : Window
 
     private void StopViewerPlayback()
     {
-        CloseFullscreenPlayer();
+        _viewerGeneration++;
+        CloseFullscreenPlayer(resumeInline: false);
+        var web = _inlinePlayer;
+        _inlinePlayer = null;
+        if (web != null) { InlinePlayerHost.Children.Remove(web); try { web.Close(); } catch { } }
     }
 
     private async void ConfirmDeleteButton_Click(object sender, RoutedEventArgs e)
@@ -1035,12 +1200,20 @@ public partial class MainWindow : Window
                 return;
             }
 
+            _switchingPlayer = true;
+            if (_inlinePlayer?.CoreWebView2 is { } inline)
+            {
+                string state = await inline.ExecuteScriptAsync("({t:v.currentTime,playing:!v.paused&&!v.ended,v:v.volume,m:v.muted})");
+                using var parsed = JsonDocument.Parse(state);
+                ReadPlayerState(parsed.RootElement);
+                await inline.ExecuteScriptAsync("v.pause()");
+            }
             Logger.Info("OpenViewer: opening fullscreen player");
 
             var fs = new PlayerFullScreenWindow();
             fs.Closed += (_, _) =>
             {
-                if (_fsWindow != null) CloseFullscreenPlayer();
+                if (ReferenceEquals(_fsWindow, fs)) CloseFullscreenPlayer();
             };
             fs.NavigationCompleted += ok =>
             {
@@ -1049,16 +1222,19 @@ public partial class MainWindow : Window
             _fsWindow = fs;
             EnableWindow(_hwnd, false);
 
-            await fs.OpenAsync(BuildPlayerUrl(item.VideoPath, 0), HandlePlayerMessage, _hwnd);
+            await fs.OpenAsync(BuildPlayerUrl(item.VideoPath, _playerTime, true), json => { if (ReferenceEquals(_fsWindow, fs)) HandlePlayerMessage(json, true); }, _hwnd);
+            _switchingPlayer = false;
+            if (!fs.WebReady) CloseFullscreenPlayer();
         }
         catch (Exception ex)
         {
             Logger.Error($"Opening fullscreen player failed: {ex.Message}", ex);
             CloseFullscreenPlayer();
         }
+        finally { _switchingPlayer = false; }
     }
 
-    private void CloseFullscreenPlayer()
+    private void CloseFullscreenPlayer(bool resumeInline = true)
     {
         var fs = _fsWindow;
         if (fs == null) return;
@@ -1068,6 +1244,8 @@ public partial class MainWindow : Window
         try { fs.Shutdown(); } catch { }
         try { SetForegroundWindow(_hwnd); } catch { }
         try { Activate(); } catch { }
+        if (resumeInline && _inlinePlayer != null && ReferenceEquals(_currentPage, ViewerPage))
+            SendScriptInline($"receiveCommand({{\"c\":\"restore\",\"t\":{_playerTime.ToString(CultureInfo.InvariantCulture)},\"playing\":{(_playerPlaying ? "true" : "false")},\"v\":{_playerVolume.ToString(CultureInfo.InvariantCulture)},\"m\":{(_playerMuted ? "true" : "false")} }})");
     }
 
     private void SendScriptFs(string js) => _fsWindow?.SendScript(js);
@@ -1117,15 +1295,15 @@ public partial class MainWindow : Window
         return null;
     }
 
-    private string BuildPlayerUrl(string videoPath, double startSeconds)
+    private string BuildPlayerUrl(string videoPath, double startSeconds, bool fullscreen)
     {
         string page = new Uri(Path.Combine(AppContext.BaseDirectory, "mediaplayer", "player.html")).AbsoluteUri;
         string src = new Uri(videoPath).AbsoluteUri;
         string t = startSeconds.ToString("0.###", CultureInfo.InvariantCulture);
-        return $"{page}?src={Uri.EscapeDataString(src)}&t={t}&mode=fullscreen";
+        return $"{page}?src={Uri.EscapeDataString(src)}&t={t}&mode={(fullscreen ? "fullscreen" : "inline")}&autoplay={(_playerPlaying ? 1 : 0)}&volume={_playerVolume.ToString(CultureInfo.InvariantCulture)}&muted={(_playerMuted ? 1 : 0)}";
     }
 
-    private void HandlePlayerMessage(string json)
+    private void HandlePlayerMessage(string json, bool fullscreen)
     {
         try
         {
@@ -1135,13 +1313,18 @@ public partial class MainWindow : Window
 
             switch (type)
             {
+                case "state":
+                    ReadPlayerState(root);
+                    break;
                 case "fs":
                     string act = root.TryGetProperty("act", out var ae) ? ae.GetString() ?? "" : "";
-                    if (act == "exit") CloseFullscreenPlayer();
+                    if (fullscreen && act == "exit") CloseFullscreenPlayer();
+                    else if (!fullscreen && act == "enter" && _viewerItem is { } item && !_switchingPlayer)
+                        _ = OpenFullscreenPlayerAsync(item);
                     break;
 
                 case "close":
-                    CloseFullscreenPlayer();
+                    if (fullscreen) CloseFullscreenPlayer(); else CloseViewer();
                     break;
             }
         }
@@ -1336,7 +1519,7 @@ public partial class MainWindow : Window
 
     private void RefreshAppBadge() =>
         UpdateAppBadge(_hasErrored ? BadgeKind.Error
-                   : _engine.IsRunning ? BadgeKind.Recording
+                   : _engine.IsRunning && !_engine.IsPaused ? BadgeKind.Recording
                    : BadgeKind.Paused, flash: false);
 
     private void UpdateAppBadge(BadgeKind kind, bool flash)
@@ -1429,8 +1612,14 @@ public partial class MainWindow : Window
         if (ok) return;
 
         Logger.Warn("InitialStart: the capture engine did not start.");
-        ShowInfoBar(InfoBarSeverity.Error, "Recording could not start",
-            "Instant Replay could not start the capture engine. Check the debug log for details.", "start");
+        ShowStartFailure();
+    }
+
+    private void ShowStartFailure()
+    {
+        string message = "Capture could not start. Check that the target is available and try the Software encoder in Settings. The debug log contains the failure details.";
+        ShowInfoBar(InfoBarSeverity.Error, "Recording could not start", message, "start");
+        _infoBarTimer?.Stop();
     }
 
     private void SetRunningVisual(bool running)
@@ -1440,11 +1629,11 @@ public partial class MainWindow : Window
 
         if (running)
         {
-            StatusHeadline.Text = "RECORDING";
+            StatusHeadline.Text = _engine.TargetState;
             RecDot.Fill = GetThemedBrush("RecBrush");
             RecDot.Opacity = 1;
             var t = _recDotPulseTimer;
-            StartPulse(RecDot, ref t);
+            if (!_engine.IsPaused) StartPulse(RecDot, ref t);
             _recDotPulseTimer = t;
             ApplyStartStopLook(true);
             _hasErrored = false;
@@ -1466,6 +1655,17 @@ public partial class MainWindow : Window
         if (!_engine.IsRunning)
         {
             if (_lastBufferHealthy != null) { _lastBufferHealthy = null; SetRunningVisual(false); }
+            return;
+        }
+
+        if (_engine.IsPaused)
+        {
+            StopPulse(RecDot, ref _recDotPulseTimer);
+            StatusHeadline.Text = _engine.TargetState;
+            RecDot.Fill = GetThemedBrush("TextMutedBrush");
+            ApplyStartStopLook(true);
+            RefreshAppBadge();
+            _lastBufferHealthy = null;
             return;
         }
 
@@ -1547,45 +1747,45 @@ public partial class MainWindow : Window
 
         Logger.Info("Hotkey Triggered - Saving Replay");
         string destDir = _settings.GetEffectiveSaveDestination();
-        Directory.CreateDirectory(destDir);
-
-        var result = await Task.Run(() => _engine.SaveReplay(_tempDir, destDir));
+        SaveReplayResult result;
+        try
+        {
+            result = await Task.Run(() =>
+            {
+                Directory.CreateDirectory(destDir);
+                return _engine.SaveReplay(_tempDir, destDir);
+            });
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("Failed to clip replay", ex);
+            result = new SaveReplayResult(SaveReplayOutcome.MergeFailed);
+        }
 
         _lastSavedReplayPath = result.Success ? result.Path : null;
-
-        if (result.Success && _engine.IsRunning)
-        {
-            Logger.Info("SaveReplay succeeded - starting a fresh buffer.");
-            bool restarted = await Task.Run(() => _engine.Restart(_tempDir, wipeSegments: false));
-            if (!restarted) Logger.Error("Failed to restart capture after save; buffer may be stale.");
-        }
+        int clippedSeconds = result.Success
+            ? await Task.Run(() => ClipNotificationWindow.RecordedSeconds(result.Path, _settings.ReplayDurationSeconds))
+            : 0;
 
         _dq.TryEnqueue(() =>
         {
             _lastBalloonWasLeakWarning = false;
-            ShowSaveResult(result);
+            ShowSaveResult(result, clippedSeconds);
         });
     }
 
-    private void ShowSaveResult(SaveReplayResult result)
+    private void ShowSaveResult(SaveReplayResult result, int clippedSeconds)
     {
         _lastBalloonWasLeakWarning = false;
 
         if (!result.Success)
         {
-            Notify("Instant Replay", result.UserMessage(), TrayIcon.IconError);
-            if (_isHidden || _isClosingForReal) return;
-            ShowInfoBar(InfoBarSeverity.Error, "Replay not saved", result.UserMessage());
+            Logger.Warn($"Failed to clip replay: {result.UserMessage()}");
+            if (!_isClosingForReal) ClipNotificationWindow.ShowError();
             return;
         }
 
-        Notify("Instant Replay", result.UserMessage(), TrayIcon.IconInfo);
-        if (_isHidden || _isClosingForReal || string.IsNullOrEmpty(result.Path)) return;
-
-        string path = result.Path;
-        ShowInfoBar(InfoBarSeverity.Success, "Replay saved",
-            "Saved to " + path, "save",
-            actionLabel: "Show folder", action: () => OpenContainingFolder(path));
+        if (!_isClosingForReal) ClipNotificationWindow.Show(clippedSeconds);
     }
 
     private async void StartStopButton_Click(object sender, RoutedEventArgs e)
@@ -1603,6 +1803,8 @@ public partial class MainWindow : Window
             SetStartStopLabel("STARTING…");
             bool ok = await Task.Run(StartCaptureCore);
             SetRunningVisual(ok);
+            if (!ok) ShowStartFailure();
+            else ClearInfoBar();
         }
         StartStopButton.IsEnabled = true;
     }
@@ -1743,12 +1945,22 @@ public partial class MainWindow : Window
         if (_initializing) return;
         int fps = FpsCombo.SelectedIndex switch { 1 => 60, 2 => 120, _ => 30 };
         _settings.FrameRate = fps;
+        RefreshQualityDetails();
         CheckDirty();
     }
 
     private void InitQualitySegments()
     {
-        QualityCombo.SelectedIndex = _settings.QualityPreset switch { "Balanced" => 1, "Quality" => 2, _ => 0 };
+        QualityCombo.SelectedIndex = _settings.QualityPreset switch { "Balanced" => 1, "Quality" or "High" => 2, _ => 0 };
+        RefreshQualityDetails();
+    }
+
+    private void RefreshQualityDetails()
+    {
+        string[] presets = ["Fast", "Balanced", "Quality"];
+        for (int i = 0; i < presets.Length; i++)
+            if (QualityCombo.Items[i] is ComboBoxItem item)
+                item.Content = VideoQualityProfile.FromPreset(presets[i], _settings.FrameRate).Label;
     }
 
     private void QualityCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -1792,11 +2004,127 @@ public partial class MainWindow : Window
         CaptureDxgiItem.IsEnabled = dxgiOk;
         CaptureMethodCombo.SelectedIndex = _settings.CaptureMethod == "Dxgi" && dxgiOk ? 1 : 0;
 
-        UpdateCaptureMethodHint();
+        UpdateCaptureMethodControls();
     }
 
-    private void UpdateCaptureMethodHint()
+    private void UpdateCaptureMethodControls()
     {
+        bool window = _settings.CaptureTarget == "SpecificWindows";
+        CaptureMethodCombo.IsEnabled = !window;
+        CaptureBorderCheck.IsEnabled = window || CaptureMethodCombo.SelectedIndex == 0;
+    }
+
+    private List<(int Index, string Name)> _captureMonitors = new();
+    private bool _syncingCaptureTargets;
+    private void InitCaptureTargets()
+    {
+        _syncingCaptureTargets = true;
+        try
+        {
+            CaptureTargetCombo.SelectedIndex = _settings.CaptureTarget == "SpecificWindows" ? 1 : 0;
+            _captureMonitors = ReplayEngine.EnumerateMonitors();
+            CaptureMonitorCombo.ItemsSource = _captureMonitors.Select(m => m.Name).ToList();
+            CaptureMonitorCombo.SelectedIndex = _settings.CaptureMonitorIndex < 0 ? 0 : _captureMonitors.FindIndex(m => m.Index == _settings.CaptureMonitorIndex);
+            CaptureCursorCheck.IsChecked = _settings.CaptureCursor;
+            CaptureBorderCheck.IsChecked = _settings.CaptureBorder;
+            UpdateCaptureTargetControls();
+        }
+        finally { _syncingCaptureTargets = false; }
+    }
+    private void UpdateCaptureTargetControls()
+    {
+        bool window = _settings.CaptureTarget == "SpecificWindows";
+        CaptureMonitorRow.Visibility = window ? Visibility.Collapsed : Visibility.Visible;
+        NavGamesItem.Visibility = window ? Visibility.Visible : Visibility.Collapsed;
+        RecordAudioRow.Label = window ? "Record app audio" : "Record system audio";
+        UpdateCaptureMethodControls();
+    }
+    private async void CaptureTargetCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_initializing || _syncingCaptureTargets) return;
+        _settings.CaptureTarget = CaptureTargetCombo.SelectedIndex == 1 ? "SpecificWindows" : "Display";
+        if (_settings.CaptureTarget == "SpecificWindows" && _settings.CaptureMethod == "Dxgi")
+        {
+            _settings.CaptureMethod = "Wgc";
+            CaptureMethodCombo.SelectedIndex = 0;
+            await new ContentDialog
+            {
+                Title = "Game Capture uses Windows Graphics Capture",
+                Content = "DXGI captures a display and cannot isolate a game window reliably. Game Capture uses WGC instead. Legacy exclusive fullscreen capture is best effort; try borderless or windowed mode if needed.",
+                CloseButtonText = "Got it", XamlRoot = RootGrid.XamlRoot
+            }.ShowAsync();
+        }
+        UpdateCaptureTargetControls();
+        CheckDirty();
+    }
+    private void RefreshGamesPage()
+    {
+        CustomGamesList.ItemsSource = _settings.SpecificWindows.ToArray();
+        GamesEmptyLabel.Visibility = _settings.SpecificWindows.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        var detector = new GameDetector(_settings.SpecificWindows);
+        GameCatalogLabel.Text = $"{detector.CatalogCount:N0} games recognized offline. Shared executable names require a matching game title. Custom apps can use a title keyword to distinguish windows.";
+    }
+
+    private async void AddGame_Click(object sender, RoutedEventArgs e)
+    {
+        var name = new TextBox { Header = "App or game name", PlaceholderText = "My game", MaxLength = 120 };
+        var exe = new TextBox { Header = "Executable name", PlaceholderText = "game.exe", MaxLength = 260 };
+        var keyword = new TextBox { Header = "Title keyword (optional)", PlaceholderText = "For example: Minecraft", MaxLength = 120 };
+        var browse = new Button { Content = "Browse to executable…", HorizontalAlignment = HorizontalAlignment.Left };
+        var error = new TextBlock { TextWrapping = TextWrapping.Wrap, Foreground = GetThemedBrush("ErrorBrush") };
+        browse.Click += async (_, _) =>
+        {
+            try
+            {
+                var picker = new Windows.Storage.Pickers.FileOpenPicker();
+                InitializeWithWindow.Initialize(picker, _hwnd);
+                picker.FileTypeFilter.Add(".exe");
+                var file = await picker.PickSingleFileAsync();
+                if (file != null) { exe.Text = file.Name; if (string.IsNullOrWhiteSpace(name.Text)) name.Text = Path.GetFileNameWithoutExtension(file.Name); }
+            }
+            catch (Exception ex) { error.Text = ex.Message; }
+        };
+        var panel = new StackPanel { Spacing = 12 };
+        panel.Children.Add(name); panel.Children.Add(exe); panel.Children.Add(browse); panel.Children.Add(keyword); panel.Children.Add(error);
+        var dialog = new ContentDialog { Title = "Add a specific window", Content = panel, PrimaryButtonText = "Add", CloseButtonText = "Cancel", DefaultButton = ContentDialogButton.Primary, XamlRoot = RootGrid.XamlRoot };
+        dialog.PrimaryButtonClick += (_, args) =>
+        {
+            string executable = exe.Text.Trim();
+            if (!executable.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) || executable.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 || executable.Contains('/') || executable.Contains('\\'))
+            { error.Text = "Enter a filename such as game.exe, or use Browse."; args.Cancel = true; }
+            else if (_settings.SpecificWindows.Any(r => r.Executable.Equals(executable, StringComparison.OrdinalIgnoreCase) && r.Keyword.Equals(keyword.Text.Trim(), StringComparison.OrdinalIgnoreCase)))
+            { error.Text = "That executable and keyword are already in your list."; args.Cancel = true; }
+        };
+        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+        string filename = exe.Text.Trim();
+        _settings.SpecificWindows = [.. _settings.SpecificWindows, new GameRule(string.IsNullOrWhiteSpace(name.Text) ? Path.GetFileNameWithoutExtension(filename) : name.Text.Trim(), filename, keyword.Text.Trim())];
+        _settings.Save();
+        _engine.ReloadGameRules();
+        RefreshGamesPage();
+    }
+
+    private void RemoveGame_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: GameRule rule }) return;
+        _settings.SpecificWindows = _settings.SpecificWindows.Where(r => r != rule).ToList();
+        _settings.Save();
+        _engine.ReloadGameRules();
+        RefreshGamesPage();
+    }
+
+    private void CaptureMonitorCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_initializing || _syncingCaptureTargets) return;
+        if (CaptureMonitorCombo.SelectedIndex >= 0 && CaptureMonitorCombo.SelectedIndex < _captureMonitors.Count)
+            _settings.CaptureMonitorIndex = _captureMonitors[CaptureMonitorCombo.SelectedIndex].Index;
+        CheckDirty();
+    }
+    private void WindowCaptureOption_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_initializing || _syncingCaptureTargets) return;
+        _settings.CaptureCursor = CaptureCursorCheck.IsChecked == true;
+        _settings.CaptureBorder = CaptureBorderCheck.IsChecked == true;
+        CheckDirty();
     }
 
     private void CaptureMethodCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -1804,7 +2132,7 @@ public partial class MainWindow : Window
         if (_initializing) return;
 
         string choice = CaptureMethodCombo.SelectedIndex == 1 ? "Dxgi" : "Wgc";
-        UpdateCaptureMethodHint();
+        UpdateCaptureMethodControls();
         _settings.CaptureMethod = choice;
         CheckDirty();
     }
@@ -1946,14 +2274,6 @@ public partial class MainWindow : Window
         _settings.SaveFields(nameof(Settings.DebugLogging));
     }
 
-    private void BackdropCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (_initializing) return;
-        _settings.Backdrop = BackdropCombo.SelectedIndex switch { 1 => BackdropKind.Mica, _ => BackdropKind.Acrylic };
-        _settings.SaveFields(nameof(Settings.Backdrop));
-        _dq.TryEnqueue(() => ApplyBackdrop());
-    }
-
     private void ThemeToggle_Changed(object sender, RoutedEventArgs e)
     {
         if (_initializing) return;
@@ -2079,6 +2399,13 @@ public partial class MainWindow : Window
         _settings.QualityPreset = previous.QualityPreset;
         _settings.EncoderChoice = previous.EncoderChoice;
         _settings.CaptureMethod = previous.CaptureMethod;
+        _settings.CaptureSecondaryWindows = previous.CaptureSecondaryWindows;
+        _settings.CaptureRoundedCorners = previous.CaptureRoundedCorners;
+        _settings.CaptureBorder = previous.CaptureBorder;
+        _settings.CaptureCursor = previous.CaptureCursor;
+        _settings.CaptureClientArea = previous.CaptureClientArea;
+        _settings.CaptureMonitorIndex = previous.CaptureMonitorIndex;
+        _settings.CaptureTarget = previous.CaptureTarget;
         _settings.Microphone = previous.Microphone;
         _settings.SaveDestination = previous.SaveDestination;
         _settings.RecordSystemAudio = previous.RecordSystemAudio;
@@ -2108,7 +2435,7 @@ public partial class MainWindow : Window
             InitEncoderSegments();
             CaptureMethodCombo.SelectedIndex =
                 _settings.CaptureMethod == "Dxgi" && CaptureDxgiItem.IsEnabled ? 1 : 0;
-            UpdateCaptureMethodHint();
+            InitCaptureTargets();
         }
         finally
         {
@@ -2254,6 +2581,8 @@ public partial class MainWindow : Window
         if (_dirty) RevertPendingChanges();
 
         _isClosingForReal = true;
+        _updateTimer?.Stop();
+        _updateLifetime.Cancel();
 
         UnregisterHotKey(_hwnd, HotkeyId);
 
@@ -2270,6 +2599,7 @@ public partial class MainWindow : Window
         EnableWindow(_hwnd, true);
         _engine.Stop();
         _engine.Dispose();
+        ClipNotificationWindow.Shutdown();
 
         _taskbarBadge?.Dispose();
         ReleaseBadgeIcons();

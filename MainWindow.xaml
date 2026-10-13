@@ -8,6 +8,7 @@
             Background="{ThemeResource BgBrush}">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
 
@@ -92,8 +93,22 @@
             </StackPanel>
         </Grid>
 
+        <InfoBar x:Name="WebViewRequirementBar"
+                 Visibility="Collapsed"
+                 Grid.Row="1"
+                 Margin="12,8,12,0"
+                 IsOpen="False"
+                 IsClosable="False"
+                 Severity="Warning"
+                 Title="WebView2 is required for playback"
+                 Message="The media player will not work without the WebView2 Runtime.">
+            <InfoBar.ActionButton>
+                <Button Content="Download WebView2" Click="DownloadWebView2Button_Click"/>
+            </InfoBar.ActionButton>
+        </InfoBar>
+
         <NavigationView x:Name="NavView"
-                Grid.Row="1"
+                Grid.Row="2"
                         PaneDisplayMode="Left"
                         IsBackButtonVisible="Collapsed"
                         IsSettingsVisible="False"
@@ -122,6 +137,9 @@
                         <SymbolIcon Symbol="Pictures"/>
                     </NavigationViewItem.Icon>
                 </NavigationViewItem>
+                <NavigationViewItem x:Name="NavGamesItem" Content="Games" Visibility="Collapsed" ElementSoundMode="Off">
+                    <NavigationViewItem.Icon><FontIcon Glyph="&#xE7FC;" FontFamily="{ThemeResource SymbolThemeFontFamily}"/></NavigationViewItem.Icon>
+                </NavigationViewItem>
                 <NavigationViewItem x:Name="NavSettingsItem"
                         ElementSoundMode="Off"
                         Tag="Settings"
@@ -131,6 +149,13 @@
                     </NavigationViewItem.Icon>
                 </NavigationViewItem>
             </NavigationView.MenuItems>
+            <NavigationView.FooterMenuItems>
+                <NavigationViewItem x:Name="NavUpdatesItem" Content="Updates" Tag="Updates" ElementSoundMode="Off">
+                    <NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xE895;" FontFamily="{ThemeResource SymbolThemeFontFamily}"/>
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+            </NavigationView.FooterMenuItems>
 
             <Grid>
                 <Grid x:Name="PagesHost"
@@ -731,7 +756,7 @@
                             </StackPanel>
                         </Button>
 
-                        <Grid Grid.Row="1"
+                        <Grid x:Name="PlayerViewport" Grid.Row="1" SizeChanged="PlayerViewport_SizeChanged"
                                 ColumnSpacing="16">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*"/>
@@ -740,22 +765,115 @@
                             <Border x:Name="PlayerCard"
                                     Background="Black"
                                     CornerRadius="12"
-                                    VerticalAlignment="Stretch">
+                                    VerticalAlignment="Center" HorizontalAlignment="Center">
+                                <Grid x:Name="InlinePlayerHost">
                                 <Image x:Name="ViewerPoster"
                                         Stretch="Uniform"
                                         IsHitTestVisible="False"/>
+                                </Grid>
                             </Border>
                         </Grid>
                     </Grid>
+
+                    <ScrollViewer x:Name="GamesPage" Visibility="Collapsed" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                        <StackPanel Spacing="16" MaxWidth="980" HorizontalAlignment="Stretch">
+                            <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                <TextBlock Text="Games" FontSize="28" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                                <Button Grid.Column="1" Click="AddGame_Click"><StackPanel Orientation="Horizontal" Spacing="8"><FontIcon Glyph="&#xE710;" FontSize="14"/><TextBlock Text="Add"/></StackPanel></Button>
+                            </Grid>
+                            <TextBlock Text="Capture requires a match in the built-in or custom games list and a window in foreground focus. Add custom apps by executable name, with an optional title keyword." TextWrapping="Wrap" Opacity="0.75"/>
+                            <InfoBar IsOpen="True" IsClosable="False" Severity="Informational" Title="Focus controls capture" Message="Switching to another eligible app clears the buffer. Other apps pause it; returning to the same game resumes it. Only the captured app's audio is recorded. An enabled microphone keeps recording when the game pauses."/>
+                            <Border Style="{StaticResource SettingsCard}"><StackPanel Spacing="8">
+                                <TextBlock Text="Built-in games" FontSize="16" FontWeight="SemiBold"/>
+                                <TextBlock x:Name="GameCatalogLabel" TextWrapping="Wrap" Opacity="0.7"/>
+                            </StackPanel></Border>
+                            <TextBlock Text="Your apps" FontSize="18" FontWeight="SemiBold"/>
+                            <TextBlock x:Name="GamesEmptyLabel" Text="No custom apps yet. Built-in game detection is already enabled." TextWrapping="Wrap" Opacity="0.65"/>
+                            <ItemsControl x:Name="CustomGamesList"><ItemsControl.ItemTemplate><DataTemplate x:DataType="local:GameRule">
+                                <Border Style="{StaticResource SettingsCard}" Margin="0,0,0,8"><Grid ColumnSpacing="12"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                    <StackPanel Spacing="4"><TextBlock Text="{x:Bind Name}" FontWeight="SemiBold"/><TextBlock Text="{x:Bind Description}" TextWrapping="Wrap" Opacity="0.7"/></StackPanel>
+                                    <Button Grid.Column="1" Content="Remove" Tag="{x:Bind}" Click="RemoveGame_Click" VerticalAlignment="Center"/>
+                                </Grid></Border>
+                            </DataTemplate></ItemsControl.ItemTemplate></ItemsControl>
+                        </StackPanel>
+                    </ScrollViewer>
+
+                    <ScrollViewer x:Name="UpdatesPage" Visibility="Collapsed" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                        <StackPanel x:Name="UpdatesContent" Spacing="20" MaxWidth="980" HorizontalAlignment="Stretch">
+                            <StackPanel Spacing="6">
+                                <TextBlock Text="Updates" FontSize="28" FontWeight="SemiBold"/>
+                                <TextBlock Text="The latest improvements, directly from GitHub." Foreground="{ThemeResource TextMutedBrush}"/>
+                            </StackPanel>
+                            <Border Style="{StaticResource SettingsCard}" Padding="24">
+                                <StackPanel Spacing="18">
+                                    <Grid ColumnSpacing="18">
+                                        <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                        <Border Background="{ThemeResource SurfaceBorderBrush}" CornerRadius="12" Width="56" Height="56">
+                                            <FontIcon Glyph="&#xE895;" FontFamily="{ThemeResource SymbolThemeFontFamily}" FontSize="26" Foreground="{ThemeResource AccentBrush}"/>
+                                        </Border>
+                                        <StackPanel Grid.Column="1" Spacing="5" VerticalAlignment="Center">
+                                            <TextBlock x:Name="UpdateHeading" Text="Keep Instant Replay up to date" FontSize="20" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                                            <TextBlock x:Name="UpdateDescription" TextWrapping="Wrap" Foreground="{ThemeResource TextMutedBrush}"/>
+                                        </StackPanel>
+                                    </Grid>
+                                    <StackPanel Orientation="Horizontal" Spacing="12">
+                                        <Button x:Name="CheckUpdatesButton" Content="Check for updates" Click="CheckUpdates_Click"/>
+                                        <Button x:Name="InstallUpdateButton" Content="Download and install" Style="{StaticResource AccentButtonStyle}" Visibility="Collapsed" Click="InstallUpdate_Click"/>
+                                        <Button x:Name="CancelUpdateButton" Content="Cancel download" Visibility="Collapsed" Click="CancelUpdate_Click"/>
+                                    </StackPanel>
+                                    <ProgressBar x:Name="UpdateProgress" Visibility="Collapsed" Maximum="100"/>
+                                    <InfoBar x:Name="UpdateStatusBar" IsOpen="False" IsClosable="False"/>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                        <TextBlock x:Name="InstalledVersionLabel" Foreground="{ThemeResource TextMutedBrush}"/>
+                                        <TextBlock x:Name="LastUpdateCheckLabel" Grid.Column="1" Foreground="{ThemeResource TextMutedBrush}"/>
+                                    </Grid>
+                                </StackPanel>
+                            </Border>
+                            <TextBlock Text="Checks automatically every 24 hours while the app is running. Updates are installed only when you choose." TextWrapping="Wrap" Foreground="{ThemeResource TextMutedBrush}"/>
+                            <Border x:Name="ReleaseNotesCard" Style="{StaticResource SettingsCard}" Visibility="Collapsed">
+                                <StackPanel Spacing="12">
+                                    <TextBlock Text="What's new" FontSize="18" FontWeight="SemiBold"/>
+                                    <TextBlock x:Name="UpdateReleaseNotes" TextWrapping="Wrap" IsTextSelectionEnabled="True"/>
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+                    </ScrollViewer>
 
                     <ScrollViewer x:Name="SettingsPage"
                             Visibility="Collapsed"
                                   VerticalScrollBarVisibility="Auto"
                             Padding="0,0,12,0">
-                        <StackPanel x:Name="SettingsContent"
-                                Spacing="12">
+                        <StackPanel x:Name="SettingsContent" Spacing="12">
+<Border Style="{StaticResource SettingsCard}">
+                                <StackPanel>
+                                    <StackPanel Orientation="Horizontal"
+                                            Spacing="10"
+                                            Margin="0,0,0,12">
+                                        <FontIcon Glyph="&#xE90F;"
+                                                FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                                                FontSize="16"
+                                                  Foreground="{ThemeResource ErrorBrush}"/>
+                                        <TextBlock Text="Replay target"
+                                                FontSize="14"
+                                                FontWeight="SemiBold"
+                                                   Foreground="{ThemeResource SettingsAreaTextBrush}"/>
+                                    </StackPanel>
+                                    <local:SettingRow Label="Capture target" Margin="0,0,0,6">
+                                        <ComboBox x:Name="CaptureTargetCombo" HorizontalAlignment="Stretch" SelectionChanged="CaptureTargetCombo_SelectionChanged">
+                                            <ComboBoxItem Content="Whole desktop"/>
+                                            <ComboBoxItem Content="Game Capture"/>
 
-                            <Border Style="{StaticResource SettingsCard}">
+                                        </ComboBox>
+                                    </local:SettingRow>
+                                    <local:SettingRow x:Name="CaptureMonitorRow" Label="Display" Margin="0,0,0,6">
+                                        <ComboBox x:Name="CaptureMonitorCombo" HorizontalAlignment="Stretch" SelectionChanged="CaptureMonitorCombo_SelectionChanged"/>
+                                    </local:SettingRow>
+                                    <local:SettingRow Label="Show mouse cursor" Margin="0,0,0,6"><CheckBox x:Name="CaptureCursorCheck" AutomationProperties.Name="Show mouse cursor in recordings" Checked="WindowCaptureOption_Changed" Unchecked="WindowCaptureOption_Changed"/></local:SettingRow>
+                                    <local:SettingRow Label="Capture border" Margin="0,0,0,6"><CheckBox x:Name="CaptureBorderCheck" Checked="WindowCaptureOption_Changed" Unchecked="WindowCaptureOption_Changed"/></local:SettingRow>
+
+                                </StackPanel>
+                            </Border><Border Style="{StaticResource SettingsCard}">
                                 <StackPanel>
                                     <StackPanel Orientation="Horizontal"
                                             Spacing="10"
@@ -764,34 +882,12 @@
                                                 FontFamily="{ThemeResource SymbolThemeFontFamily}"
                                                 FontSize="16"
                                                   Foreground="{ThemeResource AccentBrush}"/>
-                                        <TextBlock Text="General"
+                                        <TextBlock Text="Video quality"
                                                 FontSize="14"
                                                 FontWeight="SemiBold"
                                                    Foreground="{ThemeResource SettingsAreaTextBrush}"/>
                                     </StackPanel>
 
-                                    <TextBlock Text="Microphone"
-                                            Style="{StaticResource Mono}"
-                                            Margin="0,0,0,8"/>
-                                    <ComboBox x:Name="MicCombo"
-                                            HorizontalAlignment="Stretch"
-                                              SelectionChanged="MicCombo_SelectionChanged"
-                                            Margin="0,0,0,14"/>
-
-                                    <local:SettingRow Label="Record microphone"
-                                            Margin="0,0,0,8">
-                                        <ToggleSwitch x:Name="MicToggle"
-                                                OnContent=""
-                                                OffContent=""
-                                                Toggled="MicToggle_Changed"/>
-                                    </local:SettingRow>
-                                    <local:SettingRow Label="Record system audio"
-                                            Margin="0,0,0,8">
-                                        <ToggleSwitch x:Name="SysAudioToggle"
-                                                OnContent=""
-                                                OffContent=""
-                                                Toggled="SysAudioToggle_Changed"/>
-                                    </local:SettingRow>
                                     <local:SettingRow Label="Replay duration"
                                             Margin="0,0,0,8">
                                         <ComboBox x:Name="DurationCombo"
@@ -817,15 +913,51 @@
                                         <ComboBox x:Name="QualityCombo"
                                                 HorizontalAlignment="Stretch"
                                                 SelectionChanged="QualityCombo_SelectionChanged">
-                                            <ComboBoxItem Content="Fast"/>
+                                            <ComboBoxItem Content="Low"/>
                                             <ComboBoxItem Content="Balanced"/>
-                                            <ComboBoxItem Content="Quality"/>
+                                            <ComboBoxItem Content="High"/>
                                         </ComboBox>
                                     </local:SettingRow>
                                 </StackPanel>
-                            </Border>
+                            </Border><Border Style="{StaticResource SettingsCard}">
+                                <StackPanel>
+                                    <StackPanel Orientation="Horizontal"
+                                            Spacing="10"
+                                            Margin="0,0,0,14">
+                                        <FontIcon Glyph="&#xE713;"
+                                                FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                                                FontSize="16"
+                                                  Foreground="{ThemeResource AccentBrush}"/>
+                                        <TextBlock Text="Audio"
+                                                FontSize="14"
+                                                FontWeight="SemiBold"
+                                                   Foreground="{ThemeResource SettingsAreaTextBrush}"/>
+                                    </StackPanel>
 
-                            <Border Style="{StaticResource SettingsCard}">
+                                    <TextBlock Text="Microphone"
+                                            Style="{StaticResource Mono}"
+                                            Margin="0,0,0,8"/>
+                                    <ComboBox x:Name="MicCombo"
+                                            HorizontalAlignment="Stretch"
+                                              SelectionChanged="MicCombo_SelectionChanged"
+                                            Margin="0,0,0,14"/>
+
+                                    <local:SettingRow Label="Record microphone"
+                                            Margin="0,0,0,8">
+                                        <ToggleSwitch x:Name="MicToggle"
+                                                OnContent=""
+                                                OffContent=""
+                                                Toggled="MicToggle_Changed"/>
+                                    </local:SettingRow>
+                                    <local:SettingRow x:Name="RecordAudioRow" Label="Record system audio"
+                                            Margin="0,0,0,8">
+                                        <ToggleSwitch x:Name="SysAudioToggle"
+                                                OnContent=""
+                                                OffContent=""
+                                                Toggled="SysAudioToggle_Changed"/>
+                                    </local:SettingRow>
+                                </StackPanel>
+                            </Border><Border Style="{StaticResource SettingsCard}">
                                 <StackPanel>
                                     <StackPanel Orientation="Horizontal"
                                             Spacing="10"
@@ -898,9 +1030,7 @@
                                         </Button>
                                     </local:SettingRow>
                                 </StackPanel>
-                            </Border>
-
-                            <Border Style="{StaticResource SettingsCard}">
+                            </Border><Border Style="{StaticResource SettingsCard}">
                                 <StackPanel>
                                     <StackPanel Orientation="Horizontal"
                                             Spacing="10"
@@ -922,15 +1052,6 @@
                                                 OffContent=""
                                                 Toggled="StartupToggle_Changed"/>
                                     </local:SettingRow>
-                                    <local:SettingRow Label="Backdrop type"
-                                            Margin="0,0,0,8">
-                                        <ComboBox x:Name="BackdropCombo"
-                                                HorizontalAlignment="Stretch"
-                                                SelectionChanged="BackdropCombo_SelectionChanged">
-                                            <ComboBoxItem Content="Acrylic"/>
-                                            <ComboBoxItem Content="Mica"/>
-                                        </ComboBox>
-                                    </local:SettingRow>
                                     <local:SettingRow Label="Dark mode"
                                             Margin="0">
                                         <ToggleSwitch x:Name="ThemeToggle"
@@ -939,9 +1060,7 @@
                                                 Toggled="ThemeToggle_Changed"/>
                                     </local:SettingRow>
                                 </StackPanel>
-                            </Border>
-
-                            <Border Style="{StaticResource SettingsCard}">
+                            </Border><Border Style="{StaticResource SettingsCard}">
                                 <StackPanel>
                                     <StackPanel Orientation="Horizontal"
                                             Spacing="10"
@@ -955,21 +1074,7 @@
                                                 FontWeight="SemiBold"
                                                    Foreground="{ThemeResource SettingsAreaTextBrush}"/>
                                     </StackPanel>
-
-                                    <InfoBar IsOpen="True"
-                                            IsClosable="False"
-                                            Severity="Warning"
-                                             Title="Change with care"
-                                             Message="These settings can affect performance and compatibility. Only change them if you know what they do."
-                                             Margin="0,0,0,14"/>
-
-                                    <local:SettingRow Label="Debug logging"
-                                            Margin="0,0,0,8">
-                                        <ToggleSwitch x:Name="DebugToggle"
-                                                OnContent=""
-                                                OffContent=""
-                                                Toggled="DebugToggle_Changed"/>
-                                    </local:SettingRow>
+<InfoBar IsOpen="True" IsClosable="False" Severity="Warning" Title="Capture compatibility" Message="Encoder and capture-method changes can affect performance and fullscreen compatibility. Auto and WGC are recommended." Margin="0,0,0,12"/>
                                     <local:SettingRow Label="Video encoder"
                                             Margin="0,0,0,8">
                                         <ComboBox x:Name="EncoderCombo"
@@ -986,15 +1091,22 @@
                                                 HorizontalAlignment="Stretch"
                                                 SelectionChanged="CaptureMethodCombo_SelectionChanged">
                                             <ComboBoxItem x:Name="CaptureWgcItem"
-                                                    Content="Windows Graphics Capture"/>
+                                                    Content="WGC"/>
                                             <ComboBoxItem x:Name="CaptureDxgiItem"
-                                                    Content="DXGI Desktop Duplication"/>
+                                                    Content="DXGI"/>
                                         </ComboBox>
                                     </local:SettingRow>
 
+
+                                    <local:SettingRow Label="Debug logging"
+                                            Margin="0,0,0,8">
+                                        <ToggleSwitch x:Name="DebugToggle"
+                                                OnContent=""
+                                                OffContent=""
+                                                Toggled="DebugToggle_Changed"/>
+                                    </local:SettingRow>
                                 </StackPanel>
                             </Border>
-
                         </StackPanel>
                     </ScrollViewer>
                 </Grid>
@@ -1016,6 +1128,7 @@
                 </InfoBar>
 
                 <Border x:Name="PendingChangesFlyout"
+                        UseLayoutRounding="True"
                         Canvas.ZIndex="10"
                         Style="{StaticResource PendingChangesBar}"
                         HorizontalAlignment="Center"
@@ -1037,11 +1150,14 @@
                                   VerticalAlignment="Center"
                                 Margin="0,0,8,0"/>
                         <TextBlock Text="Unsaved changes"
-                                Style="{StaticResource Caption}"
+                                FontFamily="Segoe UI Variable"
+                                FontSize="{StaticResource BodyFontSize}"
+                                CharacterSpacing="0"
                                    Foreground="{ThemeResource TextPrimaryBrush}"
                                    VerticalAlignment="Center"
                                 Margin="0,0,12,0"/>
                         <Button x:Name="PendingSaveButton"
+                                local:UiHover.IsEnabled="False"
                                 Style="{StaticResource AccentButtonStyle}"
                                 VerticalAlignment="Center"
                                 Margin="0,0,8,0"
@@ -1052,10 +1168,11 @@
                                         FontFamily="{ThemeResource SymbolThemeFontFamily}"
                                           FontSize="14"
                                         Margin="0,0,6,0"/>
-                                <TextBlock Text="SAVE"/>
+                                <TextBlock Text="Save" FontFamily="Segoe UI Variable" FontSize="{StaticResource BodyFontSize}"/>
                             </StackPanel>
                         </Button>
                         <Button x:Name="PendingDiscardButton"
+                                local:UiHover.IsEnabled="False"
                                 ElementSoundMode="Off"
                                 Style="{StaticResource BaseButtonStyle}"
                                 VerticalAlignment="Center"
@@ -1066,7 +1183,7 @@
                                         FontFamily="{ThemeResource SymbolThemeFontFamily}"
                                           FontSize="14"
                                         Margin="0,0,6,0"/>
-                                <TextBlock Text="DISCARD"/>
+                                <TextBlock Text="Discard" FontFamily="Segoe UI Variable" FontSize="{StaticResource BodyFontSize}"/>
                             </StackPanel>
                         </Button>
                     </StackPanel>

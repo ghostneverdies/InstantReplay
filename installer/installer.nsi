@@ -3,16 +3,25 @@ SetCompressor /SOLID lzma
 !include "MUI2.nsh"
 !include "LogicLib.nsh"
 
-!include "Rollback.nsh"
+!include "FileFunc.nsh"
 
 !define MyAppName "Instant Replay"
-!define MyAppVersion "1.4"
+!define MyAppVersion "1.5"
 !define MyAppPublisher "InstantReplay"
 !define MyAppExeName "InstantReplay.exe"
 !define MyAppAssocName "${MyAppName} File"
 !define MyAppAssocExt ".ir"
 !define MyAppAssocKey "InstantReplayFile"
 !define GitHubUrl "https://github.com/ghostneverdies/InstantReplay"
+
+VIProductVersion "1.5.0.0"
+VIAddVersionKey /LANG=1033 "ProductName" "${MyAppName}"
+VIAddVersionKey /LANG=1033 "ProductVersion" "${MyAppVersion}"
+VIAddVersionKey /LANG=1033 "FileVersion" "1.5.0.0"
+VIAddVersionKey /LANG=1033 "FileDescription" "${MyAppName} installer"
+VIAddVersionKey /LANG=1033 "CompanyName" "${MyAppPublisher}"
+VIAddVersionKey /LANG=1033 "LegalCopyright" "Copyright (c) 2026 GHO5T"
+
 
 !define MyAppUninstallKey "Software\Microsoft\Windows\CurrentVersion\Uninstall\${MyAppName}"
 
@@ -27,16 +36,10 @@ ShowUninstDetails show
 !define MUI_ICON "..\assets\icons\icon.ico"
 !define MUI_UNICON "..\assets\icons\icon.ico"
 
-Var AppInstalled
+Var UpdateMode
 
 Var CheckboxRemoveRecordings
 Var RemoveRecordingsState
-
-Function SkipIfInstalled
-    ${If} $AppInstalled == "1"
-        Abort
-    ${EndIf}
-FunctionEnd
 
 Function un.OnRecordingsClick
     ${NSD_GetState} $CheckboxRemoveRecordings $RemoveRecordingsState
@@ -60,31 +63,12 @@ FunctionEnd
 Function un.UninstallOptionsPageLeave
 FunctionEnd
 
-Function InstFilesShow
-    ${If} $AppInstalled == "1"
-        SendMessage $HWNDPARENT ${WM_SETTEXT} 0 "STR:${MyAppName} - Uninstalling"
-    ${EndIf}
-FunctionEnd
-
-Function FinishShow
-    ${If} $AppInstalled == "1"
-        SendMessage $HWNDPARENT ${WM_SETTEXT} 0 "STR:${MyAppName} - Uninstall Complete"
-    ${EndIf}
-FunctionEnd
-
-!define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfInstalled
 !insertmacro MUI_PAGE_WELCOME
-!define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfInstalled
 !insertmacro MUI_PAGE_LICENSE "terms.txt"
-!define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfInstalled
 !insertmacro MUI_PAGE_COMPONENTS
-!define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfInstalled
 !insertmacro MUI_PAGE_DIRECTORY
-!define MUI_PAGE_CUSTOMFUNCTION_SHOW InstFilesShow
 !insertmacro MUI_PAGE_INSTFILES
 !define MUI_FINISHPAGE_RUN "$INSTDIR\${MyAppExeName}"
-!define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfInstalled
-!define MUI_PAGE_CUSTOMFUNCTION_SHOW FinishShow
 !insertmacro MUI_PAGE_FINISH
 
 !insertmacro MUI_UNPAGE_WELCOME
@@ -96,40 +80,29 @@ UninstPage custom un.UninstallOptionsPageShow un.UninstallOptionsPageLeave
 !insertmacro MUI_LANGUAGE "English"
 
 Function .onInit
-    InitPluginsDir
-
-    StrCpy $0 ""
-    FindFirst $1 $2 "$TEMP\ns*"
-    ${DoWhile} $2 != ""
-        StrCpy $3 "$TEMP\$2"
-        ${If} $3 != $PLUGINSDIR
-            RMDir /r "$TEMP\$2"
-        ${EndIf}
-        FindNext $1 $2
-    ${Loop}
-    FindClose $1
-
-    StrCpy $AppInstalled "0"
-    ReadRegStr $0 HKLM "${MyAppUninstallKey}" "UninstallString"
-    ${If} $0 != ""
-        StrCpy $AppInstalled "1"
+    ${GetParameters} $R0
+    ClearErrors
+    ${GetOptions} $R0 "-quiet" $0
+    ${IfNot} ${Errors}
+        SetSilent silent
     ${EndIf}
-    IfFileExists "$INSTDIR\Uninstall.exe" 0 +2
-    StrCpy $AppInstalled "1"
-
-    ${If} $AppInstalled == "1"
-        DetailPrint "[+] App detected - launching uninstaller"
-        ReadRegStr $0 HKLM "${MyAppUninstallKey}" "UninstallString"
-        ${If} $0 == ""
-            StrCpy $0 '"$INSTDIR\Uninstall.exe"'
+    StrCpy $UpdateMode "0"
+    ClearErrors
+    ${GetOptions} $R0 "/UPDATE=" $0
+    ${IfNot} ${Errors}
+        ${If} $0 == "1"
+            StrCpy $UpdateMode "1"
+            SetSilent silent
         ${EndIf}
-        ExecWait '$0'
-        Quit
     ${EndIf}
 FunctionEnd
 
-Function .onInstFailed
-    ${RbRollbackFailed}
+Function .onInstSuccess
+    ${If} ${Silent}
+        ${If} $UpdateMode != "1"
+            ExecShell "open" "$INSTDIR\${MyAppExeName}"
+        ${EndIf}
+    ${EndIf}
 FunctionEnd
 
 Section "Instant Replay (Required)" SecMain
@@ -143,8 +116,10 @@ Section "Instant Replay (Required)" SecMain
     WriteRegStr HKLM "Software\Classes\${MyAppAssocKey}" "" "${MyAppAssocName}"
     WriteRegStr HKLM "Software\Classes\${MyAppAssocKey}\DefaultIcon" "" "$INSTDIR\${MyAppExeName},0"
     WriteRegStr HKLM "Software\Classes\${MyAppAssocKey}\shell\open\command" "" '"$INSTDIR\${MyAppExeName}" "%1"'
-    DeleteRegValue HKCU "SOFTWARE\Microsoft\Windows\CurrentVersion\Run" "InstantReplay"
-    WriteRegStr HKCU "SOFTWARE\Microsoft\Windows\CurrentVersion\Run" "${MyAppName}" '"$INSTDIR\${MyAppExeName}" --tray'
+    ${If} $UpdateMode != "1"
+        DeleteRegValue HKCU "SOFTWARE\Microsoft\Windows\CurrentVersion\Run" "InstantReplay"
+        WriteRegStr HKCU "SOFTWARE\Microsoft\Windows\CurrentVersion\Run" "${MyAppName}" '"$INSTDIR\${MyAppExeName}" --tray'
+    ${EndIf}
     WriteUninstaller "$INSTDIR\Uninstall.exe"
     WriteRegStr HKLM "${MyAppUninstallKey}" "DisplayName" "${MyAppName}"
     WriteRegStr HKLM "${MyAppUninstallKey}" "UninstallString" '"$INSTDIR\Uninstall.exe"'
@@ -154,23 +129,21 @@ Section "Instant Replay (Required)" SecMain
 SectionEnd
 
 Section "Start Menu Shortcut" SecStartMenu
-    ${If} $AppInstalled == "0"
+    ${If} $UpdateMode != "1"
         CreateShortcut "$SMPROGRAMS\${MyAppName}.lnk" "$INSTDIR\${MyAppExeName}"
     ${EndIf}
 SectionEnd
 
 Section "Desktop Shortcut" SecDesktop
-    ${If} $AppInstalled == "0"
+    ${If} $UpdateMode != "1"
         CreateShortcut "$DESKTOP\${MyAppName}.lnk" "$INSTDIR\${MyAppExeName}"
     ${EndIf}
 SectionEnd
 
 Section "-PostInstall"
-    ${If} $AppInstalled == "0"
-        ${If} $AppInstalled == "0"
-            DetailPrint "[+] Opening Instant Replay GitHub page..."
-            ExecShell "open" "${GitHubUrl}"
-        ${EndIf}
+    ${IfNot} ${Silent}
+        DetailPrint "[+] Opening Instant Replay GitHub page..."
+        ExecShell "open" "${GitHubUrl}"
     ${EndIf}
 SectionEnd
 
