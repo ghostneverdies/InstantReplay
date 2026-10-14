@@ -4,7 +4,6 @@
 [![Forks](https://img.shields.io/github/forks/ghostneverdies/InstantReplay?style=flat-square)](https://github.com/ghostneverdies/InstantReplay/forks)
 [![Downloads](https://img.shields.io/github/downloads/ghostneverdies/InstantReplay/total?style=flat-square)](https://github.com/ghostneverdies/InstantReplay/releases)
 [![Latest release](https://img.shields.io/github/v/release/ghostneverdies/InstantReplay?style=flat-square)](https://github.com/ghostneverdies/InstantReplay/releases/latest)
-![views](https://komarev.com/ghpvc/?username=ghostneverdies-InstantReplay&label=README+views&color=007ec6&style=flat-square)
 
 
 [![Rust 48.32%](https://img.shields.io/static/v1?label=Rust&message=48.32%25&color=dea584&style=flat-square)](https://api.github.com/repos/ghostneverdies/InstantReplay/languages)
