@@ -1,0 +1,53 @@
+INSTANT REPLAY — LICENSE AND INSTALLATION NOTICE
+================================================
+
+Last updated: November 2026
+
+Instant Replay is free software: you may run, study, share, and modify it
+under the GNU General Public License, version 3. The complete license is
+installed with the application and is available in the repository:
+
+https://github.com/ghostneverdies/InstantReplay/blob/main/LICENSE
+
+No additional restriction in this installer notice limits the rights granted
+by that license. Source code is available at:
+
+https://github.com/ghostneverdies/InstantReplay
+
+THIRD-PARTY COMPONENTS
+----------------------
+
+The application bundles FFmpeg shared libraries from the pinned BtbN GPL
+build. They are stored in the application's engine\encoder folder and loaded
+locally by the recording engine. The installer does not download FFmpeg.
+FFmpeg source, build configuration, and license information:
+
+https://ffmpeg.org/download.html
+https://github.com/BtbN/FFmpeg-Builds
+https://code.videolan.org/videolan/x264
+
+The application also uses the Windows App SDK / WinUI runtime, .NET,
+WebView2, MinHook, and techniques adapted from the public-domain wcap project.
+Each component remains subject to its own upstream license and notices.
+
+INSTALLATION AND PRIVACY
+------------------------
+
+The installer adds application files, uninstall registration, optional
+shortcuts, and—when selected—a per-user start-with-Windows entry. Uninstalling
+removes those items. Settings and recordings are retained unless the user
+explicitly chooses to remove recordings.
+
+Instant Replay records screen and audio locally. Footage is written to disk
+only when a replay is saved. The application contains no telemetry or
+analytics. Update checks contact the project's GitHub Releases endpoint.
+
+NO WARRANTY
+-----------
+
+Instant Replay is provided without warranty, to the extent permitted by law.
+See the GNU General Public License version 3 for the complete warranty and
+liability terms.
+
+By continuing, you acknowledge that you have read this notice and the GNU
+General Public License version 3.

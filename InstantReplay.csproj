@@ -1,0 +1,153 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <Version>1.6.0</Version>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.19041.0</TargetPlatformMinVersion>
+    <RootNamespace>InstantReplay</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>assets\icons\icon.ico</ApplicationIcon>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWinUI>true</UseWinUI>
+    <EnableMsixTooling>true</EnableMsixTooling>
+    <WindowsPackageType>None</WindowsPackageType>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <SelfContained>false</SelfContained>
+
+    <Platforms>x64</Platforms>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <UseRidGraph>true</UseRidGraph>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Manifest Include="$(ApplicationManifest)" />
+    <ApplicationDefinition Include="GUI\App.xaml" Link="App.xaml" />
+    <Page Remove="GUI\App.xaml" />
+    <Page Update="GUI\Themes\Theme.xaml" Link="Themes\Theme.xaml" />
+    <Page Update="GUI\Themes\Density.xaml" Link="Themes\Density.xaml" />
+    <Page Update="GUI\Themes\Styles.xaml" Link="Themes\Styles.xaml" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4258.31" />
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.7.250606001" />
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.1742" />
+    <PackageReference Include="Microsoft.Win32.SystemEvents" Version="8.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="assets\icons\github_light_mode.png">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+    <Content Include="assets\icons\github_dark_mode.png">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+    <Content Include="assets\icons\icon.ico">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+    <Content Include="assets\icons\clapperboard.png">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+    <Content Include="assets\animations\*.mp4">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+    <Content Include="assets\games*.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+    <Content Include="assets\games\**\*.json">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+    <Content Include="mediaplayer\**\*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="engine\bin\engine.dll" Link="engine\bin\engine.dll">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </None>
+    <None Include="engine\encoder\*.dll" Link="engine\encoder\%(Filename)%(Extension)">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </None>
+    <None Include="engine\encoder\FFMPEG-LICENSE.txt" Link="engine\encoder\FFMPEG-LICENSE.txt">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </None>
+    <None Include="engine\hooks\bin\capture_hook.dll" Link="engine\hooks\capture_hook.dll">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </None>
+    <None Include="engine\hooks\bin\overlay_hook.dll" Link="engine\hooks\overlay_hook.dll">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </None>
+  </ItemGroup>
+
+  <ItemGroup>
+    <_NativeEngineSource Include="engine\engine_core\src\**\*.rs" />
+    <_NativeEngineSource Include="engine\engine_core\Cargo.toml;engine\engine_core\Cargo.lock" />
+    <_RequiredFfmpegDll Include="engine\encoder\avcodec-62.dll" />
+    <_RequiredFfmpegDll Include="engine\encoder\avformat-62.dll" />
+    <_RequiredFfmpegDll Include="engine\encoder\avutil-60.dll" />
+    <_RequiredFfmpegDll Include="engine\encoder\swresample-6.dll" />
+  </ItemGroup>
+
+  <Target Name="BuildNativeEngine" BeforeTargets="PrepareForBuild"
+    Inputs="@(_NativeEngineSource)"
+    Outputs="engine\bin\engine.dll">
+    <MakeDir Directories="engine\bin" />
+    <Exec
+      Command="cargo build --release --manifest-path &quot;$(MSBuildProjectDirectory)\engine\engine_core\Cargo.toml&quot;" />
+    <Copy SourceFiles="engine\engine_core\target\release\engine.dll"
+      DestinationFiles="engine\bin\engine.dll" />
+  </Target>
+
+  <Target Name="ValidateNativePayload" BeforeTargets="PrepareForBuild"
+    DependsOnTargets="BuildNativeEngine">
+    <Error Condition="!Exists('engine\bin\engine.dll')"
+      Text="Native engine is missing: engine\bin\engine.dll" />
+    <Error Condition="!Exists('%(_RequiredFfmpegDll.Identity)')"
+      Text="Required FFmpeg library is missing: %(_RequiredFfmpegDll.Identity)" />
+  </Target>
+
+  <Target Name="BuildHook" BeforeTargets="PrepareForBuild"
+    Inputs="engine\hooks\capture_hook\src\**\*.rs;engine\hooks\capture_hook\Cargo.toml;engine\hooks\capture_hook\Cargo.lock;engine\hooks\capture_hook\build.rs;engine\hooks\overlay_hook\overlay_hook.cpp;engine\hooks\build.ps1;engine\hooks\third_party\minhook\src\*.c;engine\hooks\third_party\minhook\src\hde\*.c;engine\hooks\third_party\minhook\include\MinHook.h"
+    Outputs="engine\hooks\bin\capture_hook.dll;engine\hooks\bin\overlay_hook.dll">
+    <Exec
+      Command="powershell -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\engine\hooks\build.ps1&quot;" />
+  </Target>
+
+  <Target Name="ReorganizePublish" AfterTargets="Publish">
+    <ItemGroup>
+      <_PublishWinmd Include="$(PublishDir)*.winmd" />
+      <_PublishSymbols Include="$(PublishDir)*.pdb" />
+    </ItemGroup>
+
+    <MakeDir Directories="$(PublishDir)meta" />
+    <MakeDir Directories="$(PublishDir)symbols" Condition="'@(_PublishSymbols)' != ''" />
+    <MakeDir Directories="$(PublishDir)assets" Condition="Exists('$(PublishDir)icon.ico')" />
+
+    <Move SourceFiles="@(_PublishWinmd)" DestinationFolder="$(PublishDir)meta" />
+    <Move SourceFiles="@(_PublishSymbols)" DestinationFolder="$(PublishDir)symbols"
+      Condition="'@(_PublishSymbols)' != ''" />
+    <Move SourceFiles="$(PublishDir)icon.ico" DestinationFolder="$(PublishDir)assets"
+      Condition="Exists('$(PublishDir)icon.ico')" />
+
+    <Message Importance="high"
+      Text="Publish layout reorganized: engine/, meta/, symbols/ (WinUI runtime and locale folders stay at root)." />
+  </Target>
+
+</Project>

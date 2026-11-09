@@ -1,0 +1,592 @@
+[
+  {
+    "Name": "Halo: The Master Chief Collection",
+    "Executable": "MCC-Win64-Shipping.exe",
+    "Keyword": "halo the master chief collection"
+  },
+  {
+    "Name": "Fortnite",
+    "Executable": "FortniteClient-Win64-Shipping.exe",
+    "Keyword": "fortnite"
+  },
+  {
+    "Name": "Apex Legends",
+    "Executable": "r5apex.exe",
+    "Keyword": "apex legends"
+  },
+  {
+    "Name": "Apex Legends",
+    "Executable": "r5apex_dx12.exe",
+    "Keyword": "apex legends"
+  },
+  {
+    "Name": "Valorant",
+    "Executable": "VALORANT-Win64-Shipping.exe",
+    "Keyword": "valorant"
+  },
+  {
+    "Name": "Halo Infinite",
+    "Executable": "HaloInfinite.exe",
+    "Keyword": "halo infinite"
+  },
+  {
+    "Name": "Paladins",
+    "Executable": "Paladins.exe",
+    "Keyword": "paladins"
+  },
+  {
+    "Name": "PUBG: Battlegrounds",
+    "Executable": "TslGame.exe",
+    "Keyword": "pubg battlegrounds"
+  },
+  {
+    "Name": "SMITE",
+    "Executable": "Smite.exe",
+    "Keyword": "smite"
+  },
+  {
+    "Name": "Black Desert Online",
+    "Executable": "BlackDesert64.exe",
+    "Keyword": "black desert online"
+  },
+  {
+    "Name": "Fall Guys: Ultimate Knockout",
+    "Executable": "FallGuys_client_game.exe",
+    "Keyword": "fall guys ultimate knockout"
+  },
+  {
+    "Name": "ARK: Survival Evolved",
+    "Executable": "ShooterGame.exe",
+    "Keyword": "ark survival evolved"
+  },
+  {
+    "Name": "DayZ",
+    "Executable": "DayZ_x64.exe",
+    "Keyword": "dayz"
+  },
+  {
+    "Name": "Dead By Daylight",
+    "Executable": "DeadByDaylight-Win64-Shipping.exe",
+    "Keyword": "dead by daylight"
+  },
+  {
+    "Name": "Destiny 2",
+    "Executable": "destiny2.exe",
+    "Keyword": "destiny 2"
+  },
+  {
+    "Name": "Hunt: Showdown 1896",
+    "Executable": "HuntGame.exe",
+    "Keyword": "hunt showdown 1896"
+  },
+  {
+    "Name": "Rust",
+    "Executable": "RustClient.exe",
+    "Keyword": "rust"
+  },
+  {
+    "Name": "7 Days to Die",
+    "Executable": "7DaysToDie.exe",
+    "Keyword": "7 days to die"
+  },
+  {
+    "Name": "Squad",
+    "Executable": "SquadGame.exe",
+    "Keyword": "squad"
+  },
+  {
+    "Name": "New World",
+    "Executable": "NewWorld.exe",
+    "Keyword": "new world"
+  },
+  {
+    "Name": "Warhammer: Vermintide 2",
+    "Executable": "vermintide2.exe",
+    "Keyword": "warhammer vermintide 2"
+  },
+  {
+    "Name": "Escape from Tarkov",
+    "Executable": "EscapeFromTarkov.exe",
+    "Keyword": "escape from tarkov"
+  },
+  {
+    "Name": "Insurgency: Sandstorm",
+    "Executable": "InsurgencyClient-Win64-Shipping.exe",
+    "Keyword": "insurgency sandstorm"
+  },
+  {
+    "Name": "ArmA 3",
+    "Executable": "arma3_x64.exe",
+    "Keyword": "arma 3"
+  },
+  {
+    "Name": "Rogue Company",
+    "Executable": "RogueCompany.exe",
+    "Keyword": "rogue company"
+  },
+  {
+    "Name": "PlanetSide 2",
+    "Executable": "PlanetSide2_x64.exe",
+    "Keyword": "planetside 2"
+  },
+  {
+    "Name": "For Honor",
+    "Executable": "ForHonor.exe",
+    "Keyword": "for honor"
+  },
+  {
+    "Name": "NARAKA: BLADEPOINT",
+    "Executable": "NarakaBladepoint.exe",
+    "Keyword": "naraka bladepoint"
+  },
+  {
+    "Name": "Genshin Impact",
+    "Executable": "GenshinImpact.exe",
+    "Keyword": "genshin impact"
+  },
+  {
+    "Name": "Genshin Impact",
+    "Executable": "YuanShen.exe",
+    "Keyword": "genshin impact"
+  },
+  {
+    "Name": "Hell Let Loose",
+    "Executable": "HLL-Win64-Shipping.exe",
+    "Keyword": "hell let loose"
+  },
+  {
+    "Name": "SCUM",
+    "Executable": "SCUM.exe",
+    "Keyword": "scum"
+  },
+  {
+    "Name": "Tom Clancy's The Division 2",
+    "Executable": "TheDivision2.exe",
+    "Keyword": "tom clancy s the division 2"
+  },
+  {
+    "Name": "Tom Clancy's Ghost Recon Wildlands",
+    "Executable": "GRW.exe",
+    "Keyword": "tom clancy s ghost recon wildlands"
+  },
+  {
+    "Name": "Splitgate",
+    "Executable": "PortalWars-Win64-Shipping.exe",
+    "Keyword": "splitgate"
+  },
+  {
+    "Name": "Tom Clancy's Ghost Recon Breakpoint",
+    "Executable": "GRB.exe",
+    "Keyword": "tom clancy s ghost recon breakpoint"
+  },
+  {
+    "Name": "Tom Clancy's Ghost Recon Breakpoint",
+    "Executable": "GRB_vulkan.exe",
+    "Keyword": "tom clancy s ghost recon breakpoint"
+  },
+  {
+    "Name": "Call of Duty: Modern Warfare (2019)",
+    "Executable": "ModernWarfare.exe",
+    "Keyword": "call of duty modern warfare 2019"
+  },
+  {
+    "Name": "Call of Duty: Warzone",
+    "Executable": "ModernWarfare.exe",
+    "Keyword": "call of duty warzone"
+  },
+  {
+    "Name": "Brawlhalla",
+    "Executable": "Brawlhalla.exe",
+    "Keyword": "brawlhalla"
+  },
+  {
+    "Name": "Albion Online",
+    "Executable": "Albion-Online.exe",
+    "Keyword": "albion online"
+  },
+  {
+    "Name": "Battlefield 4",
+    "Executable": "bf4.exe",
+    "Keyword": "battlefield 4"
+  },
+  {
+    "Name": "Conan Exiles",
+    "Executable": "ConanSandbox.exe",
+    "Keyword": "conan exiles"
+  },
+  {
+    "Name": "MapleStory",
+    "Executable": "MapleStory.exe",
+    "Keyword": "maplestory"
+  },
+  {
+    "Name": "Battlefield 1",
+    "Executable": "bf1.exe",
+    "Keyword": "battlefield 1"
+  },
+  {
+    "Name": "Battlefield 3",
+    "Executable": "bf3.exe",
+    "Keyword": "battlefield 3"
+  },
+  {
+    "Name": "Honkai Impact 3rd",
+    "Executable": "BH3.exe",
+    "Keyword": "honkai impact 3rd"
+  },
+  {
+    "Name": "Gears 5",
+    "Executable": "Gears5.exe",
+    "Keyword": "gears 5"
+  },
+  {
+    "Name": "Battlefield V",
+    "Executable": "bfv.exe",
+    "Keyword": "battlefield v"
+  },
+  {
+    "Name": "Chivalry 2",
+    "Executable": "Chivalry2-Win64-Shipping.exe",
+    "Keyword": "chivalry 2"
+  },
+  {
+    "Name": "Lost Ark",
+    "Executable": "LOSTARK.exe",
+    "Keyword": "lost ark"
+  },
+  {
+    "Name": "Dauntless",
+    "Executable": "Dauntless-Win64-Shipping.exe",
+    "Keyword": "dauntless"
+  },
+  {
+    "Name": "League of Legends",
+    "Executable": "League of Legends.exe",
+    "Keyword": "league of legends"
+  },
+  {
+    "Name": "Elden Ring",
+    "Executable": "eldenring.exe",
+    "Keyword": "elden ring"
+  },
+  {
+    "Name": "BattleBit Remastered",
+    "Executable": "BattleBit.exe",
+    "Keyword": "battlebit remastered"
+  },
+  {
+    "Name": "Grand Theft Auto V",
+    "Executable": "GTA5.exe",
+    "Keyword": "grand theft auto v"
+  },
+  {
+    "Name": "Grand Theft Auto V",
+    "Executable": "GTA5_Enhanced.exe",
+    "Keyword": "grand theft auto v"
+  },
+  {
+    "Name": "Dungeon Fighter Online",
+    "Executable": "DNF.exe",
+    "Keyword": "dungeon fighter online"
+  },
+  {
+    "Name": "VRChat",
+    "Executable": "VRChat.exe",
+    "Keyword": "vrchat"
+  },
+  {
+    "Name": "ArmA Reforger",
+    "Executable": "ArmaReforgerSteam.exe",
+    "Keyword": "arma reforger"
+  },
+  {
+    "Name": "Call of Duty: Modern Warfare II (2022)",
+    "Executable": "cod.exe",
+    "Keyword": "call of duty modern warfare ii 2022"
+  },
+  {
+    "Name": "Roblox",
+    "Executable": "RobloxPlayerBeta.exe",
+    "Keyword": "roblox"
+  },
+  {
+    "Name": "THE FINALS",
+    "Executable": "Discovery.exe",
+    "Keyword": "the finals"
+  },
+  {
+    "Name": "Call of Duty: Modern Warfare III (2023)",
+    "Executable": "cod.exe",
+    "Keyword": "call of duty modern warfare iii 2023"
+  },
+  {
+    "Name": "Armored Core VI: Fires of Rubicon",
+    "Executable": "armoredcore6.exe",
+    "Keyword": "armored core vi fires of rubicon"
+  },
+  {
+    "Name": "Helldivers 2",
+    "Executable": "helldivers2.exe",
+    "Keyword": "helldivers 2"
+  },
+  {
+    "Name": "EA SPORTS FC™ 24",
+    "Executable": "FC24.exe",
+    "Keyword": "ea sports fc 24"
+  },
+  {
+    "Name": "ARK: Survival Ascended",
+    "Executable": "ArkAscended.exe",
+    "Keyword": "ark survival ascended"
+  },
+  {
+    "Name": "EA SPORTS FC™ 25",
+    "Executable": "FC25.exe",
+    "Keyword": "ea sports fc 25"
+  },
+  {
+    "Name": "Zenless Zone Zero",
+    "Executable": "ZenlessZoneZero.exe",
+    "Keyword": "zenless zone zero"
+  },
+  {
+    "Name": "Sea of Thieves",
+    "Executable": "SoTGame.exe",
+    "Keyword": "sea of thieves"
+  },
+  {
+    "Name": "Marvel Rivals",
+    "Executable": "Marvel-Win64-Shipping.exe",
+    "Keyword": "marvel rivals"
+  },
+  {
+    "Name": "World of Warcraft",
+    "Executable": "Wow.exe",
+    "Keyword": "world of warcraft"
+  },
+  {
+    "Name": "Wuthering Waves",
+    "Executable": "Client-Win64-Shipping.exe",
+    "Keyword": "wuthering waves"
+  },
+  {
+    "Name": "Call of Duty: Black Ops 6",
+    "Executable": "cod.exe",
+    "Keyword": "call of duty black ops 6"
+  },
+  {
+    "Name": "Rocket League",
+    "Executable": "RocketLeague.exe",
+    "Keyword": "rocket league"
+  },
+  {
+    "Name": "Throne and Liberty",
+    "Executable": "TL.exe",
+    "Keyword": "throne and liberty"
+  },
+  {
+    "Name": "Delta Force: Hawk Ops",
+    "Executable": "DeltaForceClient-Win64-Shipping.exe",
+    "Keyword": "delta force hawk ops"
+  },
+  {
+    "Name": "Blade & Soul",
+    "Executable": "BNSR.exe",
+    "Keyword": "blade soul"
+  },
+  {
+    "Name": "EA SPORTS FC™ 26",
+    "Executable": "FC26.exe",
+    "Keyword": "ea sports fc 26"
+  },
+  {
+    "Name": "Escape from Tarkov: Arena",
+    "Executable": "EscapeFromTarkovArena.exe",
+    "Keyword": "escape from tarkov arena"
+  },
+  {
+    "Name": "New World: Aeternum",
+    "Executable": "NewWorld.exe",
+    "Keyword": "new world aeternum"
+  },
+  {
+    "Name": "Warhammer 40,000: Darktide",
+    "Executable": "Darktide.exe",
+    "Keyword": "warhammer 40 000 darktide"
+  },
+  {
+    "Name": "Elden Ring: Nightreign",
+    "Executable": "nightreign.exe",
+    "Keyword": "elden ring nightreign"
+  },
+  {
+    "Name": "Battlefield 6",
+    "Executable": "bf6.exe",
+    "Keyword": "battlefield 6"
+  },
+  {
+    "Name": "Call of Duty: Black Ops 7",
+    "Executable": "cod.exe",
+    "Keyword": "call of duty black ops 7"
+  },
+  {
+    "Name": "Counter-Strike 2",
+    "Executable": "cs2.exe",
+    "Keyword": "counter strike 2"
+  },
+  {
+    "Name": "Counter-Strike: Global Offensive",
+    "Executable": "csgo.exe",
+    "Keyword": "counter strike global offensive"
+  },
+  {
+    "Name": "Dota 2",
+    "Executable": "dota2.exe",
+    "Keyword": "dota 2"
+  },
+  {
+    "Name": "Deadlock",
+    "Executable": "deadlock.exe",
+    "Keyword": "deadlock"
+  },
+  {
+    "Name": "Left 4 Dead 2",
+    "Executable": "left4dead2.exe",
+    "Keyword": "left 4 dead 2"
+  },
+  {
+    "Name": "Rainbow Six Siege",
+    "Executable": "RainbowSix.exe",
+    "Keyword": "rainbow six siege"
+  },
+  {
+    "Name": "Rainbow Six Siege",
+    "Executable": "RainbowSix_Vulkan.exe",
+    "Keyword": "rainbow six siege"
+  },
+  {
+    "Name": "XDefiant",
+    "Executable": "XDefiant.exe",
+    "Keyword": "xdefiant"
+  },
+  {
+    "Name": "Skull and Bones",
+    "Executable": "SkullAndBones.exe",
+    "Keyword": "skull and bones"
+  },
+  {
+    "Name": "The Crew Motorfest",
+    "Executable": "TheCrewMotorfest.exe",
+    "Keyword": "the crew motorfest"
+  },
+  {
+    "Name": "Overwatch 2",
+    "Executable": "Overwatch.exe",
+    "Keyword": "overwatch 2"
+  },
+  {
+    "Name": "Diablo IV",
+    "Executable": "Diablo IV.exe",
+    "Keyword": "diablo iv"
+  },
+  {
+    "Name": "StarCraft II",
+    "Executable": "SC2_x64.exe",
+    "Keyword": "starcraft ii"
+  },
+  {
+    "Name": "Heroes of the Storm",
+    "Executable": "HeroesOfTheStorm.exe",
+    "Keyword": "heroes of the storm"
+  },
+  {
+    "Name": "Battlefield 2042",
+    "Executable": "bf2042.exe",
+    "Keyword": "battlefield 2042"
+  },
+  {
+    "Name": "Madden NFL 25",
+    "Executable": "Madden25.exe",
+    "Keyword": "madden nfl 25"
+  },
+  {
+    "Name": "Madden NFL 26",
+    "Executable": "Madden26.exe",
+    "Keyword": "madden nfl 26"
+  },
+  {
+    "Name": "Star Wars: Squadrons",
+    "Executable": "starwarssquadrons.exe",
+    "Keyword": "star wars squadrons"
+  },
+  {
+    "Name": "War Thunder",
+    "Executable": "aces.exe",
+    "Keyword": "war thunder"
+  },
+  {
+    "Name": "Enlisted",
+    "Executable": "enlisted.exe",
+    "Keyword": "enlisted"
+  },
+  {
+    "Name": "Crossout",
+    "Executable": "crossout.exe",
+    "Keyword": "crossout"
+  },
+  {
+    "Name": "CRSED: F.O.A.D.",
+    "Executable": "CRSED.exe",
+    "Keyword": "crsed foad"
+  },
+  {
+    "Name": "V Rising",
+    "Executable": "VRising.exe",
+    "Keyword": "v rising"
+  },
+  {
+    "Name": "Sons of the Forest",
+    "Executable": "SonsOfTheForest.exe",
+    "Keyword": "sons of the forest"
+  },
+  {
+    "Name": "Mortal Online 2",
+    "Executable": "MortalOnline2.exe",
+    "Keyword": "mortal online 2"
+  },
+  {
+    "Name": "The First Descendant",
+    "Executable": "M1-Win64-Shipping.exe",
+    "Keyword": "the first descendant"
+  },
+  {
+    "Name": "Once Human",
+    "Executable": "OnceHuman.exe",
+    "Keyword": "once human"
+  },
+  {
+    "Name": "Phantasy Star Online 2",
+    "Executable": "pso2.exe",
+    "Keyword": "phantasy star online 2"
+  },
+  {
+    "Name": "Lineage 2",
+    "Executable": "L2.exe",
+    "Keyword": "lineage 2"
+  },
+  {
+    "Name": "TERA",
+    "Executable": "TERA.exe",
+    "Keyword": "tera"
+  },
+  {
+    "Name": "CrossFire",
+    "Executable": "crossfire.exe",
+    "Keyword": "crossfire"
+  },
+  {
+    "Name": "Unturned",
+    "Executable": "Unturned.exe",
+    "Keyword": "unturned"
+  }
+]

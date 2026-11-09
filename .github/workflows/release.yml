@@ -1,0 +1,221 @@
+﻿name: Release
+
+# Every tag creates (or refreshes) a GitHub Release with a portable ZIP and an installer EXE.
+# The tag name is the version: v1.6.0 -> app/installer version 1.6.0 (1.6.0.0).
+on:
+  push:
+    tags:
+      - "v*"
+      - "[0-9]*"
+  # Publishing a release from the GitHub web UI does not reliably emit a tag "push" event,
+  # so building on the release event is what makes the web-only flow work.
+  release:
+    types: [published]
+  # Manual runs build the same artifacts without publishing a release (useful for testing).
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to stamp (e.g. 1.6.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # Pinned, immutable FFmpeg autobuild (n8.1.x, GPL shared, includes libx264).
+  # Bump the tag, asset name, URL and SHA256 together; never point at the rolling "latest" tag.
+  FFMPEG_TAG: "autobuild-2026-11-01-12-49"
+  FFMPEG_ARCHIVE: "ffmpeg-n8.1.3-29-gad3b795b72-win64-gpl-shared-8.1.zip"
+  FFMPEG_SHA256: "f3a33bf457fbccb300c40de6ed1028eff02db97ec297bba6d12ffb9ddfda3133"
+  DOTNET_VERSION: "8.0.x"
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: version
+        shell: pwsh
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $raw = "${{ inputs.version }}"
+          } else {
+            $raw = "${{ github.ref_name }}"
+          }
+          if ($raw -notmatch '^[vV]?\d+\.\d+(\.\d+){0,2}$') {
+            throw "Version '$raw' is not valid (expected v1.6.0, v1.6 or v1.6.0.1)."
+          }
+          $version = $raw.TrimStart('v', 'V')
+
+          # NSIS VIProductVersion needs exactly four numeric parts.
+          $parts = @($version.Split('.'))
+          while ($parts.Count -lt 4) { $parts += '0' }
+          $quad = $parts -join '.'
+
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "quad=$quad"     >> $env:GITHUB_OUTPUT
+
+          Write-Host "Building version $version (file version $quad)"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine/engine_core
+
+      - name: Install .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Fetch FFmpeg shared libraries
+        shell: pwsh
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          $url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/$env:FFMPEG_TAG/$env:FFMPEG_ARCHIVE"
+          Write-Host "Downloading $url"
+          Invoke-WebRequest -Uri $url -OutFile ffmpeg.zip
+
+          $hash = (Get-FileHash ffmpeg.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -ne $env:FFMPEG_SHA256) {
+            throw "FFmpeg archive checksum mismatch: got $hash, expected $env:FFMPEG_SHA256"
+          }
+
+          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg -Force
+          $root = (Get-ChildItem ffmpeg -Directory | Select-Object -First 1).FullName
+
+          New-Item -ItemType Directory -Force engine/encoder | Out-Null
+          # The engine loads these four and nothing else; shipping avfilter/avdevice/swscale
+          # would add ~56 MB to both release assets for no benefit.
+          foreach ($dll in 'avcodec-62.dll', 'avformat-62.dll', 'avutil-60.dll', 'swresample-6.dll') {
+            $src = Join-Path "$root\bin" $dll
+            if (-not (Test-Path $src)) { throw "Pinned FFmpeg archive is missing $dll" }
+            Copy-Item $src engine/encoder -Force
+          }
+          if (-not (Test-Path engine/encoder/FFMPEG-LICENSE.txt)) {
+            Copy-Item "$root\LICENSE.txt" engine/encoder/FFMPEG-LICENSE.txt -Force
+          }
+
+          Write-Host "FFmpeg DLLs:"
+          Get-ChildItem engine/encoder/*.dll | Select-Object Name, Length | Format-Table -AutoSize
+
+      - name: Build native engine
+        shell: pwsh
+        run: |
+          cargo build --release --manifest-path engine/engine_core/Cargo.toml
+          if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
+
+          # The .NET project bundles engine\bin\engine.dll and engine\encoder\*.dll.
+          New-Item -ItemType Directory -Force engine/bin | Out-Null
+          Copy-Item engine/engine_core/target/release/engine.dll engine/bin/engine.dll -Force
+
+      - name: Publish application
+        shell: pwsh
+        run: |
+          dotnet publish InstantReplay.csproj `
+            -c Release `
+            -p:Platform=x64 `
+            -p:Version=${{ steps.version.outputs.version }} `
+            -o bin/publish/win-x64
+          if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed" }
+
+      - name: Verify publish layout
+        shell: pwsh
+        run: |
+          $dir = "bin/publish/win-x64"
+          $required = @(
+            "InstantReplay.exe",
+            "engine/bin/engine.dll",
+            "engine/encoder/avcodec-62.dll",
+            "engine/encoder/avformat-62.dll",
+            "engine/encoder/avutil-60.dll",
+            "engine/encoder/swresample-6.dll",
+            "engine/encoder/FFMPEG-LICENSE.txt",
+            "engine/hooks/capture_hook.dll",
+            "engine/hooks/overlay_hook.dll",
+            "assets/games/anticheat_games.json"
+          )
+          $missing = $required | Where-Object { -not (Test-Path (Join-Path $dir $_)) }
+          if ($missing) { throw "Publish output is missing: $($missing -join ', ')" }
+          Write-Host "Publish layout OK ($((Get-ChildItem $dir -Recurse -File).Count) files)."
+
+      - name: Build portable archive
+        shell: pwsh
+        run: |
+          $name = "InstantReplay-${{ steps.version.outputs.version }}-win64-portable"
+          # 7z keeps the WinUI payload fast and memory-friendly; fall back to Compress-Archive.
+          $sevenZip = Join-Path $env:ProgramFiles "7-Zip\7z.exe"
+          if (Test-Path $sevenZip) {
+            & $sevenZip a -tzip -mx=5 -bso0 -bsp0 "$name.zip" ".\bin\publish\win-x64\*"
+            if ($LASTEXITCODE -ne 0) { throw "7z failed" }
+          } else {
+            Compress-Archive -Path "bin/publish/win-x64/*" -DestinationPath "$name.zip" -CompressionLevel Optimal
+          }
+          Write-Host "Portable archive: $name.zip ($([math]::Round((Get-Item "$name.zip").Length / 1MB, 1)) MB)"
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $makensis = Join-Path ${env:ProgramFiles(x86)} "NSIS\makensis.exe"
+          if (-not (Test-Path $makensis)) {
+            Write-Host "NSIS not found, installing..."
+            choco install nsis -y --no-progress
+            $makensis = Join-Path ${env:ProgramFiles(x86)} "NSIS\makensis.exe"
+          }
+          if (-not (Test-Path $makensis)) { throw "makensis.exe not found" }
+
+          # Run from installer\ so the script's relative paths (..\bin\publish\win-x64,
+          # ..\assets\icons, terms.txt) resolve exactly as they do locally.
+          Push-Location installer
+          try {
+            & $makensis /V2 `
+              "/DMyAppVersion=${{ steps.version.outputs.version }}" `
+              "/DMyAppVersion4=${{ steps.version.outputs.quad }}" `
+              "installer.nsi"
+            if ($LASTEXITCODE -ne 0) { throw "makensis failed with $LASTEXITCODE" }
+          } finally {
+            Pop-Location
+          }
+
+          if (-not (Test-Path installer/InstantReplaySetup.exe)) { throw "installer output missing" }
+          Write-Host "Installer: $([math]::Round((Get-Item installer/InstantReplaySetup.exe).Length / 1MB, 1)) MB"
+
+      - name: Upload build artifacts
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: InstantReplay-${{ steps.version.outputs.version }}-win64
+          path: |
+            InstantReplay-${{ steps.version.outputs.version }}-win64-portable.zip
+            installer/InstantReplaySetup.exe
+
+      - name: Create GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Instant Replay ${{ steps.version.outputs.version }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          # The asset must stay named InstantReplaySetup.exe: the in-app updater looks for
+          # exactly that file on the latest release.
+          files: |
+            InstantReplay-${{ steps.version.outputs.version }}-win64-portable.zip
+            installer/InstantReplaySetup.exe
+
