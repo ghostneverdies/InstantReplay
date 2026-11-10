@@ -12,14 +12,12 @@
 #include <mferror.h>
 #include <mfidl.h>
 #include <mfreadwrite.h>
-
 #include <math.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <wchar.h>
-
 #include <new>
 #include <string>
 #include <vector>
@@ -983,9 +981,9 @@ static void overlay_render(int card_w, int card_h, int scale100, float text_alph
     GraphicsPath card_path;
     add_round_rect(card_path, card, 12.0f * s);
 
-    Color bg0(255, 29, 39, 58);
-    Color bg1(255, 15, 20, 31);
-    LinearGradientBrush bg(card, bg0, bg1, LinearGradientModeForwardDiagonal);
+    // The completion animation is opaque H.264 with a #242E40 background.
+    // Use that exact solid colour so the 54x54 video blends into the card.
+    SolidBrush bg(Color(255, 36, 46, 64));
     g.FillPath(&bg, &card_path);
 
     const bool failed = g_ov.state == 3;

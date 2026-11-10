@@ -389,6 +389,10 @@ public partial class MainWindow : Window
 
         _ = InitialStartAsync();
 
+        // Prepare the clip notification and its animation while idle so the first
+        // save shows the animation immediately instead of waiting for the decoder.
+        _dq.TryEnqueue(ClipNotificationWindow.WarmUp);
+
         Microsoft.Win32.SystemEvents.UserPreferenceChanged += SystemEvents_UserPreferenceChanged;
 
         Activated += Window_Activated;

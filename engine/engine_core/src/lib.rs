@@ -112,6 +112,8 @@ pub struct SharedState {
     pub target_window: AtomicIsize,
     pub capture_options: AtomicU32,
     pub has_error: AtomicBool,
+    /// HRESULT/status of the most recent capture failure (0 = none), for diagnostics.
+    pub last_cap_hr: AtomicI32,
     pub ring_seconds: AtomicI32,
     pub fps: AtomicI32,
     pub res_w: AtomicI32,
@@ -268,6 +270,7 @@ impl SharedState {
             target_window: AtomicIsize::new(0),
             capture_options: AtomicU32::new(2 | 8 | 1),
             has_error: AtomicBool::new(false),
+            last_cap_hr: AtomicI32::new(0),
             ring_seconds: AtomicI32::new(60),
             fps: AtomicI32::new(30),
             res_w: AtomicI32::new(1280),
@@ -492,6 +495,16 @@ impl SharedState {
         self.sys_peak.store(0, Ordering::Relaxed);
         self.mic_peak.store(0, Ordering::Relaxed);
         self.health_heartbeat.store(0, Ordering::Relaxed);
+        // A previous session may have latched an error (e.g. a WGC->DXGI
+        // switch that failed once). Clear it so the next start is judged on
+        // its own merits instead of reporting a permanent error.
+        self.has_error.store(false, Ordering::Relaxed);
+        self.last_cap_hr.store(0, Ordering::Relaxed);
+        self.n_capture.store(0, Ordering::Relaxed);
+        self.n_capture_drop.store(0, Ordering::Relaxed);
+        self.n_dxgi_timeout.store(0, Ordering::Relaxed);
+        self.n_dxgi_access_lost.store(0, Ordering::Relaxed);
+        self.n_dxgi_fatal.store(0, Ordering::Relaxed);
         {
             let mut v = self.vring.lock().unwrap_or_else(|e| e.into_inner());
             v.clear();
@@ -1455,6 +1468,10 @@ impl Engine {
             .store(options | 128, Ordering::Release);
         match capture::CaptureSession::start(self.shared.clone(), monitor_index, method) {
             Ok(s) => {
+                // A source switch is a fresh capture attempt; clear any error
+                // latched by the previous source so status does not stay red.
+                self.shared.has_error.store(false, Ordering::Release);
+                self.shared.last_cap_hr.store(0, Ordering::Relaxed);
                 *slot = Some(s);
                 IR_OK
             }
@@ -1702,6 +1719,9 @@ impl Engine {
     }
     pub fn last_fail_hr(&self) -> i32 {
         self.fail_hr.load(Ordering::Relaxed) as i32
+    }
+    pub fn last_capture_hr(&self) -> i32 {
+        self.shared.last_cap_hr.load(Ordering::Relaxed)
     }
 }
 
@@ -2010,6 +2030,16 @@ pub unsafe extern "C" fn IR_LastFailHr(engine: *mut Engine) -> i32 {
             return 0;
         }
         (*engine).last_fail_hr()
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn IR_LastCaptureHr(engine: *mut Engine) -> i32 {
+    guard!({
+        if engine.is_null() {
+            return 0;
+        }
+        (*engine).last_capture_hr()
     })
 }
 

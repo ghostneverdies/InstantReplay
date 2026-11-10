@@ -487,6 +487,7 @@ public sealed class RecorderEngine : IDisposable
             _engine.GetStatus(out bool running, out _, out _, out long frames, out _, out bool error, out _, out _, out _, out _);
             if (!running || error || (frames == 0 && DateTime.UtcNow - _startedAt > TimeSpan.FromSeconds(8)))
             {
+                string diag = _engine.DescribeFailure();
                 _engine.StopBuffering();
                 UnloadHooks("capture stopped");
                 _target = null;
@@ -494,7 +495,7 @@ public sealed class RecorderEngine : IDisposable
                 _paused = true;
                 _targetState = "CAPTURE UNAVAILABLE";
                 _retryAt = DateTime.UtcNow.AddSeconds(5);
-                Logger.Warn("Capture unavailable; waiting before retrying. No system-audio fallback.");
+                Logger.Warn($"Capture unavailable ({diag}); waiting before retrying. No system-audio fallback.");
                 return;
             }
             if (_paused) _engine.SetPaused(false);
@@ -829,6 +830,15 @@ internal static class IrNative
     internal static extern int IR_ActiveCaptureMethod(IntPtr engine);
 
     [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int IR_LastHresult(IntPtr engine);
+    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int IR_LastFailStage(IntPtr engine);
+    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int IR_LastFailHr(IntPtr engine);
+    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int IR_LastCaptureHr(IntPtr engine);
+
+    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
     internal static extern int IR_ActiveEncoder(IntPtr engine);
 
     [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
@@ -1115,6 +1125,35 @@ public sealed class ReplayEngine : IDisposable
         audioEvents = ae;
         audioGotFrames = agf;
         healthHeartbeat = hb;
+    }
+
+    /// <summary>
+    /// Human-readable snapshot of the native failure state, used when the capture
+    /// loop has to be torn down so the log tells us *why* instead of just looping.
+    /// </summary>
+    public string DescribeFailure()
+    {
+        if (_engine == IntPtr.Zero) return "engine not initialised";
+        try
+        {
+            int last = IrNative.IR_LastHresult(_engine);
+            int stage = IrNative.IR_LastFailStage(_engine);
+            int failHr = IrNative.IR_LastFailHr(_engine);
+            int capHr = IrNative.IR_LastCaptureHr(_engine);
+            int method = IrNative.IR_ActiveCaptureMethod(_engine);
+            string methodName = method switch
+            {
+                0 => "WGC", 1 => "DXGI", 3 => "graphics hook", _ => $"method {method}"
+            };
+            string err = GetLastErrorMessage();
+            if (err.Length > 0) err = $"; {err}";
+            return $"source={methodName}, capture=0x{capHr:X8}, last=0x{last:X8}, " +
+                   $"stage={stage}, fail=0x{failHr:X8}{err}";
+        }
+        catch (Exception ex)
+        {
+            return $"diagnostics unavailable: {ex.Message}";
+        }
     }
 
     public static List<(IntPtr Handle, string Title)> EnumerateWindows()

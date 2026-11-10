@@ -1624,13 +1624,10 @@
             content.Children.Add(iconContent);
             Grid.SetColumn(_textStack, 1);
             content.Children.Add(_textStack);
-            var background = new LinearGradientBrush
-            {
-                StartPoint = new Windows.Foundation.Point(0, 0),
-                EndPoint = new Windows.Foundation.Point(1, 1)
-            };
-            background.GradientStops.Add(new GradientStop { Color = Color.FromArgb(255, 29, 39, 58), Offset = 0 });
-            background.GradientStops.Add(new GradientStop { Color = Color.FromArgb(255, 15, 20, 31), Offset = 1 });
+            // The completion animation is H.264, so it carries an opaque
+            // #242E40 background. The card must be that exact solid colour;
+            // a gradient would show the 54x54 video as a visible rectangle.
+            var background = new SolidColorBrush(Color.FromArgb(255, 36, 46, 64));
             var layout = new Grid();
             layout.Children.Add(content);
             _accent = new Border
@@ -1680,8 +1677,10 @@
             }
             SetStyle(_hwnd, -20, new IntPtr((GetStyle(_hwnd, -20).ToInt64() | 0x08000080L) & ~0x00040000L));
             TitleBarButtons.StripWindowFrame(_hwnd);
-            int disabled = 1;
-            _ = DwmSetWindowAttribute(_hwnd, 2, ref disabled, sizeof(int));
+            // DWMWA_NCRENDERING_POLICY (2) = DWMNCRP_DISABLED (2). No DWM frame
+            // or drop shadow: the card itself is the whole popup, like the hook.
+            int noNonClientRendering = 2;
+            _ = DwmSetWindowAttribute(_hwnd, 2, ref noNonClientRendering, sizeof(int));
             TitleBarButtons.SetCornerPreference(_hwnd, round: true);
             if (!SetWindowDisplayAffinity(_hwnd, 0x11)) Logger.Debug("Clip notification capture exclusion unavailable.");
             _lifetime.Tick += (_, _) =>
@@ -1714,6 +1713,52 @@
             {
                 Logger.Warn($"Clip notification unavailable: {ex.Message}");
                 Shutdown();
+            }
+        }
+
+        /// <summary>
+        /// Creates the hidden popup and opens/decodes the completion animation
+        /// ahead of time. Nothing is shown, but Media Foundation has already
+        /// parsed the file, so the first saved clip plays instantly instead of
+        /// stalling while the media opens.
+        /// </summary>
+        public static void WarmUp()
+        {
+            if (_instance != null) return;
+            try
+            {
+                _instance = new ClipNotificationWindow();
+                _instance.PrimeAnimation();
+                Logger.Debug("Clip notification animation pre-cached and warmed up.");
+            }
+            catch (Exception ex)
+            {
+                Logger.Debug($"Clip notification warm-up failed: {ex.Message}");
+                _instance = null;
+            }
+        }
+
+        private void PrimeAnimation()
+        {
+            if (_animationPlayer.Source == null)
+            {
+                string path = OverlayBridge.AnimationPath();
+                if (path.Length == 0) return;
+                _animationPlayer.Source = Windows.Media.Core.MediaSource.CreateFromUri(new Uri(path));
+            }
+            try
+            {
+                // Force the decoder to open and produce the first frame while the
+                // card is still hidden, then rewind and hold on it.
+                _animationPlayer.Play();
+                _animationPlayer.Pause();
+                var session = _animationPlayer.PlaybackSession;
+                if (session != null) session.Position = TimeSpan.Zero;
+            }
+            catch (Exception ex)
+            {
+                Logger.Debug($"Clip notification animation warm-up failed: {ex.Message}");
+                _animationReady = false;
             }
         }
 

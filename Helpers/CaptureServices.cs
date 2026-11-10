@@ -843,6 +843,36 @@ internal static class OverlayBridge
     /// </summary>
     public static string AnimationPath()
     {
+        string bundled = BundledAnimationPath();
+        if (bundled.Length == 0) return "";
+        // Mirror the asset into %TEMP% once and hand every consumer (WinUI popup
+        // and the in-game hook) that stable local copy. Reading it from the app
+        // folder can be slow on first use (antivirus/OneDrive), which made the
+        // first notification stall for seconds before the animation appeared.
+        try
+        {
+            string dir = Path.Combine(Path.GetTempPath(), "InstantReplay", "cache");
+            string cached = Path.Combine(dir, "clapboard.mp4");
+            var source = new FileInfo(bundled);
+            var target = new FileInfo(cached);
+            if (!target.Exists || target.Length != source.Length ||
+                target.LastWriteTimeUtc < source.LastWriteTimeUtc)
+            {
+                Directory.CreateDirectory(dir);
+                File.Copy(bundled, cached, overwrite: true);
+                Logger.Debug("Completion animation cached under %TEMP%.");
+            }
+            return cached;
+        }
+        catch (Exception ex)
+        {
+            Logger.Debug($"Completion animation cache unavailable: {ex.Message}");
+            return bundled;
+        }
+    }
+
+    private static string BundledAnimationPath()
+    {
         string folder = Path.Combine(AppContext.BaseDirectory, "assets", "animations");
         string[] candidates =
         [

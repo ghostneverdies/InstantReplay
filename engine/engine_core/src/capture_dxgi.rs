@@ -183,6 +183,7 @@ fn run(
         publisher.set_pacing_tolerance(20_000);
         let mut pointer = PointerShape::default();
         let mut recreate = false;
+        let mut fatal_streak = 0u32;
         while shared.running.load(Ordering::Acquire) && !stop.load(Ordering::Acquire) {
             shared.health_heartbeat.store(
                 qpc100ns() - shared.start_qpc.load(Ordering::Acquire),
@@ -191,7 +192,9 @@ fn run(
             let mut info = DXGI_OUTDUPL_FRAME_INFO::default();
             let mut resource = None;
             match unsafe { dup.AcquireNextFrame(10, &mut info, &mut resource) } {
-                Ok(()) => {}
+                Ok(()) => {
+                    fatal_streak = 0;
+                }
                 Err(e) if e.code() == DXGI_ERROR_WAIT_TIMEOUT => {
                     shared.n_dxgi_timeout.fetch_add(1, Ordering::Relaxed);
                     continue;
@@ -205,8 +208,21 @@ fn run(
                     recreate = true;
                     break;
                 }
-                Err(_) => {
+                Err(e) => {
+                    // A single unexpected AcquireNextFrame error (mode-switch races,
+                    // driver hiccups) must not tear down the whole recording. Retry
+                    // the duplication for ~3s before declaring the source dead.
                     shared.n_dxgi_fatal.fetch_add(1, Ordering::Relaxed);
+                    shared.last_cap_hr.store(e.code().0, Ordering::Release);
+                    fatal_streak += 1;
+                    eprintln!(
+                        "[dxgi] AcquireNextFrame failed: 0x{:08X} (streak {})",
+                        e.code().0 as u32, fatal_streak
+                    );
+                    if fatal_streak < 30 {
+                        recreate = true;
+                        break;
+                    }
                     shared.has_error.store(true, Ordering::Release);
                     shared.running.store(false, Ordering::Release);
                     shared.raw_wait.notify_all();
