@@ -355,14 +355,15 @@ impl CubicResampler {
         }
 
         let keep_from = self.pos as usize;
-        let drop = keep_from.saturating_sub(2);
-        for _ in 0..drop {
-            if self.hist_l.is_empty() || self.hist_r.is_empty() {
-                break;
-            }
-            self.hist_l.remove(0);
-            self.hist_r.remove(0);
-            self.pos -= 1.0;
+        // Drop the consumed history in one move; remove(0) in a loop made this O(n^2) per packet.
+        let drop = keep_from
+            .saturating_sub(2)
+            .min(self.hist_l.len())
+            .min(self.hist_r.len());
+        if drop > 0 {
+            self.hist_l.drain(..drop);
+            self.hist_r.drain(..drop);
+            self.pos -= drop as f64;
         }
         !out.is_empty()
     }

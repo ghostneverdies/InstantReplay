@@ -191,7 +191,9 @@ fn run(
             );
             let mut info = DXGI_OUTDUPL_FRAME_INFO::default();
             let mut resource = None;
-            match unsafe { dup.AcquireNextFrame(10, &mut info, &mut resource) } {
+            // Paused recordings do not need frames, so block longer instead of waking at 100 Hz.
+            let wait_ms = if shared.paused.load(Ordering::Acquire) { 100 } else { 10 };
+            match unsafe { dup.AcquireNextFrame(wait_ms, &mut info, &mut resource) } {
                 Ok(()) => {
                     fatal_streak = 0;
                 }
@@ -244,6 +246,14 @@ fn run(
                 continue;
             }
             let time = crate::qpc_ticks_to_100ns(tick);
+            // Desktop duplication reports every monitor refresh (and, with the cursor enabled,
+            // every mouse update). Composition below is a GPU pass, so reject frames the pacer
+            // would drop anyway before paying for it. The duplicated surface is always the full
+            // desktop, so skipping a frame loses nothing.
+            if zero_copy && !publisher.would_accept(time) {
+                shared.n_capture_drop.fetch_add(1, Ordering::Relaxed);
+                continue;
+            }
             let source = match resource.and_then(|r| r.cast::<ID3D11Texture2D>().ok()) {
                 Some(t) => t,
                 None => continue,

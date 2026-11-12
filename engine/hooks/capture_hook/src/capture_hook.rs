@@ -1883,6 +1883,13 @@ unsafe fn present_gl() {
         call_overlay_gl();
         return;
     }
+    // Decide whether this present is due *before* asking GL anything. glGetIntegerv forces a
+    // round trip to the driver, and doing it on every swap (hundreds per second) for frames that
+    // are about to be discarded was pure overhead on the game's render thread.
+    let Some(frame_no) = with_protocol(|protocol| protocol.next_frame(control)).flatten() else {
+        call_overlay_gl();
+        return;
+    };
     let mut viewport = [0i32; 4];
     glGetIntegerv(GL_VIEWPORT, viewport.as_mut_ptr());
     let (x, y, w, h) = (viewport[0], viewport[1], viewport[2], viewport[3]);
@@ -1890,10 +1897,6 @@ unsafe fn present_gl() {
         call_overlay_gl();
         return;
     }
-    let Some(frame_no) = with_protocol(|protocol| protocol.next_frame(control)).flatten() else {
-        call_overlay_gl();
-        return;
-    };
 
     // OBS prefers WGL_NV_DX_interop and only uses PBO/shared-memory capture as
     // a fallback. This avoids both the driver's unreliable PBO maps and the

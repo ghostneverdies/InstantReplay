@@ -160,6 +160,16 @@ constexpr float IR_CARD_W = 382.0f;
 constexpr float IR_CARD_H = 108.0f;
 constexpr float IR_CARD_MARGIN = 24.0f;
 
+// Motion and render pacing (units are 100 ns, like qpc_100ns()).
+// The card used to crawl in over 3.2 s on a cubic ease-out whose long tail moved by sub-pixel amounts,
+// which a whole-pixel quad turned into visible stepping. A short decelerating glide with a sub-pixel
+// quad position reads as smooth motion.
+constexpr int64_t IR_SLIDE_IN_100NS = 6500000LL;       // 650 ms
+constexpr int64_t IR_SLIDE_OUT_100NS = 4500000LL;      // 450 ms
+constexpr int64_t IR_HIDE_TAIL_100NS = 5500000LL;      // keep drawing until the slide-out has finished
+constexpr int64_t IR_ANIM_MIN_INTERVAL_100NS = 160000LL; // video frames: at most ~60 card re-renders/s
+constexpr int64_t IR_FADE_INTERVAL_100NS = 333333LL;     // text/bar fades: ~30 card re-renders/s
+
 
 static HMODULE g_self;
 static int64_t g_qpc_freq = 1;
@@ -520,6 +530,10 @@ struct OverlayState
     Bitmap *bitmap = nullptr;
     int bitmap_w = 0;
     int bitmap_h = 0;
+    // Everything on the card except the icon cell: the completion clip only changes that cell,
+    // so it is cached here and blitted under the new frame instead of re-running GDI+ text.
+    Bitmap *static_bitmap = nullptr;
+    bool static_valid = false;
     GLuint texture = 0;
     int texture_w = 0;
     int texture_h = 0;
@@ -536,6 +550,9 @@ struct OverlayState
     int core_profile = -1;
 
     HGLRC context = nullptr;
+
+    int64_t last_render_at = 0;
+    int rendered_anim_index = -2;
 
     bool dirty = true;
     bool render_error_logged = false;
@@ -596,6 +613,17 @@ static std::wstring g_loaded_animation;
 static std::wstring g_attempted_animation;
 static bool g_mf_started = false;
 
+// The completion clip is decoded on a background thread and handed over through this staging area.
+// Decoding it inside the game's Present call (as this used to) froze the game for ~2 s.
+static SRWLOCK g_anim_lock = SRWLOCK_INIT;
+static std::vector<AnimationFrame> g_anim_staging;
+static int64_t g_anim_staging_duration = 0;
+static std::wstring g_anim_staging_path;
+static std::wstring g_anim_worker_path;
+static volatile LONG g_anim_loading = 0;
+static volatile LONG g_anim_ready = 0;
+static HANDLE g_anim_thread = nullptr;
+
 template <typename T>
 static void ir_release(T *&value)
 {
@@ -615,17 +643,22 @@ static void animation_clear()
     g_animation_duration = 30000000LL;
 }
 
-static bool animation_load(const std::wstring &path)
+static void animation_free_frames(std::vector<AnimationFrame> &frames)
+{
+    for (auto &frame : frames)
+        delete frame.bitmap;
+    frames.clear();
+}
+
+// Runs on the worker thread only: touches nothing but its arguments.
+static bool animation_decode(const std::wstring &path, std::vector<AnimationFrame> &frames,
+                             int64_t &duration)
 {
     if (path.empty())
         return false;
-    if (path == g_loaded_animation && !g_animation_frames.empty())
-        return true;
-    animation_clear();
 
     if (!g_mf_started)
     {
-        CoInitializeEx(nullptr, COINIT_MULTITHREADED);
         if (FAILED(MFStartup(MF_VERSION, MFSTARTUP_LITE)))
             return false;
         g_mf_started = true;
@@ -674,7 +707,7 @@ static bool animation_load(const std::wstring &path)
     ir_release(current);
 
     int64_t first_timestamp = -1;
-    while (SUCCEEDED(hr))
+    while (SUCCEEDED(hr) && !g_shutting_down)
     {
         DWORD stream = 0, flags = 0;
         LONGLONG timestamp = 0;
@@ -718,7 +751,7 @@ static bool animation_load(const std::wstring &path)
                 graphics.SetInterpolationMode(InterpolationModeHighQualityBicubic);
                 graphics.Clear(Color(0, 0, 0, 0));
                 graphics.DrawImage(&source, Rect(0, 0, 84, 84));
-                g_animation_frames.push_back({timestamp - first_timestamp, scaled});
+                frames.push_back({timestamp - first_timestamp, scaled});
             }
             else
             {
@@ -734,25 +767,76 @@ static bool animation_load(const std::wstring &path)
     ir_release(type);
     ir_release(reader);
     ir_release(attributes);
-    if (g_animation_frames.empty())
+    if (frames.empty())
         return false;
-    if (g_animation_frames.size() > 1)
+    duration = 30000000LL;
+    if (frames.size() > 1)
     {
-        int64_t step = g_animation_frames.back().timestamp -
-                       g_animation_frames[g_animation_frames.size() - 2].timestamp;
-        g_animation_duration = g_animation_frames.back().timestamp + (step > 0 ? step : 333333LL);
+        int64_t step = frames.back().timestamp - frames[frames.size() - 2].timestamp;
+        duration = frames.back().timestamp + (step > 0 ? step : 333333LL);
     }
-    g_loaded_animation = path;
-    hook_log(L"loaded completion animation (%zu frames)", g_animation_frames.size());
     return true;
 }
 
-static Bitmap *animation_frame(int64_t now)
+static DWORD WINAPI animation_worker(LPVOID)
+{
+    const bool com = SUCCEEDED(CoInitializeEx(nullptr, COINIT_MULTITHREADED));
+    std::vector<AnimationFrame> frames;
+    int64_t duration = 30000000LL;
+    const std::wstring path = g_anim_worker_path;
+
+    bool ok = false;
+    try
+    {
+        ok = !g_shutting_down && animation_decode(path, frames, duration);
+    }
+    catch (...)
+    {
+        ok = false;
+    }
+
+    if (ok && !g_shutting_down)
+    {
+        AcquireSRWLockExclusive(&g_anim_lock);
+        animation_free_frames(g_anim_staging);
+        g_anim_staging.swap(frames);
+        g_anim_staging_duration = duration;
+        g_anim_staging_path = path;
+        ReleaseSRWLockExclusive(&g_anim_lock);
+        InterlockedExchange(&g_anim_ready, 1);
+    }
+    else
+    {
+        animation_free_frames(frames);
+    }
+
+    InterlockedExchange(&g_anim_loading, 0);
+    if (com)
+        CoUninitialize();
+    return 0;
+}
+
+static void animation_worker_join()
+{
+    if (g_anim_thread)
+    {
+        WaitForSingleObject(g_anim_thread, 3000);
+        CloseHandle(g_anim_thread);
+        g_anim_thread = nullptr;
+    }
+    AcquireSRWLockExclusive(&g_anim_lock);
+    animation_free_frames(g_anim_staging);
+    ReleaseSRWLockExclusive(&g_anim_lock);
+}
+
+static int animation_frame_index(int64_t now)
 {
     if (g_animation_frames.empty() || g_ov.animation_at <= 0)
-        return nullptr;
+        return -1;
     const int64_t duration = g_animation_duration > 0 ? g_animation_duration : 1;
     int64_t elapsed = (now - g_ov.animation_at) % duration;
+    if (elapsed < 0)
+        elapsed = 0;
     size_t selected = 0;
     for (size_t i = 1; i < g_animation_frames.size(); ++i)
     {
@@ -760,34 +844,78 @@ static Bitmap *animation_frame(int64_t now)
             break;
         selected = i;
     }
-    return g_animation_frames[selected].bitmap;
+    return static_cast<int>(selected);
 }
 
-// Loads the completion animation for the current success card. The path may arrive
-// in shared memory after the state change (or the mapping may have been created
-// before the asset was found), so this is called on every sync while the success
-// state is showing. A failed decode is remembered for this success card only, so a
-// broken asset is not re-decoded over and over.
+static Bitmap *animation_frame(int64_t now)
+{
+    const int index = animation_frame_index(now);
+    return index < 0 ? nullptr : g_animation_frames[index].bitmap;
+}
+
+// Called on every sync (render thread). It never decodes anything itself: it adopts a finished
+// background decode, or starts one. Decoding starts as soon as the card is on screen, so the clip
+// is normally ready long before the success state (the "saving" card precedes it by seconds).
+// A failed decode is remembered for this card only, so a broken asset is not retried endlessly.
 static void animation_ensure()
 {
-    if (g_ov.state != 2 || g_ov.animation_path.empty())
+    if (g_ov.animation_path.empty())
         return;
+
+    if (InterlockedCompareExchange(&g_anim_ready, 0, 1) == 1)
+    {
+        AcquireSRWLockExclusive(&g_anim_lock);
+        if (g_anim_staging_path == g_ov.animation_path && !g_anim_staging.empty())
+        {
+            animation_clear();
+            g_animation_frames.swap(g_anim_staging);
+            g_animation_duration = g_anim_staging_duration;
+            g_loaded_animation = g_anim_staging_path;
+            g_anim_staging.clear();
+            const size_t frame_count = g_animation_frames.size();
+            ReleaseSRWLockExclusive(&g_anim_lock);
+            hook_log(L"loaded completion animation (%zu frames)", frame_count);
+            if (g_ov.state == 2)
+                g_ov.animation_at = qpc_100ns();
+            g_ov.dirty = true;
+            return;
+        }
+        animation_free_frames(g_anim_staging);
+        ReleaseSRWLockExclusive(&g_anim_lock);
+    }
+
+    // Decode as soon as the path is known, whether or not the card is on screen yet. The clip is
+    // tiny and decodes on a background thread, so it is ready long before the success state
+    // needs it — this is what removes the first-frame stall at encoding completion. A failed
+    // decode is still remembered per card and retried when the success state arrives.
     if (!g_animation_frames.empty() && g_loaded_animation == g_ov.animation_path)
         return;
     if (g_attempted_animation == g_ov.animation_path)
         return;
+    if (InterlockedCompareExchange(&g_anim_loading, 1, 0) != 0)
+        return;
+
     g_attempted_animation = g_ov.animation_path;
-    if (animation_load(g_ov.animation_path))
+    g_anim_worker_path = g_ov.animation_path;
+    if (g_anim_thread)
     {
-        g_ov.animation_at = qpc_100ns();
-        g_ov.dirty = true;
+        CloseHandle(g_anim_thread);
+        g_anim_thread = nullptr;
     }
+    g_anim_thread = CreateThread(nullptr, 0, animation_worker, nullptr, 0, nullptr);
+    if (g_anim_thread)
+        SetThreadPriority(g_anim_thread, THREAD_PRIORITY_LOWEST);
+    else
+        InterlockedExchange(&g_anim_loading, 0);
 }
 
 static void overlay_free_bitmap()
 {
     delete g_ov.bitmap;
     g_ov.bitmap = nullptr;
+    delete g_ov.static_bitmap;
+    g_ov.static_bitmap = nullptr;
+    g_ov.static_valid = false;
     g_ov.bitmap_w = g_ov.bitmap_h = 0;
 }
 
@@ -918,55 +1046,233 @@ static void add_round_rect(GraphicsPath &path, const RectF &r, float radius)
     path.CloseFigure();
 }
 
-static void draw_tracked_text(Graphics &g, const wchar_t *text, Font &font, Brush &brush,
-                              float x, float y, float tracking)
+// Everything expensive that does not change between renders lives here. Building FontFamily/Font
+// objects, cloning StringFormats, measuring the tracked header glyph by glyph and decoding + scaling
+// the icon PNG used to happen on every render, which is every game frame while the success clip plays.
+static const wchar_t kHeaderText[] = L"INSTANT REPLAY";
+
+struct RenderCache
 {
-    StringFormat *fmt = StringFormat::GenericTypographic()->Clone();
-    fmt->SetFormatFlags(fmt->GetFormatFlags() | StringFormatFlagsMeasureTrailingSpaces);
-    size_t len = wcslen(text);
-    for (size_t i = 0; i < len; i++)
-    {
-        wchar_t ch[2] = {text[i], 0};
-        RectF box;
-        g.MeasureString(ch, 1, &font, PointF(0, 0), fmt, &box);
-        g.DrawString(ch, 1, &font, PointF(x, y), fmt, &brush);
-        x += box.Width + tracking;
-    }
-    delete fmt;
+    int scale100 = 0;
+    FontFamily *regular = nullptr;
+    FontFamily *message = nullptr;
+    Font *f_header = nullptr;
+    Font *f_msg = nullptr;
+    Font *f_detail = nullptr;
+    StringFormat *fmt_header = nullptr;
+    StringFormat *fmt_msg = nullptr;
+    StringFormat *fmt_detail = nullptr;
+    std::vector<float> header_x;
+
+    Bitmap *icon = nullptr;
+    std::wstring icon_path;
+    int icon_size = 0;
+};
+
+static RenderCache g_rc;
+
+static void render_cache_free_fonts()
+{
+    delete g_rc.f_header;
+    delete g_rc.f_msg;
+    delete g_rc.f_detail;
+    delete g_rc.fmt_header;
+    delete g_rc.fmt_msg;
+    delete g_rc.fmt_detail;
+    delete g_rc.regular;
+    delete g_rc.message;
+    g_rc.f_header = g_rc.f_msg = g_rc.f_detail = nullptr;
+    g_rc.fmt_header = g_rc.fmt_msg = g_rc.fmt_detail = nullptr;
+    g_rc.regular = g_rc.message = nullptr;
+    g_rc.header_x.clear();
+    g_rc.scale100 = 0;
 }
 
-static void overlay_render(int card_w, int card_h, int scale100, float text_alpha,
-                           float text_shift, float bar_alpha)
+static void render_cache_free()
 {
-    overlay_free_bitmap();
-    if (card_w <= 0 || card_h <= 0)
-        return;
+    render_cache_free_fonts();
+    delete g_rc.icon;
+    g_rc.icon = nullptr;
+    g_rc.icon_path.clear();
+    g_rc.icon_size = 0;
+}
 
-    Bitmap *bmp = nullptr;
-    try
+static FontFamily *render_cache_family(const wchar_t *name)
+{
+    FontFamily *family = new FontFamily(name);
+    if (family->IsAvailable())
+        return family;
+    delete family;
+    return nullptr;
+}
+
+static void render_cache_prepare(int scale100, Graphics &g)
+{
+    if (g_rc.scale100 == scale100 && g_rc.f_msg)
+        return;
+    render_cache_free_fonts();
+
+    // The WinUI card uses the system UI font (Segoe UI Variable on Windows 11, Segoe UI on
+    // Windows 10). GDI+ cannot open the variable font by its generic name, so use its static
+    // "Text" instances when present.
+    FontFamily *var_regular = render_cache_family(L"Segoe UI Variable Text");
+    FontFamily *var_semibold = render_cache_family(L"Segoe UI Variable Text Semibold");
+    FontFamily *seg_regular = render_cache_family(L"Segoe UI");
+    FontFamily *seg_semibold = render_cache_family(L"Segoe UI Semibold");
+
+    g_rc.regular = var_regular ? var_regular : seg_regular;
+    g_rc.message = var_semibold ? var_semibold
+                                : (var_regular ? var_regular : (seg_semibold ? seg_semibold : seg_regular));
+    FontFamily *keep[2] = {g_rc.regular, g_rc.message};
+    for (FontFamily *candidate : {var_regular, var_semibold, seg_regular, seg_semibold})
     {
-        bmp = new Bitmap(card_w, card_h, PixelFormat32bppPARGB);
+        if (candidate && candidate != keep[0] && candidate != keep[1])
+            delete candidate;
     }
-    catch (...)
+    if (!g_rc.regular)
+        g_rc.regular = FontFamily::GenericSansSerif()->Clone();
+    if (!g_rc.message)
+        g_rc.message = FontFamily::GenericSansSerif()->Clone();
+    // When one family serves both roles it must not be freed twice.
+    if (g_rc.regular == g_rc.message)
+        g_rc.message = g_rc.message->Clone();
+
+    const float s = scale100 / 100.0f;
+    g_rc.f_header = new Font(g_rc.message, 10.0f * s, FontStyleRegular, UnitPixel);
+    g_rc.f_msg = new Font(g_rc.message, 19.0f * s, FontStyleRegular, UnitPixel);
+    g_rc.f_detail = new Font(g_rc.regular, 12.0f * s, FontStyleRegular, UnitPixel);
+
+    g_rc.fmt_header = StringFormat::GenericTypographic()->Clone();
+    g_rc.fmt_header->SetFormatFlags(g_rc.fmt_header->GetFormatFlags() | StringFormatFlagsMeasureTrailingSpaces);
+
+    g_rc.fmt_msg = StringFormat::GenericTypographic()->Clone();
+    g_rc.fmt_msg->SetTrimming(StringTrimmingEllipsisCharacter);
+    g_rc.fmt_msg->SetFormatFlags(g_rc.fmt_msg->GetFormatFlags() | StringFormatFlagsNoWrap);
+
+    g_rc.fmt_detail = StringFormat::GenericTypographic()->Clone();
+    g_rc.fmt_detail->SetTrimming(StringTrimmingEllipsisCharacter);
+    g_rc.fmt_detail->SetFormatFlags(g_rc.fmt_detail->GetFormatFlags() | StringFormatFlagsNoWrap);
+
+    // Pen position of every glyph of the letter-spaced header, measured once.
+    const float tracking = 1.4f * s;
+    float x = 0.0f;
+    const size_t len = wcslen(kHeaderText);
+    g_rc.header_x.assign(len, 0.0f);
+    for (size_t i = 0; i < len; i++)
     {
-        if (!g_ov.render_error_logged)
-        {
-            g_ov.render_error_logged = true;
-            hook_log(L"card bitmap allocation failed (%dx%d)", card_w, card_h);
-        }
+        g_rc.header_x[i] = x;
+        wchar_t ch[2] = {kHeaderText[i], 0};
+        RectF box;
+        g.MeasureString(ch, 1, g_rc.f_header, PointF(0, 0), g_rc.fmt_header, &box);
+        x += box.Width + tracking;
+    }
+    g_rc.scale100 = scale100;
+}
+
+// The app icon, decoded and scaled once for the current card size.
+static Bitmap *render_cache_icon(const std::wstring &path, int size_px)
+{
+    if (path.empty() || size_px <= 0)
+        return nullptr;
+    if (g_rc.icon && g_rc.icon_path == path && g_rc.icon_size == size_px)
+        return g_rc.icon;
+
+    delete g_rc.icon;
+    g_rc.icon = nullptr;
+    g_rc.icon_path = path;
+    g_rc.icon_size = size_px;
+
+    Bitmap source(path.c_str());
+    if (source.GetLastStatus() != Ok)
+        return nullptr;
+    Bitmap *scaled = new Bitmap(size_px, size_px, PixelFormat32bppPARGB);
+    if (scaled->GetLastStatus() != Ok)
+    {
+        delete scaled;
+        return nullptr;
+    }
+    Graphics graphics(scaled);
+    graphics.SetInterpolationMode(InterpolationModeHighQualityBicubic);
+    graphics.SetPixelOffsetMode(PixelOffsetModeHighQuality);
+    graphics.Clear(Color(0, 0, 0, 0));
+    graphics.DrawImage(&source, Rect(0, 0, size_px, size_px));
+    g_rc.icon = scaled;
+    return g_rc.icon;
+}
+
+// Renders the card. When frame_only is set the artwork layer is reused and only the completion
+// clip's icon cell is redrawn. That path runs on the game's Present thread at up to 60 fps while
+// the success animation plays; re-running GDI+ text and paths there is what made the in-game
+// notification stutter.
+static void overlay_render(int card_w, int card_h, int scale100, float text_alpha,
+                           float text_shift, float bar_alpha, bool frame_only)
+{
+    if (card_w <= 0 || card_h <= 0)
+    {
+        overlay_free_bitmap();
         return;
     }
-    if (bmp->GetLastStatus() != Ok)
+
+    const float s = scale100 / 100.0f;
+    const float icon_x = 22.0f * s;
+    const float icon_y = 27.0f * s;
+    const float icon_size = 54.0f * s;
+    Bitmap *frame = g_ov.state == 2 ? animation_frame(qpc_100ns()) : nullptr;
+
+    // Fast path: a new animation frame is the only thing that changed. Blit the cached
+    // artwork layer and stamp the frame over the icon cell (two alpha blits, no text).
+    if (frame_only && frame && g_ov.static_valid && g_ov.static_bitmap && g_ov.bitmap &&
+        g_ov.bitmap_w == card_w && g_ov.bitmap_h == card_h)
     {
-        delete bmp;
-        if (!g_ov.render_error_logged)
-        {
-            g_ov.render_error_logged = true;
-            hook_log(L"card bitmap creation failed (%dx%d)", card_w, card_h);
-        }
+        Graphics out(g_ov.bitmap);
+        out.SetCompositingMode(CompositingModeSourceCopy);
+        out.DrawImage(g_ov.static_bitmap, 0, 0);
+        out.SetCompositingMode(CompositingModeSourceOver);
+        out.SetPixelOffsetMode(PixelOffsetModeHighQuality);
+        out.SetInterpolationMode(InterpolationModeHighQualityBicubic);
+        out.DrawImage(frame, RectF(icon_x, icon_y, icon_size, icon_size));
         return;
     }
-    Graphics g(bmp);
+
+    // Reuse the bitmaps while the size is unchanged: they are overwritten below, so there is no
+    // reason to allocate and free ~0.4 MB of pixels on every re-render.
+    if (!g_ov.bitmap || !g_ov.static_bitmap ||
+        g_ov.bitmap_w != card_w || g_ov.bitmap_h != card_h)
+    {
+        overlay_free_bitmap();
+        try
+        {
+            g_ov.bitmap = new Bitmap(card_w, card_h, PixelFormat32bppPARGB);
+            g_ov.static_bitmap = new Bitmap(card_w, card_h, PixelFormat32bppPARGB);
+        }
+        catch (...)
+        {
+            overlay_free_bitmap();
+            if (!g_ov.render_error_logged)
+            {
+                g_ov.render_error_logged = true;
+                hook_log(L"card bitmap allocation failed (%dx%d)", card_w, card_h);
+            }
+            return;
+        }
+        if (g_ov.bitmap->GetLastStatus() != Ok || g_ov.static_bitmap->GetLastStatus() != Ok)
+        {
+            overlay_free_bitmap();
+            if (!g_ov.render_error_logged)
+            {
+                g_ov.render_error_logged = true;
+                hook_log(L"card bitmap creation failed (%dx%d)", card_w, card_h);
+            }
+            return;
+        }
+        g_ov.bitmap_w = card_w;
+        g_ov.bitmap_h = card_h;
+    }
+
+    Bitmap *bmp = g_ov.bitmap;
+    Bitmap *layer = g_ov.static_bitmap;
+
+    Graphics g(layer);
     g.SetSmoothingMode(SmoothingModeAntiAlias);
     g.SetPixelOffsetMode(PixelOffsetModeHighQuality);
     g.SetInterpolationMode(InterpolationModeHighQualityBicubic);
@@ -974,8 +1280,8 @@ static void overlay_render(int card_w, int card_h, int scale100, float text_alph
     // pixels below, like the WinUI card (DirectWrite snaps its baselines).
     g.SetTextRenderingHint(TextRenderingHintAntiAliasGridFit);
     g.Clear(Color(0, 0, 0, 0));
+    render_cache_prepare(scale100, g);
 
-    const float s = scale100 / 100.0f;
     const RectF card(0, 0, static_cast<float>(card_w), static_cast<float>(card_h));
 
     GraphicsPath card_path;
@@ -997,54 +1303,11 @@ static void overlay_render(int card_w, int card_h, int scale100, float text_alph
         g.FillPath(&b, &p);
     }
 
-    const float icon_x = 22.0f * s;
-    const float icon_y = 27.0f * s;
-    const float icon_size = 54.0f * s;
-
-    {
-        const float image_size = icon_size;
-        Bitmap *frame = g_ov.state == 2 ? animation_frame(qpc_100ns()) : nullptr;
-        if (frame)
-        {
-            g.DrawImage(frame, RectF(icon_x, icon_y, image_size, image_size));
-        }
-        else
-        {
-            std::wstring path = g_ov.icon_path.empty() ? default_icon_path() : g_ov.icon_path;
-            if (!path.empty())
-            {
-                Image *image = Image::FromFile(path.c_str());
-                if (image && image->GetLastStatus() == Ok)
-                    g.DrawImage(image, RectF(icon_x, icon_y, image_size, image_size));
-                delete image;
-            }
-        }
-    }
-
-    // The WinUI card uses the system UI font (Segoe UI Variable on Windows 11,
-    // Segoe UI on Windows 10). GDI+ cannot open the variable font by its generic
-    // name, so use its static "Text" instances when present.
-    FontFamily var_regular(L"Segoe UI Variable Text");
-    FontFamily var_semibold(L"Segoe UI Variable Text Semibold");
-    FontFamily seg_regular(L"Segoe UI");
-    FontFamily seg_semibold(L"Segoe UI Semibold");
-    FontFamily *family_regular_ptr = var_regular.IsAvailable() ? &var_regular : &seg_regular;
-    FontFamily *family_msg = var_semibold.IsAvailable()
-                                 ? &var_semibold
-                                 : (var_regular.IsAvailable() ? &var_regular
-                                                              : (seg_semibold.IsAvailable()
-                                                                     ? &seg_semibold
-                                                                     : &seg_regular));
-
-    Font f_header(family_msg, 10.0f * s, FontStyleRegular, UnitPixel);
-    Font f_msg(family_msg, 19.0f * s, FontStyleRegular, UnitPixel);
-    Font f_detail(family_regular_ptr, 12.0f * s, FontStyleRegular, UnitPixel);
-
     const float text_x = floorf(92.0f * s + 0.5f);
     const float content_h = 76.0f * s;
-    const float h_header = f_header.GetHeight(&g);
-    const float h_msg = f_msg.GetHeight(&g);
-    const float h_detail = f_detail.GetHeight(&g);
+    const float h_header = g_rc.f_header->GetHeight(&g);
+    const float h_msg = g_rc.f_msg->GetHeight(&g);
+    const float h_detail = g_rc.f_detail->GetHeight(&g);
     const float spacing = 5.0f * s;
     float stack_h = h_header + h_msg + h_detail + spacing * 2.0f;
     float top = 16.0f * s + (content_h - stack_h) * 0.5f;
@@ -1057,26 +1320,23 @@ static void overlay_render(int card_w, int card_h, int scale100, float text_alph
     if (alpha > 0)
     {
         SolidBrush header_brush(Color(alpha, 151, 174, 205));
-        draw_tracked_text(g, L"INSTANT REPLAY", f_header, header_brush, text_x, y, 1.4f * s);
+        for (size_t i = 0; i < g_rc.header_x.size(); i++)
+        {
+            wchar_t ch[2] = {kHeaderText[i], 0};
+            g.DrawString(ch, 1, g_rc.f_header, PointF(text_x + g_rc.header_x[i], y), g_rc.fmt_header,
+                         &header_brush);
+        }
 
         SolidBrush msg_brush(Color(alpha, 255, 255, 255));
-        StringFormat *msg_fmt = StringFormat::GenericTypographic()->Clone();
-        msg_fmt->SetTrimming(StringTrimmingEllipsisCharacter);
-        msg_fmt->SetFormatFlags(msg_fmt->GetFormatFlags() | StringFormatFlagsNoWrap);
         RectF msg_rect(text_x, floorf(y + h_header + spacing + 0.5f), card_w - text_x - 20.0f * s,
                        h_msg + 4.0f * s);
-        g.DrawString(g_ov.title.c_str(), -1, &f_msg, msg_rect, msg_fmt, &msg_brush);
-        delete msg_fmt;
+        g.DrawString(g_ov.title.c_str(), -1, g_rc.f_msg, msg_rect, g_rc.fmt_msg, &msg_brush);
 
         SolidBrush detail_brush(Color(alpha, 171, 185, 207));
-        StringFormat *detail_fmt = StringFormat::GenericTypographic()->Clone();
-        detail_fmt->SetTrimming(StringTrimmingEllipsisCharacter);
-        detail_fmt->SetFormatFlags(detail_fmt->GetFormatFlags() | StringFormatFlagsNoWrap);
         RectF detail_rect(text_x, floorf(y + h_header + spacing + h_msg + spacing + 0.5f),
                           card_w - text_x - 20.0f * s, h_detail + 4.0f * s);
-        g.DrawString(g_ov.detail.c_str(), -1, &f_detail, detail_rect, detail_fmt,
+        g.DrawString(g_ov.detail.c_str(), -1, g_rc.f_detail, detail_rect, g_rc.fmt_detail,
                      &detail_brush);
-        delete detail_fmt;
     }
 
     const float bar_a = ir_clamp01(bar_alpha);
@@ -1101,40 +1361,45 @@ static void overlay_render(int card_w, int card_h, int scale100, float text_alph
         g.ResetClip();
     }
 
-    g_ov.bitmap = bmp;
-    g_ov.bitmap_w = card_w;
-    g_ov.bitmap_h = card_h;
+    g_ov.static_valid = true;
+
+    // Compose the icon cell (a clip frame while the success animation plays) over the artwork.
+    Graphics out(bmp);
+    out.SetCompositingMode(CompositingModeSourceCopy);
+    out.DrawImage(layer, 0, 0);
+    out.SetCompositingMode(CompositingModeSourceOver);
+    out.SetPixelOffsetMode(PixelOffsetModeHighQuality);
+    out.SetInterpolationMode(InterpolationModeHighQualityBicubic);
+    if (frame)
+    {
+        out.DrawImage(frame, RectF(icon_x, icon_y, icon_size, icon_size));
+    }
+    else
+    {
+        std::wstring path = g_ov.icon_path.empty() ? default_icon_path() : g_ov.icon_path;
+        Bitmap *icon = render_cache_icon(path, static_cast<int>(icon_size + 0.5f));
+        if (icon)
+            out.DrawImage(icon, static_cast<INT>(icon_x + 0.5f), static_cast<INT>(icon_y + 0.5f));
+    }
 }
 
-struct OverlayLayout
+// True while the card is on screen or still sliding out. Everything else returns before touching
+// the game's graphics API, so an idle overlay costs the game nothing per frame.
+static inline bool overlay_active(int64_t now)
 {
-    float x = 0;
-    float y = 0;
-    int w = 0;
-    int h = 0;
-    bool rerendered = false;
-};
+    return g_ov.visible || (g_ov.hide_at && now - g_ov.hide_at < IR_HIDE_TAIL_100NS);
+}
 
-static bool overlay_prepare(HWND hwnd, int screen_w, int screen_h, OverlayLayout &layout)
+// Advances the text/bar fade state and re-renders the card bitmap only when its content can actually
+// have changed: new state or text, a new video frame, or a fade step (rate-limited). Sliding the card
+// across the screen never needs a re-render; that is only a different quad position.
+// Returns true when the bitmap was re-rendered and must be uploaded again.
+static bool overlay_update_content(int64_t now, int card_w, int card_h, int scale100)
 {
-    const int64_t now = qpc_100ns();
-    if ((!g_ov.visible && (!g_ov.hide_at || now - g_ov.hide_at >= 3000000LL)) ||
-        screen_w < 16 || screen_h < 16)
-        return false;
-    const int scale100 = dpi_scale_100(hwnd, screen_h);
-    const float s = scale100 / 100.0f;
-    int card_w = static_cast<int>(IR_CARD_W * s + 0.5f);
-    int card_h = static_cast<int>(IR_CARD_H * s + 0.5f);
-    const int margin = static_cast<int>(IR_CARD_MARGIN * s + 0.5f);
-    const int available = (screen_w - margin) < 64 ? 64 : screen_w - margin;
-    if (card_w > available)
-    {
-        card_w = available;
-        card_h = static_cast<int>(card_w * (IR_CARD_H / IR_CARD_W) + 0.5f);
-    }
     float bar_alpha = g_ov.state == 1 ? 1.0f : 0.0f;
     if (g_ov.state != 1 && g_ov.bar_fading)
         bar_alpha = 1.0f - ir_clamp01(static_cast<float>(now - g_ov.bar_at) / 1600000.0f);
+
     float text_alpha = 1.0f, text_shift = 0.0f;
     if (g_ov.morphing)
     {
@@ -1153,31 +1418,81 @@ static bool overlay_prepare(HWND hwnd, int screen_w, int screen_h, OverlayLayout
         g_ov.bar_fading = false;
         g_ov.dirty = true;
     }
-    const bool animating = g_ov.morphing || g_ov.bar_fading ||
-                           (g_ov.state == 2 && !g_animation_frames.empty());
-    layout.rerendered = g_ov.dirty || animating || !g_ov.bitmap ||
-                        g_ov.bitmap_w != card_w || g_ov.bitmap_h != card_h;
-    if (layout.rerendered)
-    {
-        overlay_render(card_w, card_h, scale100, text_alpha, text_shift, bar_alpha);
-        g_ov.dirty = false;
-    }
-    if (!g_ov.bitmap)
+
+    const bool fading = g_ov.morphing || g_ov.bar_fading;
+    const int anim_index = g_ov.state == 2 ? animation_frame_index(now) : -1;
+    const bool size_changed = !g_ov.bitmap || !g_ov.static_bitmap ||
+                              g_ov.bitmap_w != card_w || g_ov.bitmap_h != card_h;
+    const int64_t since = now - g_ov.last_render_at;
+    const bool frame_due = anim_index != g_ov.rendered_anim_index && since >= IR_ANIM_MIN_INTERVAL_100NS;
+    const bool fade_due = fading && since >= IR_FADE_INTERVAL_100NS;
+    const bool content_due = g_ov.dirty || size_changed || fade_due;
+    if (!(content_due || frame_due))
         return false;
+
+    // A due animation frame with nothing else changed only touches the 54px icon cell.
+    overlay_render(card_w, card_h, scale100, text_alpha, text_shift, bar_alpha,
+                   /*frame_only=*/!content_due);
+    g_ov.dirty = false;
+    g_ov.last_render_at = now;
+    g_ov.rendered_anim_index = anim_index;
+    return true;
+}
+
+// Horizontal position of the card. Motion is time-based (independent of the game's frame rate) and uses
+// a sub-pixel position while moving, so the glide is smooth instead of advancing in whole-pixel steps.
+// Once settled the card is snapped to whole pixels so its text stays crisp.
+static float overlay_slide_x(int64_t now, int margin, int card_w)
+{
     float slide;
+    bool moving;
     if (g_ov.visible)
     {
-        const float t = ir_clamp01(static_cast<float>(now - g_ov.show_at) / 3200000.0f);
-        slide = 1.0f - (1.0f - t) * (1.0f - t) * (1.0f - t);
+        const float t = ir_clamp01(static_cast<float>(now - g_ov.show_at) / static_cast<float>(IR_SLIDE_IN_100NS));
+        const float inv = 1.0f - t;
+        slide = 1.0f - inv * inv * inv * inv * inv; // ease-out quint: quick arrival, soft landing
+        moving = t < 1.0f;
     }
     else
     {
-        const float t = ir_clamp01(static_cast<float>(now - g_ov.hide_at) / 3000000.0f);
-        slide = 1.0f - t * t * t;
+        const float t = ir_clamp01(static_cast<float>(now - g_ov.hide_at) / static_cast<float>(IR_SLIDE_OUT_100NS));
+        slide = 1.0f - t * t * t; // ease-in cubic
+        moving = true;
     }
     const float hidden = -static_cast<float>(card_w) - 16.0f;
-    // Whole pixels only: a fractional quad position resamples the texture and blurs it.
-    layout.x = floorf(hidden + (static_cast<float>(margin) - hidden) * slide + 0.5f);
+    const float x = hidden + (static_cast<float>(margin) - hidden) * slide;
+    return moving ? x : static_cast<float>(margin);
+}
+
+struct OverlayLayout
+{
+    float x = 0;
+    float y = 0;
+    int w = 0;
+    int h = 0;
+    bool rerendered = false;
+};
+
+static bool overlay_prepare(HWND hwnd, int screen_w, int screen_h, OverlayLayout &layout)
+{
+    const int64_t now = qpc_100ns();
+    if (!overlay_active(now) || screen_w < 16 || screen_h < 16)
+        return false;
+    const int scale100 = dpi_scale_100(hwnd, screen_h);
+    const float s = scale100 / 100.0f;
+    int card_w = static_cast<int>(IR_CARD_W * s + 0.5f);
+    int card_h = static_cast<int>(IR_CARD_H * s + 0.5f);
+    const int margin = static_cast<int>(IR_CARD_MARGIN * s + 0.5f);
+    const int available = (screen_w - margin) < 64 ? 64 : screen_w - margin;
+    if (card_w > available)
+    {
+        card_w = available;
+        card_h = static_cast<int>(card_w * (IR_CARD_H / IR_CARD_W) + 0.5f);
+    }
+    layout.rerendered = overlay_update_content(now, card_w, card_h, scale100);
+    if (!g_ov.bitmap)
+        return false;
+    layout.x = overlay_slide_x(now, margin, card_w);
     layout.y = static_cast<float>(margin);
     layout.w = card_w;
     layout.h = card_h;
@@ -1598,7 +1913,7 @@ static void overlay_draw_shader(float x, float y, float w, float h, int screen_w
 static void overlay_draw()
 {
     int64_t now = qpc_100ns();
-    if (!g_ov.visible && (!g_ov.hide_at || now - g_ov.hide_at >= 3000000LL))
+    if (!overlay_active(now))
     {
         return;
     }
@@ -1631,66 +1946,11 @@ static void overlay_draw()
         card_h = static_cast<int>(card_w * (IR_CARD_H / IR_CARD_W) + 0.5f);
     }
 
-    float bar_alpha = 0.0f;
-    if (g_ov.state == 1)
-    {
-        bar_alpha = 1.0f;
-    }
-    else if (g_ov.bar_fading)
-    {
-        float t = static_cast<float>(now - g_ov.bar_at) / 1600000.0f;
-        bar_alpha = 1.0f - ir_clamp01(t);
-    }
+    const bool needs_render = overlay_update_content(now, card_w, card_h, scale100);
+    if (!g_ov.bitmap)
+        return;
 
-    float text_alpha = 1.0f;
-    float text_shift = 0.0f;
-    if (g_ov.morphing)
-    {
-        float fade = ir_clamp01(static_cast<float>(now - g_ov.morph_at) / 1900000.0f);
-        text_alpha = fade;
-        float slide = ir_clamp01(static_cast<float>(now - g_ov.morph_at) / 2400000.0f);
-        float eased = 1.0f - (1.0f - slide) * (1.0f - slide) * (1.0f - slide);
-        text_shift = 10.0f * (1.0f - eased);
-        if (slide >= 1.0f)
-        {
-            g_ov.morphing = false;
-            g_ov.dirty = true;
-        }
-    }
-    if (g_ov.bar_fading)
-    {
-        float t = static_cast<float>(now - g_ov.bar_at) / 1600000.0f;
-        if (t >= 1.0f)
-        {
-            g_ov.bar_fading = false;
-            g_ov.dirty = true;
-        }
-    }
-
-    bool animating = g_ov.morphing || g_ov.bar_fading ||
-                     (g_ov.state == 2 && !g_animation_frames.empty());
-    bool needs_render = g_ov.dirty || animating || !g_ov.bitmap ||
-                        g_ov.bitmap_w != card_w || g_ov.bitmap_h != card_h;
-    if (needs_render)
-    {
-        overlay_render(card_w, card_h, scale100, text_alpha, text_shift, bar_alpha);
-        g_ov.dirty = false;
-    }
-
-    float slide;
-    if (g_ov.visible)
-    {
-        float t = ir_clamp01(static_cast<float>(now - g_ov.show_at) / 3200000.0f);
-        slide = 1.0f - (1.0f - t) * (1.0f - t) * (1.0f - t);
-    }
-    else
-    {
-        float t = ir_clamp01(static_cast<float>(now - g_ov.hide_at) / 3000000.0f);
-        slide = 1.0f - t * t * t;
-    }
-    float shown_x = static_cast<float>(margin);
-    float hidden_x = -static_cast<float>(card_w) - 16.0f;
-    float x = floorf(hidden_x + (shown_x - hidden_x) * slide + 0.5f);
+    float x = overlay_slide_x(now, margin, card_w);
     float y = static_cast<float>(margin);
 
     if (is_core_profile())
@@ -1929,6 +2189,25 @@ static void present_overlay()
     if (!ctl.valid)
         return;
     log_ensure(ctl);
+    overlay_sync(ctl);
+    // Build the shader card path while the overlay is still idle, so the first
+    // notification does not pay the GLSL compile on the game's render thread.
+    if (is_core_profile() && !g_ov.modern_initialized)
+    {
+        GLint prev_vao = 0, prev_vbo = 0;
+        glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &prev_vao);
+        glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &prev_vbo);
+        overlay_modern_ensure();
+        if (p_glBindVertexArray && p_glBindBuffer)
+        {
+            p_glBindVertexArray(static_cast<GLuint>(prev_vao));
+            p_glBindBuffer(GL_ARRAY_BUFFER, static_cast<GLuint>(prev_vbo));
+        }
+        glGetError();
+    }
+    // Idle overlay: leave before any glGet* call (those stall the GL pipeline every frame).
+    if (!overlay_active(qpc_100ns()))
+        return;
 
     GLint previous_fbo = 0;
     if (p_glBindFramebuffer)
@@ -1939,7 +2218,6 @@ static void present_overlay()
             p_glBindFramebuffer(GL_FRAMEBUFFER, 0);
         }
     }
-    overlay_sync(ctl);
     overlay_draw();
     if (p_glBindFramebuffer && previous_fbo != 0)
     {
@@ -1950,6 +2228,7 @@ static void present_overlay()
 
 static IDirect3DDevice9 *g_ov9_device;
 static IDirect3DTexture9 *g_ov9_texture;
+static IDirect3DStateBlock9 *g_ov9_state;
 static int g_ov9_w, g_ov9_h;
 
 static void overlay_d3d9_release()
@@ -1957,6 +2236,9 @@ static void overlay_d3d9_release()
     if (g_ov9_texture)
         g_ov9_texture->Release();
     g_ov9_texture = nullptr;
+    if (g_ov9_state)
+        g_ov9_state->Release();
+    g_ov9_state = nullptr;
     g_ov9_device = nullptr;
     g_ov9_w = g_ov9_h = 0;
 }
@@ -1971,6 +2253,8 @@ static void present_overlay_d3d9(IDirect3DDevice9 *device)
         return;
     log_ensure(ctl);
     overlay_sync(ctl);
+    if (!overlay_active(qpc_100ns()))
+        return;
     D3DVIEWPORT9 viewport{};
     if (FAILED(device->GetViewport(&viewport)))
         return;
@@ -2004,15 +2288,18 @@ static void present_overlay_d3d9(IDirect3DDevice9 *device)
                    g_ov.upload.data() + static_cast<size_t>(y) * row, row);
         g_ov9_texture->UnlockRect(0);
     }
-    IDirect3DStateBlock9 *state = nullptr;
-    if (FAILED(device->CreateStateBlock(D3DSBT_ALL, &state)))
+    if (!g_ov9_state && FAILED(device->CreateStateBlock(D3DSBT_ALL, &g_ov9_state)))
+        return;
+    if (FAILED(g_ov9_state->Capture()))
         return;
     struct Vertex
     {
         float x, y, z, rhw, u, v;
     };
-    const float x0 = layout.x - 0.5f, y0 = layout.y - 0.5f;
-    const float x1 = layout.x + layout.w - 0.5f, y1 = layout.y + layout.h - 0.5f;
+    // The D3D9 path samples with the default point filter, so keep its quad on whole pixels.
+    const float snapped_x = floorf(layout.x + 0.5f);
+    const float x0 = snapped_x - 0.5f, y0 = layout.y - 0.5f;
+    const float x1 = snapped_x + layout.w - 0.5f, y1 = layout.y + layout.h - 0.5f;
     const Vertex vertices[4] = {
         {x0, y0, 0, 1, 0, 0},
         {x1, y0, 0, 1, 1, 0},
@@ -2031,8 +2318,7 @@ static void present_overlay_d3d9(IDirect3DDevice9 *device)
     device->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
     device->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
     device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, vertices, sizeof(Vertex));
-    state->Apply();
-    state->Release();
+    g_ov9_state->Apply();
 }
 
 struct D3D11Overlay
@@ -2050,6 +2336,7 @@ struct D3D11Overlay
     int w = 0, h = 0;
 };
 static D3D11Overlay g_ov11;
+static bool g_ov11_warm_failed;
 
 template <typename T>
 static void release_com(T *&value)
@@ -2161,6 +2448,19 @@ static void present_overlay_d3d11(IDXGISwapChain *swap)
         return;
     log_ensure(ctl);
     overlay_sync(ctl);
+    // Compile and cache the D3D11 card pipeline once, while the overlay is idle.
+    if (!g_ov11.vertex && !g_ov11_warm_failed)
+    {
+        ID3D11Device *warm = nullptr;
+        if (SUCCEEDED(swap->GetDevice(__uuidof(ID3D11Device), reinterpret_cast<void **>(&warm))) && warm)
+        {
+            if (!overlay_d3d11_init(warm))
+                g_ov11_warm_failed = true;
+            warm->Release();
+        }
+    }
+    if (!overlay_active(qpc_100ns()))
+        return;
     DXGI_SWAP_CHAIN_DESC swap_desc{};
     if (FAILED(swap->GetDesc(&swap_desc)))
         return;
@@ -2617,6 +2917,8 @@ static void present_overlay_d3d12(IDXGISwapChain *swap, ID3D12CommandQueue *queu
         return;
     log_ensure(ctl);
     overlay_sync(ctl);
+    if (!overlay_active(qpc_100ns()))
+        return;
     ID3D12Device *device = nullptr;
     IDXGISwapChain3 *swap3 = nullptr;
     DXGI_SWAP_CHAIN_DESC swap_desc{};
@@ -3172,12 +3474,14 @@ static void shutdown()
     InterlockedExchange(&g_shutting_down, 1);
     MH_DisableHook(MH_ALL_HOOKS);
     MH_Uninitialize();
+    animation_worker_join();
     g_ov.texture = 0;
     overlay_d3d9_release();
     overlay_d3d11_release();
     overlay_d3d12_release();
     overlay_free_bitmap();
     animation_clear();
+    render_cache_free();
     if (g_mf_started)
     {
         MFShutdown();

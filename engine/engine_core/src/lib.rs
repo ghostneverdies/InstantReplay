@@ -108,6 +108,9 @@ pub struct RingAudio {
 pub struct SharedState {
     pub running: AtomicBool,
     pub pause_clock: Mutex<(Option<i64>, i64, i64)>,
+    /// Lock-free mirror of "the pause clock is stopped". Capture and encode loops read this on
+    /// every wake-up, so they do not have to take the clock mutex just to find out they are idle.
+    pub paused: AtomicBool,
     pub mic_continuous: AtomicBool,
     pub target_window: AtomicIsize,
     pub capture_options: AtomicU32,
@@ -261,11 +264,13 @@ impl SharedState {
             }
             _ => {}
         }
+        self.paused.store(clock.0.is_some(), Ordering::Release);
     }
     pub fn new() -> Arc<Self> {
         Arc::new(SharedState {
             running: AtomicBool::new(false),
             pause_clock: Mutex::new((None, 0, 0)),
+            paused: AtomicBool::new(false),
             mic_continuous: AtomicBool::new(false),
             target_window: AtomicIsize::new(0),
             capture_options: AtomicU32::new(2 | 8 | 1),
@@ -477,6 +482,7 @@ impl SharedState {
         *self.enc_device.lock().unwrap_or_else(|e| e.into_inner()) = None;
         *self.gpu.lock().unwrap_or_else(|e| e.into_inner()) = None;
         *self.pause_clock.lock().unwrap_or_else(|e| e.into_inner()) = (None, 0, start_qpc);
+        self.paused.store(false, Ordering::Release);
         self.end_time.store(0, Ordering::Relaxed);
         self.frames_encoded.store(0, Ordering::Relaxed);
         self.frames_dropped.store(0, Ordering::Relaxed);
@@ -545,18 +551,29 @@ fn trim_video_ring(ring: &mut Vec<RingVideo>, shared: &SharedState, ring_seconds
     if ring.is_empty() {
         return;
     }
+    // Work out how many packets fall off the front first, then remove them with a single drain.
+    // The old code called remove(0) per packet, shifting the whole ring each time.
+    let mut remove = 0usize;
+    let mut freed = 0i64;
     if ring_seconds > 0 {
         let window = ring_seconds as i64 * SECOND_100NS;
         let newest = ring.last().unwrap().pts100ns;
         let cutoff = newest - window;
-        while ring.len() > 1 && ring[0].pts100ns < cutoff {
-            let n = ring.remove(0).data.len() as i64;
-            shared.vring_bytes.fetch_sub(n, Ordering::Relaxed);
+        while remove + 1 < ring.len() && ring[remove].pts100ns < cutoff {
+            freed += ring[remove].data.len() as i64;
+            remove += 1;
         }
     }
-    while ring.len() > 1 && shared.vring_bytes.load(Ordering::Relaxed) > RING_BUDGET_BYTES {
-        let n = ring.remove(0).data.len() as i64;
-        shared.vring_bytes.fetch_sub(n, Ordering::Relaxed);
+    let mut bytes = shared.vring_bytes.load(Ordering::Relaxed) - freed;
+    while remove + 1 < ring.len() && bytes > RING_BUDGET_BYTES {
+        let n = ring[remove].data.len() as i64;
+        freed += n;
+        bytes -= n;
+        remove += 1;
+    }
+    if remove > 0 {
+        ring.drain(..remove);
+        shared.vring_bytes.fetch_sub(freed, Ordering::Relaxed);
     }
 }
 
@@ -582,15 +599,21 @@ fn trim_audio_ring(ring: &mut Vec<RingAudio>, bytes: &AtomicI64, ring_seconds: i
     let last = ring.last().unwrap();
     let last_dur = (last.frames as i64 * SECOND_100NS) / AUDIO_RATE as i64;
     let cutoff = last.pts100ns + last_dur - window;
-    while ring.len() > 1 {
-        let f = &ring[0];
+    let mut remove = 0usize;
+    let mut freed = 0i64;
+    while remove + 1 < ring.len() {
+        let f = &ring[remove];
         let dur = (f.frames as i64 * SECOND_100NS) / AUDIO_RATE as i64;
         if f.pts100ns + dur < cutoff {
-            let n = ring.remove(0).data.len() as i64;
-            bytes.fetch_sub(n, Ordering::Relaxed);
+            freed += f.data.len() as i64;
+            remove += 1;
         } else {
             break;
         }
+    }
+    if remove > 0 {
+        ring.drain(..remove);
+        bytes.fetch_sub(freed, Ordering::Relaxed);
     }
 }
 
@@ -844,15 +867,31 @@ fn encoder_thread(
     }
 }
 
+fn lower_current_thread_priority() {
+    use windows::Win32::System::Threading::{
+        GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_BELOW_NORMAL,
+    };
+    unsafe {
+        let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+    }
+}
+
 fn gpu_loop(
     shared: &Arc<SharedState>,
     cfg: &EncoderConfig,
     enc: &mut encoder::GpuEncoder,
 ) -> GpuExit {
+    // The GPU encoder feeds a hardware encoder and converts on the GPU, so it needs very little
+    // CPU time. Run it below the game's priority so it can never take a core from the render
+    // thread when the machine is saturated.
+    lower_current_thread_priority();
     let mut out = Vec::new();
     let mut seen_gen = shared.gpu_gen.load(Ordering::Acquire);
     let mut fails = 0;
     let tick = Duration::from_micros((500_000 / cfg.fps.max(1) as u64).clamp(1_000, 10_000));
+    // While the recording is paused (no eligible game in the foreground) there is nothing to
+    // encode. The first frame after resuming notifies raw_wait, so a long wait costs no latency.
+    let idle_tick = Duration::from_millis(250);
     while shared.running.load(Ordering::Acquire) {
         let generation = shared.gpu_gen.load(Ordering::Acquire);
         let sequence = shared.gpu_frames.load(Ordering::Acquire);
@@ -906,10 +945,15 @@ fn gpu_loop(
         for encoded in out.drain(..) {
             push_encoded(shared, encoded);
         }
+        let wait = if shared.paused.load(Ordering::Acquire) {
+            idle_tick
+        } else {
+            tick
+        };
         let queue = shared.raw.lock().unwrap_or_else(|e| e.into_inner());
         let _guard = shared
             .raw_wait
-            .wait_timeout_while(queue, tick, |_| {
+            .wait_timeout_while(queue, wait, |_| {
                 shared.running.load(Ordering::Acquire)
                     && shared.gpu_frames.load(Ordering::Acquire) == sequence
             })

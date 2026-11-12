@@ -108,6 +108,20 @@ impl FramePacer {
             ..Self::default()
         }
     }
+    /// Read-only version of the rejection test in [`accept`]: true when `accept` would let this
+    /// frame through. Capture sources call it before doing any GPU work for a frame, so frames
+    /// that are going to be dropped for pacing never cost a composition pass.
+    pub fn would_accept(&self, time: i64, fps: u32) -> bool {
+        if time <= 0 || time <= self.last_seen {
+            return false;
+        }
+        if fps == 0 {
+            return true;
+        }
+        let scaled = time as u128 * fps as u128;
+        let tolerance = (self.tolerance as u128).min(1_250_000 / fps as u128);
+        scaled + tolerance * (fps as u128) >= self.next
+    }
     pub fn accept(&mut self, time: i64, fps: u32) -> bool {
         if time <= 0 || time <= self.last_seen {
             return false;
@@ -229,6 +243,19 @@ impl FramePublisher {
             crop: None,
             placed: None,
         }
+    }
+    /// Cheap pre-check (no side effects): would `publish` take this frame? False while paused,
+    /// before the recording started, or when the pacer would drop it as a duplicate.
+    pub fn would_accept(&self, source_time: i64) -> bool {
+        if self.shared.paused.load(Ordering::Acquire)
+            || source_time < self.shared.start_qpc.load(Ordering::Acquire)
+        {
+            return false;
+        }
+        self.pacer.would_accept(
+            source_time,
+            self.shared.fps.load(Ordering::Relaxed).max(0) as u32,
+        )
     }
     pub fn accept(&mut self, source_time: i64) -> bool {
         if source_time < self.shared.start_qpc.load(Ordering::Acquire) {
@@ -536,7 +563,17 @@ unsafe fn wgc_worker(
         size,
     )?;
     let session = pool.CreateCaptureSession(&item)?;
-    let _ = session.SetMinUpdateInterval(windows::Foundation::TimeSpan { Duration: 10_000 });
+    // A 1 ms interval asked WGC for every update the source produces (up to 1000/s). Each delivered
+    // frame costs a DWM GPU copy and a callback even when the pacer then drops it, which is what
+    // pulled a 240 FPS game down. Half a frame interval never delivers fewer frames than the
+    // recording rate for any source rate, but caps delivery at ~2x the recording rate.
+    let record_fps = shared.fps.load(Ordering::Relaxed).max(1) as i64;
+    let active_interval = (10_000_000 / record_fps / 2).clamp(10_000, 1_000_000);
+    // While paused nothing is encoded, so ask for very few frames (a few per second).
+    let idle_interval: i64 = 2_500_000;
+    let _ = session.SetMinUpdateInterval(windows::Foundation::TimeSpan {
+        Duration: active_interval,
+    });
     let options = shared.capture_options.load(Ordering::Relaxed);
     let _ = session.SetIsCursorCaptureEnabled(options & 2 != 0);
     let _ = session.SetIsBorderRequired(options & 4 != 0);
@@ -649,11 +686,19 @@ unsafe fn wgc_worker(
     }))?;
     session.StartCapture()?;
     let mut selection_check = std::time::Instant::now();
+    let mut throttled = false;
     let _ = ready.send(Ok(()));
     while shared.running.load(Ordering::Acquire)
         && !stop.load(Ordering::Acquire)
         && !closed.load(Ordering::Acquire)
     {
+        let paused = shared.paused.load(Ordering::Acquire);
+        if paused != throttled {
+            throttled = paused;
+            let _ = session.SetMinUpdateInterval(windows::Foundation::TimeSpan {
+                Duration: if paused { idle_interval } else { active_interval },
+            });
+        }
         if options & 32 != 0 && selection_check.elapsed() >= Duration::from_millis(200) {
             selection_check = std::time::Instant::now();
             if active_capture_window() != Some(window.0 as isize) {
@@ -664,7 +709,8 @@ unsafe fn wgc_worker(
             qpc100ns() - shared.start_qpc.load(Ordering::Acquire),
             Ordering::Release,
         );
-        std::thread::sleep(Duration::from_millis(10));
+        // The heartbeat is only checked a few times per second; 20 ms is plenty.
+        std::thread::sleep(Duration::from_millis(20));
     }
     // Bit 128 is hybrid mode: the host re-targets a closed window itself, so a
     // destroyed capture item must not stop the whole recording.
