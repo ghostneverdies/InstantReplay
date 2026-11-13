@@ -48,7 +48,7 @@ public sealed class ReplayLibrary
     }
 
     public DispatcherQueue DispatcherQueue { get; }
-    public BulkObservableCollection<ReplayItem> Items { get; } = new();
+    public ObservableCollection<ReplayItem> Items { get; } = new();
     public event Action? FolderChanged;
 
     private static readonly string ThumbnailRoot = Path.Combine(
@@ -86,23 +86,29 @@ public sealed class ReplayLibrary
         Watch(dir);
 
         List<ScanEntry> found = await Task.Run(() => Scan(dir));
+        var foundKeys = new HashSet<string>(found.Select(f => f.Folder), StringComparer.OrdinalIgnoreCase);
 
-        // Reconcile against the current list, reusing the ReplayItem instances we already have
-        // (so prepared thumbnails and metadata survive a refresh). Everything is then published
-        // in a single collection Reset instead of hundreds of Insert/Move notifications.
+        for (int i = Items.Count - 1; i >= 0; i--)
+        {
+            if (!foundKeys.Contains(Items[i].FolderPath)) Items.RemoveAt(i);
+        }
+
         var existing = new Dictionary<string, ReplayItem>(Items.Count, StringComparer.OrdinalIgnoreCase);
         foreach (ReplayItem current in Items) existing[current.FolderPath] = current;
 
-        var ordered = new List<ReplayItem>(found.Count);
-        foreach (ScanEntry f in found)
+        for (int i = 0; i < found.Count; i++)
         {
+            ScanEntry f = found[i];
             if (!existing.TryGetValue(f.Folder, out ReplayItem? item))
             {
                 item = new ReplayItem(f.Folder, f.Video, f.Created, f.Size);
                 existing[f.Folder] = item;
+                Items.Insert(Math.Min(i, Items.Count), item);
                 Queue(item, visible: false);
+                continue;
             }
-            else if (item.SizeBytes != f.Size)
+
+            if (item.SizeBytes != f.Size)
             {
                 // The file changed (for example it was still being written when first seen):
                 // give preparation a fresh set of attempts and re-queue it.
@@ -111,19 +117,17 @@ public sealed class ReplayLibrary
                 Queue(item, visible: false);
             }
 
-            ordered.Add(item);
+            // Only touch the collection when an entry is actually out of place; moving items
+            // that are already where they belong made the grid re-measure for nothing.
+            if (i < Items.Count && !ReferenceEquals(Items[i], item))
+            {
+                int cur = Items.IndexOf(item);
+                if (cur >= 0 && cur != i) Items.Move(cur, i);
+            }
         }
 
-        if (!IsSameOrder(ordered)) Items.ReplaceAll(ordered);
-    }
-
-    /// <summary>True when the collection already holds exactly these instances in this order.</summary>
-    private bool IsSameOrder(List<ReplayItem> ordered)
-    {
-        if (ordered.Count != Items.Count) return false;
-        for (int i = 0; i < ordered.Count; i++)
-            if (!ReferenceEquals(ordered[i], Items[i])) return false;
-        return true;
+        // Metadata and thumbnails are never produced here        // Metadata and thumbnails are never produced here: the background
+        // workers fill them in and marshal the results back to the UI thread.
     }
 
     private static List<ScanEntry> Scan(string dir)
@@ -336,17 +340,13 @@ public sealed class ReplayLibrary
         try
         {
             var info = new FileInfo(item.VideoPath);
-
-            // Shell property extraction can block indefinitely on damaged or remote files; a
-            // stuck call would park a worker forever, so give each stage its own budget.
-            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(8));
-            StorageFile file = await StorageFile.GetFileFromPathAsync(item.VideoPath).AsTask(timeout.Token).ConfigureAwait(false);
-            VideoProperties vp = await file.Properties.GetVideoPropertiesAsync().AsTask(timeout.Token).ConfigureAwait(false);
+            StorageFile file = await StorageFile.GetFileFromPathAsync(item.VideoPath).AsTask().ConfigureAwait(false);
+            VideoProperties vp = await file.Properties.GetVideoPropertiesAsync().AsTask().ConfigureAwait(false);
 
             double fps = 0;
             IDictionary<string, object> props = await file.Properties
                 .RetrievePropertiesAsync(new[] { "System.Video.FrameRate" })
-                .AsTask(timeout.Token).ConfigureAwait(false);
+                .AsTask().ConfigureAwait(false);
             if (props.TryGetValue("System.Video.FrameRate", out object? v) && v is uint fr && fr > 0)
                 fps = fr / 1000.0;
 
@@ -403,11 +403,10 @@ public sealed class ReplayLibrary
         byte[]? bytes = null;
         try
         {
-            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(6));
-            StorageFile video = await StorageFile.GetFileFromPathAsync(item.VideoPath).AsTask(timeout.Token).ConfigureAwait(false);
+            StorageFile video = await StorageFile.GetFileFromPathAsync(item.VideoPath).AsTask().ConfigureAwait(false);
             using StorageItemThumbnail thumb = await video
                 .GetThumbnailAsync(ThumbnailMode.VideosView, 480, ThumbnailOptions.UseCurrentScale)
-                .AsTask(timeout.Token)
+                .AsTask()
                 .ConfigureAwait(false);
             if (thumb != null && thumb.Type == ThumbnailType.Image && thumb.Size > 0)
                 bytes = await ReadThumbnailBytesAsync(thumb).ConfigureAwait(false);

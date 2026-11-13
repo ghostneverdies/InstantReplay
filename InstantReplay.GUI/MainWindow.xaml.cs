@@ -15,7 +15,6 @@ using Windows.System;
 using Windows.UI;
 using WinRT.Interop;
 using InstantReplay.Core;
-using InstantReplay.GUI.Controls;
 using InstantReplay.GUI.Helpers;
 using InstantReplay.GUI.Shell;
 using InstantReplay.Models;
@@ -75,6 +74,7 @@ public partial class MainWindow : Window
     private const int SwRestore = 9;
     private const int WM_HOTKEY = 0x0312;
     private const int WM_INPUT = 0x00FF;
+    private const uint WM_APP = 0x8000;
 
     // Some games (GTA V) take exclusive keyboard control - raw input with "no hotkeys"
     // or exclusive DirectInput - which silently disables RegisterHotKey while they are
@@ -239,8 +239,6 @@ public partial class MainWindow : Window
     private int _viewerGeneration;
     private double _playerAspect = 16.0 / 9.0;
 
-    private HeroStage? _heroStage;
-
     // Card hover uses keyframe animations created once and reused for every card: they start
     // from the current value, so a quick in/out never snaps, and nothing is allocated per hover.
     private CubicBezierEasingFunction? _hoverEase;
@@ -256,7 +254,18 @@ public partial class MainWindow : Window
     private Microsoft.UI.Dispatching.DispatcherQueueTimer? _prewarmTimer;
     private readonly Queue<FrameworkElement> _prewarmPages = new();
     private FrameworkElement? _prewarmedPage;
-    private bool _heroBuilt;
+
+    // Home surface: the accent is applied in code so the hero card follows the live Windows
+    // accent colour instead of a hardcoded palette. The usage bars are animated from the last
+    // target value; the timer runs far slower than the transition, so they never fight.
+    private SolidColorBrush _accentPlateBrush = new(Color.FromArgb(0x30, 0x8B, 0x5F, 0xBF));
+    private SolidColorBrush _normalBarBrush = new(Colors.Transparent);
+    private double _cpuBarShown;
+    private double _ramBarShown;
+    private Storyboard? _cpuBarStoryboard;
+    private Storyboard? _ramBarStoryboard;
+    private Storyboard? _starStoryboard;
+    private bool _animationsEnabled = true;
 
     private bool _capturingHotkey;
     private uint _pendingHotkeyModifier;
@@ -306,12 +315,15 @@ public partial class MainWindow : Window
         _library = new ReplayLibrary(_dq);
         ElementSoundPlayer.State = ElementSoundPlayerState.On;
 
+        try { _animationsEnabled = new Windows.UI.ViewManagement.UISettings().AnimationsEnabled; }
+        catch { _animationsEnabled = true; }
+
         SetInitialWindowSizeAndIcon();
         SetupCustomTitleBar();
         SubclassWndProc();
 
         _settings = Settings.Load();
-        _settings.DarkMode = true;
+        _settings.DarkMode = WindowsTheme.IsSystemDarkMode();
         Logger.Init(_settings.DebugLogging);
         UpdateWebView2Requirement();
         _baseline = CapturePending();
@@ -321,6 +333,9 @@ public partial class MainWindow : Window
         _engine = new RecorderEngine(_settings);
 
         _currentPage = HomePage;
+
+        RootGrid.SizeChanged += (_, e) => ApplyHomeLayout(e.NewSize.Width);
+        HomePage.Loaded += (_, _) => ApplyHomeLayout(RootGrid.ActualWidth);
 
         RootGrid.Loaded += (_, _) => InitAudioToggles();
 
@@ -345,16 +360,6 @@ public partial class MainWindow : Window
         GalleryGrid.ItemsSource = _library.Items;
         GalleryGrid.ContainerContentChanging += GalleryGrid_ContainerContentChanging;
         _library.Items.CollectionChanged += (_, _) => UpdateGalleryChrome();
-
-        // Build the shared hover animations up front: creating compositor objects on the first
-        // pointer-enter was a visible one-off hitch on the very first card.
-        try
-        {
-            EnsureHoverAnimations(
-                Microsoft.UI.Xaml.Hosting.ElementCompositionPreview.GetElementVisual(GalleryGrid).Compositor);
-        }
-        catch (Exception ex) { Logger.Debug($"Gallery hover prewarm skipped: {ex.Message}"); }
-
         _library.FolderChanged += () =>
         {
             _galleryDirty = true;
@@ -381,7 +386,6 @@ public partial class MainWindow : Window
         {
             FitWindowToPage(HomePage);
             PlayPageEntrance(HomePage);
-            StartHeroAnimations();
             StartPagePrewarm();
         });
 
@@ -445,7 +449,7 @@ public partial class MainWindow : Window
             {
                 if (_appWindow.Presenter is OverlappedPresenter presenter) presenter.Minimize();
                 ShowWindow(_hwnd, SwHide);
-                _isHidden = true; StopHeroAnimations();
+                _isHidden = true;
                 NotifyRunningInBackground();
             });
         }
@@ -591,6 +595,11 @@ public partial class MainWindow : Window
             _taskbarBadge?.Reset();
             _dq.TryEnqueue(() => RefreshAppBadge());
         }
+        // Route tray icon messages (Shell_NotifyIcon callback) to the tray icon.
+        if (msg == WM_APP + 1 && _trayIcon is not null)
+        {
+            _trayIcon.HandleMessage(lParam);
+        }
         return CallWindowProc(_originalWndProc, hWnd, msg, wParam, lParam);
     }
 
@@ -622,16 +631,32 @@ public partial class MainWindow : Window
             _appWindow.TitleBar.PreferredTheme = dark ? TitleBarTheme.Dark : TitleBarTheme.Light;
 
         TitleBarButtons.Apply(_appWindow.TitleBar, dark);
-        _heroStage?.SetAccent(GetSystemAccent(), dark);
+        ApplyHomeAccent();
     }
-
-    private void ApplySystemAccent() =>
-        _heroStage?.SetAccent(GetSystemAccent(), _settings.DarkMode);
 
     private void SystemEvents_UserPreferenceChanged(object? sender, Microsoft.Win32.UserPreferenceChangedEventArgs e)
     {
-        if (e.Category is Microsoft.Win32.UserPreferenceCategory.General or Microsoft.Win32.UserPreferenceCategory.Color)
-            _dq.TryEnqueue(() => ApplySystemAccent());
+        if (e.Category is not (Microsoft.Win32.UserPreferenceCategory.General or Microsoft.Win32.UserPreferenceCategory.Color))
+            return;
+
+        _dq.TryEnqueue(() =>
+        {
+            try { _animationsEnabled = new Windows.UI.ViewManagement.UISettings().AnimationsEnabled; }
+            catch { }
+
+            if (e.Category == Microsoft.Win32.UserPreferenceCategory.General)
+            {
+                bool dark = WindowsTheme.IsSystemDarkMode();
+                if (dark != _settings.DarkMode)
+                {
+                    _settings.DarkMode = dark;
+                    ApplyAppTheme(dark);
+                    ApplyBackdrop();
+                    return;
+                }
+            }
+            ApplyHomeAccent();
+        });
     }
 
     private Brush GetThemedBrush(string key)
@@ -726,7 +751,7 @@ public partial class MainWindow : Window
         {
             hideTimer.Stop();
             ShowWindow(_hwnd, SwHide);
-            _isHidden = true; StopHeroAnimations();
+            _isHidden = true;
             _taskbarBadge?.SetTaskbarVisible(false);
             _lastBalloonWasLeakWarning = false;
 
@@ -892,7 +917,6 @@ public partial class MainWindow : Window
         {
             StopViewerPlayback();
         }
-        if (ReferenceEquals(oldPage, HomePage)) StopHeroAnimations();
 
         Canvas.SetZIndex(newPage, 1);
         if (oldPage != null) Canvas.SetZIndex(oldPage, 0);
@@ -905,7 +929,6 @@ public partial class MainWindow : Window
             new CubicEase { EasingMode = EasingMode.EaseOut });
 
         if (!fadeOnly) PlayPageEntrance(newPage);
-        if (ReferenceEquals(newPage, HomePage) && !_isHidden) StartHeroAnimations();
         if (ReferenceEquals(newPage, GalleryPage)) RefreshGalleryIfStale();
 
         FitWindowToPage(newPage);
@@ -1068,31 +1091,130 @@ public partial class MainWindow : Window
     }
 
 
-    private void BuildHero()
-    {
-        if (_heroBuilt) return;
-        _heroBuilt = true;
+    private bool? _homeWide;
 
-        _heroStage = new HeroStage(HeroStageHost, HeroArt, HeroIcon);
-        _heroStage.SetAccent(GetSystemAccent(), _settings.DarkMode);
+    /// <summary>Wide windows keep the two stat cards side by side; narrow ones stack them.</summary>
+    private void ApplyHomeLayout(double width)
+    {
+        bool wide = width >= 920;
+        if (_homeWide == wide) return;
+        _homeWide = wide;
+
+        HeroCard.Padding = new Thickness(wide ? 32 : 24);
+        HeroContent.ColumnSpacing = wide ? 28 : 24;
+        HeroArt.Width = wide ? 112 : 96;
+        HeroArt.Height = wide ? 64 : 56;
+        HeroTitle.FontSize = wide ? 44 : 36;
+        HeroTitle.LineHeight = wide ? 48 : 40;
+        HeroSubtitle.FontSize = wide ? 15 : 14;
+
+        Grid.SetRow(RamCard, wide ? 0 : 1);
+        Grid.SetColumn(RamCard, wide ? 1 : 0);
+        RamCard.Margin = wide ? new Thickness(0) : new Thickness(0, 16, 0, 0);
     }
 
-    private void StartHeroAnimations()
+    private void ApplyHomeAccent()
     {
-        try
-        {
-            BuildHero();
-            _heroStage?.Start();
-        }
-        catch (Exception ex)
-        {
-            Logger.Warn($"Hero animation failed: {ex.Message}");
-        }
+        if (HeroCard is null) return;
+
+        Color accent = GetSystemAccent();
+        bool dark = _settings.DarkMode;
+
+        // The hero is a deep accent shade, so the white copy stays legible for every accent
+        // while the Mica material still shows through the surrounding window.
+        Color hero = Darken(accent, dark ? 0.56f : 0.63f);
+        HeroCard.Background = new SolidColorBrush(Color.FromArgb(248, hero.R, hero.G, hero.B));
+
+        Color onHero = Lighten(accent, 0.58f);
+        HeroMomentWord.Foreground = new SolidColorBrush(onHero);
+
+        Color plate = dark ? Lighten(accent, 0.16f) : accent;
+        _accentPlateBrush = new SolidColorBrush(Color.FromArgb(0x32, plate.R, plate.G, plate.B));
+        CpuIconBg.Background = _accentPlateBrush;
+        RamIconBg.Background = _accentPlateBrush;
+
+        var iconBrush = new SolidColorBrush(dark ? Lighten(accent, 0.34f) : Darken(accent, 0.06f));
+        CpuIconPath.Stroke = iconBrush;
+        RamIconPath.Stroke = iconBrush;
+
+        var barBrush = new SolidColorBrush(dark ? Lighten(accent, 0.12f) : accent);
+        _normalBarBrush = barBrush;
+        CpuBarFill.Background = barBrush;
+        RamBarFill.Background = barBrush;
+
+        SaveReplayButton.Background = new SolidColorBrush(accent);
+        SaveReplayButton.Foreground = new SolidColorBrush(ContrastForeground(accent));
+
+        StartStarAnimations();
     }
 
-    private void StopHeroAnimations()
+    /// <summary>Makes the stars around the hero clapboard twinkle and drift subtly.</summary>
+    private void StartStarAnimations()
     {
-        try { _heroStage?.Stop(); } catch { }
+        if (!_animationsEnabled) return;
+
+        _starStoryboard?.Stop();
+
+        var sb = new Storyboard();
+
+        void AnimateStar(FrameworkElement star, double durationMs, double fromOpacity, double toOpacity, double cxFrom, double cxTo, double cyFrom, double cyTo)
+        {
+            if (star == null) return;
+
+            var opacity = new DoubleAnimationUsingKeyFrames();
+            opacity.KeyFrames.Add(new DiscreteDoubleKeyFrame { KeyTime = TimeSpan.FromMilliseconds(0), Value = fromOpacity });
+            opacity.KeyFrames.Add(new LinearDoubleKeyFrame { KeyTime = TimeSpan.FromMilliseconds(durationMs / 3), Value = toOpacity });
+            opacity.KeyFrames.Add(new LinearDoubleKeyFrame { KeyTime = TimeSpan.FromMilliseconds(durationMs * 2 / 3), Value = fromOpacity });
+            opacity.KeyFrames.Add(new DiscreteDoubleKeyFrame { KeyTime = TimeSpan.FromMilliseconds(durationMs), Value = toOpacity });
+            Storyboard.SetTarget(opacity, star);
+            Storyboard.SetTargetProperty(opacity, "Opacity");
+            sb.Children.Add(opacity);
+
+            var slideX = new DoubleAnimation
+            {
+                From = cxFrom, To = cxTo, Duration = TimeSpan.FromMilliseconds(durationMs),
+                AutoReverse = true, RepeatBehavior = RepeatBehavior.Forever,
+            };
+            Storyboard.SetTarget(slideX, star);
+            Storyboard.SetTargetProperty(slideX, "(Canvas.Left)");
+            sb.Children.Add(slideX);
+
+            var slideY = new DoubleAnimation
+            {
+                From = cyFrom, To = cyTo, Duration = TimeSpan.FromMilliseconds(durationMs),
+                AutoReverse = true, RepeatBehavior = RepeatBehavior.Forever,
+            };
+            Storyboard.SetTarget(slideY, star);
+            Storyboard.SetTargetProperty(slideY, "(Canvas.Top)");
+            sb.Children.Add(slideY);
+        }
+
+        AnimateStar(Star1, 2200, 0.3, 1.0, 20, 26, 4, 0);
+        AnimateStar(Star2, 1800, 0.2, 0.9, 72, 66, 18, 24);
+        AnimateStar(Star3, 2500, 0.4, 1.0, 48, 52, 52, 48);
+        AnimateStar(Star4, 1600, 0.1, 0.8, 8, 2, 38, 34);
+        AnimateStar(Star5, 2000, 0.5, 1.0, 32, 38, 2, 8);
+
+        sb.RepeatBehavior = RepeatBehavior.Forever;
+        _starStoryboard = sb;
+        sb.Begin();
+    }
+
+    private static Color Darken(Color c, float amount) => Color.FromArgb(255,
+        (byte)Math.Clamp(c.R * (1f - amount), 0f, 255f),
+        (byte)Math.Clamp(c.G * (1f - amount), 0f, 255f),
+        (byte)Math.Clamp(c.B * (1f - amount), 0f, 255f));
+
+    private static Color Lighten(Color c, float amount) => Color.FromArgb(255,
+        (byte)Math.Clamp(c.R + (255f - c.R) * amount, 0f, 255f),
+        (byte)Math.Clamp(c.G + (255f - c.G) * amount, 0f, 255f),
+        (byte)Math.Clamp(c.B + (255f - c.B) * amount, 0f, 255f));
+
+    /// <summary>Black or white, whichever reads better on the accent-coloured primary button.</summary>
+    private static Color ContrastForeground(Color c)
+    {
+        double luminance = (0.2126 * c.R + 0.7152 * c.G + 0.0722 * c.B) / 255.0;
+        return luminance > 0.55 ? Color.FromArgb(255, 16, 16, 16) : Colors.White;
     }
 
     /// <summary>The user's current Windows accent colour (live, not the registry's frame colour).</summary>
@@ -1118,20 +1240,20 @@ public partial class MainWindow : Window
 
     private void ApplyStartStopLook(bool running)
     {
-        SaveReplayButton.Visibility = running ? Visibility.Visible : Visibility.Collapsed;
+        SaveReplayButton.Visibility = Visibility.Visible;
+        SaveReplayButton.IsEnabled = running;
+
+        StartStopButton.ClearValue(Control.BackgroundProperty);
+        StartStopButton.ClearValue(Control.ForegroundProperty);
 
         if (running)
         {
-            StartStopButton.Style = (Style)Application.Current.Resources["DangerButtonStyle"];
-            StartStopButton.ClearValue(Control.BackgroundProperty);
-            StartStopButton.MinWidth = 140;
+            StartStopButton.Style = (Style)Application.Current.Resources["HomeDangerButtonStyle"];
             SetStartStopLabel("STOP", "\uE71A");
         }
         else
         {
-            StartStopButton.Style = (Style)Application.Current.Resources["AccentButtonStyle"];
-            StartStopButton.Background = (Brush)Application.Current.Resources["AccentGradientBrush"];
-            StartStopButton.MinWidth = 240;
+            StartStopButton.Style = (Style)Application.Current.Resources["HomeNeutralButtonStyle"];
             SetStartStopLabel("START REPLAY", "\uE768");
         }
     }
@@ -1258,12 +1380,11 @@ public partial class MainWindow : Window
 
         _detailsShowAnim = compositor.CreateScalarKeyFrameAnimation();
         _detailsShowAnim.InsertKeyFrame(1f, 1f, _hoverEase);
-        // Cards reveal their action glyphs essentially on contact; only the dismissal eases out.
-        _detailsShowAnim.Duration = TimeSpan.FromMilliseconds(60);
+        _detailsShowAnim.Duration = TimeSpan.FromMilliseconds(110);
 
         _detailsHideAnim = compositor.CreateScalarKeyFrameAnimation();
         _detailsHideAnim.InsertKeyFrame(1f, 0f, _hoverEase);
-        _detailsHideAnim.Duration = TimeSpan.FromMilliseconds(100);
+        _detailsHideAnim.Duration = TimeSpan.FromMilliseconds(90);
     }
 
     /// <summary>
@@ -1824,7 +1945,6 @@ public partial class MainWindow : Window
 
         ShowWindow(_hwnd, SwRestore);
         _isHidden = false;
-        if (ReferenceEquals(_currentPage, HomePage)) StartHeroAnimations();
         _taskbarBadge?.SetTaskbarVisible(true);
         if (_appWindow.Presenter is OverlappedPresenter presenter) presenter.Restore();
         ApplyFixedWindowSize();
@@ -1951,7 +2071,7 @@ public partial class MainWindow : Window
         if (running)
         {
             StatusHeadline.Text = _engine.TargetState;
-            RecDot.Fill = GetThemedBrush("RecBrush");
+            RecDot.Fill = GetThemedBrush("SuccessBrush");
             RecDot.Opacity = 1;
             var t = _recDotPulseTimer;
             if (!_engine.IsPaused) StartPulse(RecDot, ref t);
@@ -1983,7 +2103,8 @@ public partial class MainWindow : Window
         {
             StopPulse(RecDot, ref _recDotPulseTimer);
             StatusHeadline.Text = _engine.TargetState;
-            RecDot.Fill = GetThemedBrush("TextMutedBrush");
+            RecDot.Fill = GetThemedBrush("SuccessBrush");
+            RecDot.Opacity = 1;
             ApplyStartStopLook(true);
             RefreshAppBadge();
             _lastBufferHealthy = null;
@@ -2683,8 +2804,50 @@ public partial class MainWindow : Window
         UpdateHotkeyButtonDisplay();
     }
 
-    private void UpdateHotkeyButtonDisplay() =>
+    private void UpdateHotkeyButtonDisplay()
+    {
         HotkeyCaptureText.Text = HotkeyDisplay.Format(_settings.HotkeyModifiers, _settings.HotkeyVk);
+        UpdateHomeHotkeyDisplay();
+    }
+
+    /// <summary>Renders the configured shortcut as keycaps in the home-page hotkey pill.</summary>
+    private void UpdateHomeHotkeyDisplay()
+    {
+        HotkeyKeys.Children.Clear();
+
+        IReadOnlyList<string> parts = HotkeyDisplay.Parts(_settings.HotkeyModifiers, _settings.HotkeyVk);
+        for (int i = 0; i < parts.Count; i++)
+        {
+            if (i > 0)
+            {
+                HotkeyKeys.Children.Add(new TextBlock
+                {
+                    Text = "+",
+                    FontSize = 10,
+                    Foreground = new SolidColorBrush(Color.FromArgb(0x99, 255, 255, 255)),
+                    VerticalAlignment = VerticalAlignment.Center,
+                });
+            }
+
+            HotkeyKeys.Children.Add(new Border
+            {
+                Padding = new Thickness(5, 1, 5, 2),
+                CornerRadius = new CornerRadius(4),
+                Background = new SolidColorBrush(Color.FromArgb(0x26, 255, 255, 255)),
+                BorderBrush = new SolidColorBrush(Color.FromArgb(0x33, 255, 255, 255)),
+                BorderThickness = new Thickness(1),
+                VerticalAlignment = VerticalAlignment.Center,
+                Child = new TextBlock
+                {
+                    Text = parts[i],
+                    FontSize = 10,
+                    FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                    CharacterSpacing = 40,
+                    Foreground = new SolidColorBrush(Color.FromArgb(0xF0, 255, 255, 255)),
+                },
+            });
+        }
+    }
 
     private void Window_PreviewKeyDown(object sender, KeyRoutedEventArgs e)
     {
@@ -3052,7 +3215,8 @@ public partial class MainWindow : Window
         if (cpuPct is { } pct)
         {
             CpuValueText.Text = $"{pct:0}%";
-            ApplyStatAlert(CpuCard, CpuIconBg, CpuValueText, CpuHintText, pct >= 70);
+            AnimateStatBar(CpuBarScale, ref _cpuBarShown, ref _cpuBarStoryboard, pct);
+            ApplyStatAlert(CpuCard, CpuIconBg, CpuBarFill, CpuValueText, CpuHintText, pct >= 85);
         }
         else
         {
@@ -3068,21 +3232,50 @@ public partial class MainWindow : Window
                 double usedGb = (m.ullTotalPhys - m.ullAvailPhys) / (1024.0 * 1024 * 1024);
                 RamValueText.Text = $"{usedGb:0.0} / {totalGb:0} GB";
                 RamHintText.Text = $"{m.dwMemoryLoad}% used";
-                ApplyStatAlert(RamCard, RamIconBg, RamValueText, RamHintText, m.dwMemoryLoad >= 85);
+                AnimateStatBar(RamBarScale, ref _ramBarShown, ref _ramBarStoryboard, m.dwMemoryLoad);
+                ApplyStatAlert(RamCard, RamIconBg, RamBarFill, RamValueText, RamHintText, m.dwMemoryLoad >= 85);
             }
         }
         catch (Exception ex) { Logger.Warn($"Memory stats failed: {ex.Message}"); }
     }
 
-    private void ApplyStatAlert(Border card, Border icon, TextBlock value, TextBlock hint, bool alert)
+    private void AnimateStatBar(ScaleTransform scale, ref double shown, ref Storyboard? storyboard, double percent)
     {
-        card.BorderBrush = alert ? AlertBrush : (Brush)Application.Current.Resources["SurfaceBorderBrush"];
-        icon.Background = alert ? AlertBrush : (Brush)Application.Current.Resources["AccentGradientBrush"];
-        bool dark = _settings.DarkMode;
-        if (RootGrid.RequestedTheme == ElementTheme.Dark || Application.Current.RequestedTheme == ApplicationTheme.Dark) dark = true;
-        if (RootGrid.RequestedTheme == ElementTheme.Light || Application.Current.RequestedTheme == ApplicationTheme.Light) dark = false;
-        value.Foreground = alert ? AlertBrush : (dark ? new SolidColorBrush(Colors.White) : new SolidColorBrush(Colors.Black));
-        hint.Foreground = alert ? AlertBrush : (dark ? new SolidColorBrush(Color.FromArgb(255, 212, 212, 212)) : new SolidColorBrush(Color.FromArgb(255, 64, 64, 64)));
+        double target = Math.Clamp(percent, 0, 100) / 100.0;
+        storyboard?.Stop();
+
+        if (!_animationsEnabled || Math.Abs(target - shown) < 0.001)
+        {
+            scale.ScaleX = target;
+            shown = target;
+            storyboard = null;
+            return;
+        }
+
+        var animation = new DoubleAnimation
+        {
+            From = shown,
+            To = target,
+            Duration = TimeSpan.FromMilliseconds(220),
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
+        };
+        Storyboard.SetTarget(animation, scale);
+        Storyboard.SetTargetProperty(animation, "ScaleX");
+
+        var next = new Storyboard();
+        next.Children.Add(animation);
+        storyboard = next;
+        next.Begin();
+        shown = target;
+    }
+
+    private void ApplyStatAlert(Border card, Border icon, Border barFill, TextBlock value, TextBlock hint, bool alert)
+    {
+        card.BorderBrush = alert ? AlertBrush : GetThemedBrush("StatCardBorderBrush");
+        icon.Background = alert ? AlertBrush : _accentPlateBrush;
+        barFill.Background = alert ? AlertBrush : _normalBarBrush;
+        value.Foreground = alert ? AlertBrush : GetThemedBrush("TextPrimaryBrush");
+        hint.Foreground = alert ? AlertBrush : GetThemedBrush("StatHintBrush");
     }
 
     private void ExitApplicationAsync()

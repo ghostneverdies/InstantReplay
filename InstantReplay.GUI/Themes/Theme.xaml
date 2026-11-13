@@ -7,17 +7,9 @@
         <SolidColorBrush x:Key="AccentTextBrush"
                          Color="#FFFFFF"/>
         <SolidColorBrush x:Key="RecBrush"
-                         Color="#E5484D"/>
+                         Color="#B84A4F"/>
         <SolidColorBrush x:Key="HeartRedBrush"
                          Color="#ED4956"/>
-        <LinearGradientBrush x:Key="AccentGradientBrush"
-                             StartPoint="0,0"
-                             EndPoint="1,1">
-                <GradientStop Color="{ThemeResource SystemAccentColor}"
-                              Offset="0"/>
-                <GradientStop Color="{ThemeResource SystemAccentColorDark1}"
-                              Offset="1"/>
-        </LinearGradientBrush>
 
         <ResourceDictionary.ThemeDictionaries>
 
@@ -50,16 +42,22 @@
                                          Color="#FFFFFF"/>
                         <SolidColorBrush x:Key="SettingsAreaMutedBrush"
                                          Color="#D4D4D4"/>
-                        <LinearGradientBrush x:Key="HeroBackgroundBrush"
-                                             StartPoint="0,0"
-                                             EndPoint="1,1">
-                                <GradientStop Color="{ThemeResource SystemAccentColorDark3}"
-                                              Offset="0"/>
-                                <GradientStop Color="#991C1922"
-                                              Offset="1"/>
-                        </LinearGradientBrush>
+                        <SolidColorBrush x:Key="SuccessBrush"
+                                         Color="#4CC38A"/>
+                        <SolidColorBrush x:Key="StatCardBrush"
+                                         Color="#661F1F1F"/>
+                        <SolidColorBrush x:Key="StatCardBorderBrush"
+                                         Color="#33FFFFFF"/>
+                        <SolidColorBrush x:Key="HomeBarTrackBrush"
+                                         Color="#33FFFFFF"/>
+                        <SolidColorBrush x:Key="StatLabelBrush"
+                                         Color="#99FFFFFF"/>
+                        <SolidColorBrush x:Key="StatHintBrush"
+                                         Color="#CCFFFFFF"/>
+                        <SolidColorBrush x:Key="HeroBackgroundBrush"
+                                         Color="{ThemeResource SystemAccentColorDark3}"/>
                         <SolidColorBrush x:Key="HeroBorderBrush"
-                                         Color="{ThemeResource SystemAccentColorDark1}"/>
+                                         Color="#40FFFFFF"/>
                         <BitmapImage x:Key="GitHubLogoSource"
                                      UriSource="ms-appx:///assets/icons/github_dark_mode.png"/>
                         <StaticResource x:Key="NavigationViewDefaultPaneBackground"
@@ -101,16 +99,22 @@
                                          Color="#000000"/>
                         <SolidColorBrush x:Key="SettingsAreaMutedBrush"
                                          Color="#3B3B3B"/>
-                        <LinearGradientBrush x:Key="HeroBackgroundBrush"
-                                             StartPoint="0,0"
-                                             EndPoint="1,1">
-                                <GradientStop Color="{ThemeResource SystemAccentColorLight3}"
-                                              Offset="0"/>
-                                <GradientStop Color="#B3FFFFFF"
-                                              Offset="1"/>
-                        </LinearGradientBrush>
+                        <SolidColorBrush x:Key="SuccessBrush"
+                                         Color="#2F9E68"/>
+                        <SolidColorBrush x:Key="StatCardBrush"
+                                         Color="#80FFFFFF"/>
+                        <SolidColorBrush x:Key="StatCardBorderBrush"
+                                         Color="#26000000"/>
+                        <SolidColorBrush x:Key="HomeBarTrackBrush"
+                                         Color="#1F000000"/>
+                        <SolidColorBrush x:Key="StatLabelBrush"
+                                         Color="#8A000000"/>
+                        <SolidColorBrush x:Key="StatHintBrush"
+                                         Color="#B3000000"/>
+                        <SolidColorBrush x:Key="HeroBackgroundBrush"
+                                         Color="{ThemeResource SystemAccentColorDark2}"/>
                         <SolidColorBrush x:Key="HeroBorderBrush"
-                                         Color="{ThemeResource SystemAccentColorLight2}"/>
+                                         Color="#40FFFFFF"/>
                         <BitmapImage x:Key="GitHubLogoSource"
                                      UriSource="ms-appx:///assets/icons/github_light_mode.png"/>
                         <StaticResource x:Key="NavigationViewDefaultPaneBackground"

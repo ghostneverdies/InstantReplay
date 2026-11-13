@@ -9,7 +9,10 @@ public static class HotkeyDisplay
                         VkMultiply = 0x6A, VkAdd = 0x6B, VkSubtract = 0x6D, VkDivide = 0x6F, VkDecimal = 0x6E,
                         VkNumPad0 = 0x60, VkNumPad9 = 0x69, VkD0 = 0x30, VkD9 = 0x39, VkSpace = 0x20;
 
-    public static string Format(uint modifiers, uint vk)
+    public static string Format(uint modifiers, uint vk) =>
+        string.Join(" + ", Parts(modifiers, vk));
+
+    public static IReadOnlyList<string> Parts(uint modifiers, uint vk)
     {
         var parts = new List<string>();
         if ((modifiers & MainWindow.ModControl) != 0) parts.Add("CTRL");
@@ -20,7 +23,7 @@ public static class HotkeyDisplay
         if (vk != 0) parts.Add(VkName(vk));
         else if (parts.Count == 0) parts.Add("…");
 
-        return string.Join(" + ", parts);
+        return parts;
     }
 
     public static string VkName(uint vk)

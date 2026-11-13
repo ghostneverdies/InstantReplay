@@ -14,6 +14,8 @@ public sealed class RecorderEngine : IDisposable
     private CaptureWindow? _target;
     private IntPtr _candidate;
     private DateTime _candidateSince;
+    private CaptureSurface? _pendingSurface;
+    private DateTime _surfaceSince;
     private DateTime _startedAt;
     private DateTime _retryAt;
     private string _targetState = "STOPPED";
@@ -31,6 +33,7 @@ public sealed class RecorderEngine : IDisposable
     private bool _overlayReady;
     private DateTime _hookRetryAt;
     private uint _policyPid;
+    private string _policyReason = "";
     private string _activeKey = "";
     private string? _pendingKey;
     private DateTime _pendingKeySince;
@@ -256,6 +259,7 @@ public sealed class RecorderEngine : IDisposable
         _engine.Shutdown();
         _target = null;
         _candidate = IntPtr.Zero;
+        _pendingSurface = null;
         _pendingKey = null;
         _activeKey = "";
         _lastMode = null;
@@ -333,6 +337,7 @@ public sealed class RecorderEngine : IDisposable
         if (exclusive && protectedGame && _policyPid != game.ProcessId)
         {
             _policyPid = game.ProcessId;
+            _policyReason = "protected";
             Logger.Info($"Exclusive fullscreen in {game.Executable}: {protectedName} protects against injection. " +
                         "No in-game overlay; the clip notification uses the normal popup.");
         }
@@ -414,6 +419,7 @@ public sealed class RecorderEngine : IDisposable
                     return;
                 }
                 _candidate = IntPtr.Zero;
+                _pendingSurface = null;
                 if (!_paused) _engine.SetPaused(true);
                 _paused = true;
                 _targetState = _target == null ? "WAITING FOR A GAME" : "PAUSED";
@@ -560,6 +566,7 @@ public sealed class RecorderEngine : IDisposable
             _targetTimer = null;
             _target = null;
             _candidate = IntPtr.Zero;
+            _pendingSurface = null;
             _paused = false;
             _retryAt = default;
             _analysisMissSince = default;

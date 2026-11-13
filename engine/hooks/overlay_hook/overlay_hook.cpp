@@ -530,10 +530,6 @@ struct OverlayState
     Bitmap *bitmap = nullptr;
     int bitmap_w = 0;
     int bitmap_h = 0;
-    // Everything on the card except the icon cell: the completion clip only changes that cell,
-    // so it is cached here and blitted under the new frame instead of re-running GDI+ text.
-    Bitmap *static_bitmap = nullptr;
-    bool static_valid = false;
     GLuint texture = 0;
     int texture_w = 0;
     int texture_h = 0;
@@ -884,10 +880,8 @@ static void animation_ensure()
         ReleaseSRWLockExclusive(&g_anim_lock);
     }
 
-    // Decode as soon as the path is known, whether or not the card is on screen yet. The clip is
-    // tiny and decodes on a background thread, so it is ready long before the success state
-    // needs it — this is what removes the first-frame stall at encoding completion. A failed
-    // decode is still remembered per card and retried when the success state arrives.
+    if (!g_ov.visible && g_ov.state != 2)
+        return;
     if (!g_animation_frames.empty() && g_loaded_animation == g_ov.animation_path)
         return;
     if (g_attempted_animation == g_ov.animation_path)
@@ -904,7 +898,7 @@ static void animation_ensure()
     }
     g_anim_thread = CreateThread(nullptr, 0, animation_worker, nullptr, 0, nullptr);
     if (g_anim_thread)
-        SetThreadPriority(g_anim_thread, THREAD_PRIORITY_LOWEST);
+        SetThreadPriority(g_anim_thread, THREAD_PRIORITY_BELOW_NORMAL);
     else
         InterlockedExchange(&g_anim_loading, 0);
 }
@@ -913,9 +907,6 @@ static void overlay_free_bitmap()
 {
     delete g_ov.bitmap;
     g_ov.bitmap = nullptr;
-    delete g_ov.static_bitmap;
-    g_ov.static_bitmap = nullptr;
-    g_ov.static_valid = false;
     g_ov.bitmap_w = g_ov.bitmap_h = 0;
 }
 
@@ -1200,12 +1191,8 @@ static Bitmap *render_cache_icon(const std::wstring &path, int size_px)
     return g_rc.icon;
 }
 
-// Renders the card. When frame_only is set the artwork layer is reused and only the completion
-// clip's icon cell is redrawn. That path runs on the game's Present thread at up to 60 fps while
-// the success animation plays; re-running GDI+ text and paths there is what made the in-game
-// notification stutter.
 static void overlay_render(int card_w, int card_h, int scale100, float text_alpha,
-                           float text_shift, float bar_alpha, bool frame_only)
+                           float text_shift, float bar_alpha)
 {
     if (card_w <= 0 || card_h <= 0)
     {
@@ -1213,41 +1200,19 @@ static void overlay_render(int card_w, int card_h, int scale100, float text_alph
         return;
     }
 
-    const float s = scale100 / 100.0f;
-    const float icon_x = 22.0f * s;
-    const float icon_y = 27.0f * s;
-    const float icon_size = 54.0f * s;
-    Bitmap *frame = g_ov.state == 2 ? animation_frame(qpc_100ns()) : nullptr;
-
-    // Fast path: a new animation frame is the only thing that changed. Blit the cached
-    // artwork layer and stamp the frame over the icon cell (two alpha blits, no text).
-    if (frame_only && frame && g_ov.static_valid && g_ov.static_bitmap && g_ov.bitmap &&
-        g_ov.bitmap_w == card_w && g_ov.bitmap_h == card_h)
-    {
-        Graphics out(g_ov.bitmap);
-        out.SetCompositingMode(CompositingModeSourceCopy);
-        out.DrawImage(g_ov.static_bitmap, 0, 0);
-        out.SetCompositingMode(CompositingModeSourceOver);
-        out.SetPixelOffsetMode(PixelOffsetModeHighQuality);
-        out.SetInterpolationMode(InterpolationModeHighQualityBicubic);
-        out.DrawImage(frame, RectF(icon_x, icon_y, icon_size, icon_size));
-        return;
-    }
-
-    // Reuse the bitmaps while the size is unchanged: they are overwritten below, so there is no
+    // Reuse the card bitmap while the size is unchanged: it is cleared below, so there is no
     // reason to allocate and free ~0.4 MB of pixels on every re-render.
-    if (!g_ov.bitmap || !g_ov.static_bitmap ||
-        g_ov.bitmap_w != card_w || g_ov.bitmap_h != card_h)
+    Bitmap *bmp = g_ov.bitmap;
+    if (!bmp || g_ov.bitmap_w != card_w || g_ov.bitmap_h != card_h)
     {
         overlay_free_bitmap();
+        bmp = nullptr;
         try
         {
-            g_ov.bitmap = new Bitmap(card_w, card_h, PixelFormat32bppPARGB);
-            g_ov.static_bitmap = new Bitmap(card_w, card_h, PixelFormat32bppPARGB);
+            bmp = new Bitmap(card_w, card_h, PixelFormat32bppPARGB);
         }
         catch (...)
         {
-            overlay_free_bitmap();
             if (!g_ov.render_error_logged)
             {
                 g_ov.render_error_logged = true;
@@ -1255,9 +1220,9 @@ static void overlay_render(int card_w, int card_h, int scale100, float text_alph
             }
             return;
         }
-        if (g_ov.bitmap->GetLastStatus() != Ok || g_ov.static_bitmap->GetLastStatus() != Ok)
+        if (bmp->GetLastStatus() != Ok)
         {
-            overlay_free_bitmap();
+            delete bmp;
             if (!g_ov.render_error_logged)
             {
                 g_ov.render_error_logged = true;
@@ -1265,14 +1230,8 @@ static void overlay_render(int card_w, int card_h, int scale100, float text_alph
             }
             return;
         }
-        g_ov.bitmap_w = card_w;
-        g_ov.bitmap_h = card_h;
     }
-
-    Bitmap *bmp = g_ov.bitmap;
-    Bitmap *layer = g_ov.static_bitmap;
-
-    Graphics g(layer);
+    Graphics g(bmp);
     g.SetSmoothingMode(SmoothingModeAntiAlias);
     g.SetPixelOffsetMode(PixelOffsetModeHighQuality);
     g.SetInterpolationMode(InterpolationModeHighQualityBicubic);
@@ -1282,6 +1241,7 @@ static void overlay_render(int card_w, int card_h, int scale100, float text_alph
     g.Clear(Color(0, 0, 0, 0));
     render_cache_prepare(scale100, g);
 
+    const float s = scale100 / 100.0f;
     const RectF card(0, 0, static_cast<float>(card_w), static_cast<float>(card_h));
 
     GraphicsPath card_path;
@@ -1301,6 +1261,26 @@ static void overlay_render(int card_w, int card_h, int scale100, float text_alph
         add_round_rect(p, bar, 2.0f * s);
         SolidBrush b(accent);
         g.FillPath(&b, &p);
+    }
+
+    const float icon_x = 22.0f * s;
+    const float icon_y = 27.0f * s;
+    const float icon_size = 54.0f * s;
+
+    {
+        const float image_size = icon_size;
+        Bitmap *frame = g_ov.state == 2 ? animation_frame(qpc_100ns()) : nullptr;
+        if (frame)
+        {
+            g.DrawImage(frame, RectF(icon_x, icon_y, image_size, image_size));
+        }
+        else
+        {
+            std::wstring path = g_ov.icon_path.empty() ? default_icon_path() : g_ov.icon_path;
+            Bitmap *icon = render_cache_icon(path, static_cast<int>(image_size + 0.5f));
+            if (icon)
+                g.DrawImage(icon, static_cast<INT>(icon_x + 0.5f), static_cast<INT>(icon_y + 0.5f));
+        }
     }
 
     const float text_x = floorf(92.0f * s + 0.5f);
@@ -1361,26 +1341,9 @@ static void overlay_render(int card_w, int card_h, int scale100, float text_alph
         g.ResetClip();
     }
 
-    g_ov.static_valid = true;
-
-    // Compose the icon cell (a clip frame while the success animation plays) over the artwork.
-    Graphics out(bmp);
-    out.SetCompositingMode(CompositingModeSourceCopy);
-    out.DrawImage(layer, 0, 0);
-    out.SetCompositingMode(CompositingModeSourceOver);
-    out.SetPixelOffsetMode(PixelOffsetModeHighQuality);
-    out.SetInterpolationMode(InterpolationModeHighQualityBicubic);
-    if (frame)
-    {
-        out.DrawImage(frame, RectF(icon_x, icon_y, icon_size, icon_size));
-    }
-    else
-    {
-        std::wstring path = g_ov.icon_path.empty() ? default_icon_path() : g_ov.icon_path;
-        Bitmap *icon = render_cache_icon(path, static_cast<int>(icon_size + 0.5f));
-        if (icon)
-            out.DrawImage(icon, static_cast<INT>(icon_x + 0.5f), static_cast<INT>(icon_y + 0.5f));
-    }
+    g_ov.bitmap = bmp;
+    g_ov.bitmap_w = card_w;
+    g_ov.bitmap_h = card_h;
 }
 
 // True while the card is on screen or still sliding out. Everything else returns before touching
@@ -1421,18 +1384,14 @@ static bool overlay_update_content(int64_t now, int card_w, int card_h, int scal
 
     const bool fading = g_ov.morphing || g_ov.bar_fading;
     const int anim_index = g_ov.state == 2 ? animation_frame_index(now) : -1;
-    const bool size_changed = !g_ov.bitmap || !g_ov.static_bitmap ||
-                              g_ov.bitmap_w != card_w || g_ov.bitmap_h != card_h;
+    const bool size_changed = !g_ov.bitmap || g_ov.bitmap_w != card_w || g_ov.bitmap_h != card_h;
     const int64_t since = now - g_ov.last_render_at;
     const bool frame_due = anim_index != g_ov.rendered_anim_index && since >= IR_ANIM_MIN_INTERVAL_100NS;
     const bool fade_due = fading && since >= IR_FADE_INTERVAL_100NS;
-    const bool content_due = g_ov.dirty || size_changed || fade_due;
-    if (!(content_due || frame_due))
+    if (!(g_ov.dirty || size_changed || frame_due || fade_due))
         return false;
 
-    // A due animation frame with nothing else changed only touches the 54px icon cell.
-    overlay_render(card_w, card_h, scale100, text_alpha, text_shift, bar_alpha,
-                   /*frame_only=*/!content_due);
+    overlay_render(card_w, card_h, scale100, text_alpha, text_shift, bar_alpha);
     g_ov.dirty = false;
     g_ov.last_render_at = now;
     g_ov.rendered_anim_index = anim_index;
@@ -2190,21 +2149,6 @@ static void present_overlay()
         return;
     log_ensure(ctl);
     overlay_sync(ctl);
-    // Build the shader card path while the overlay is still idle, so the first
-    // notification does not pay the GLSL compile on the game's render thread.
-    if (is_core_profile() && !g_ov.modern_initialized)
-    {
-        GLint prev_vao = 0, prev_vbo = 0;
-        glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &prev_vao);
-        glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &prev_vbo);
-        overlay_modern_ensure();
-        if (p_glBindVertexArray && p_glBindBuffer)
-        {
-            p_glBindVertexArray(static_cast<GLuint>(prev_vao));
-            p_glBindBuffer(GL_ARRAY_BUFFER, static_cast<GLuint>(prev_vbo));
-        }
-        glGetError();
-    }
     // Idle overlay: leave before any glGet* call (those stall the GL pipeline every frame).
     if (!overlay_active(qpc_100ns()))
         return;
@@ -2228,7 +2172,6 @@ static void present_overlay()
 
 static IDirect3DDevice9 *g_ov9_device;
 static IDirect3DTexture9 *g_ov9_texture;
-static IDirect3DStateBlock9 *g_ov9_state;
 static int g_ov9_w, g_ov9_h;
 
 static void overlay_d3d9_release()
@@ -2236,9 +2179,6 @@ static void overlay_d3d9_release()
     if (g_ov9_texture)
         g_ov9_texture->Release();
     g_ov9_texture = nullptr;
-    if (g_ov9_state)
-        g_ov9_state->Release();
-    g_ov9_state = nullptr;
     g_ov9_device = nullptr;
     g_ov9_w = g_ov9_h = 0;
 }
@@ -2288,9 +2228,8 @@ static void present_overlay_d3d9(IDirect3DDevice9 *device)
                    g_ov.upload.data() + static_cast<size_t>(y) * row, row);
         g_ov9_texture->UnlockRect(0);
     }
-    if (!g_ov9_state && FAILED(device->CreateStateBlock(D3DSBT_ALL, &g_ov9_state)))
-        return;
-    if (FAILED(g_ov9_state->Capture()))
+    IDirect3DStateBlock9 *state = nullptr;
+    if (FAILED(device->CreateStateBlock(D3DSBT_ALL, &state)))
         return;
     struct Vertex
     {
@@ -2318,7 +2257,8 @@ static void present_overlay_d3d9(IDirect3DDevice9 *device)
     device->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
     device->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
     device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, vertices, sizeof(Vertex));
-    g_ov9_state->Apply();
+    state->Apply();
+    state->Release();
 }
 
 struct D3D11Overlay
@@ -2336,7 +2276,6 @@ struct D3D11Overlay
     int w = 0, h = 0;
 };
 static D3D11Overlay g_ov11;
-static bool g_ov11_warm_failed;
 
 template <typename T>
 static void release_com(T *&value)
@@ -2448,17 +2387,6 @@ static void present_overlay_d3d11(IDXGISwapChain *swap)
         return;
     log_ensure(ctl);
     overlay_sync(ctl);
-    // Compile and cache the D3D11 card pipeline once, while the overlay is idle.
-    if (!g_ov11.vertex && !g_ov11_warm_failed)
-    {
-        ID3D11Device *warm = nullptr;
-        if (SUCCEEDED(swap->GetDevice(__uuidof(ID3D11Device), reinterpret_cast<void **>(&warm))) && warm)
-        {
-            if (!overlay_d3d11_init(warm))
-                g_ov11_warm_failed = true;
-            warm->Release();
-        }
-    }
     if (!overlay_active(qpc_100ns()))
         return;
     DXGI_SWAP_CHAIN_DESC swap_desc{};

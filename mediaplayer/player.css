@@ -92,7 +92,6 @@ body.paused video {
 }
 
 .big {
-  position: relative;
   width: 76px;
   height: 76px;
   border-radius: 50%;
@@ -103,90 +102,40 @@ body.paused video {
   justify-content: center;
   background: rgba(0, 0, 0, 0.55);
   color: #fff;
-  padding: 0;
-  opacity: 0;
-  visibility: hidden;
-  transform: scale(0.62);
-  pointer-events: none;
-  will-change: transform, opacity;
-  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.42);
-  -webkit-backdrop-filter: blur(14px) saturate(150%);
-  backdrop-filter: blur(14px) saturate(150%);
-  /* Fade + scale back to rest; visibility flips only once the fade has finished. */
   transition:
-    transform 300ms cubic-bezier(0.16, 1, 0.3, 1),
-    opacity 170ms ease-out,
-    visibility 0s linear 300ms,
-    background 140ms ease;
-}
-
-.big.is-visible {
-  opacity: 1;
-  visibility: visible;
-  transform: scale(1);
-  pointer-events: auto;
-  /* Playful overshoot on reveal, like YouTube's centre control. */
-  transition:
-    transform 300ms cubic-bezier(0.16, 1.24, 0.36, 1),
-    opacity 160ms ease-out,
-    visibility 0s linear 0s,
-    background 140ms ease;
-}
-
-/* Expanding halo on press. */
-.big::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: 50%;
-  pointer-events: none;
-  background: radial-gradient(circle,
-      rgba(255, 255, 255, 0.38) 0%,
-      rgba(255, 255, 255, 0.16) 45%,
-      rgba(255, 255, 255, 0) 70%);
+    transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    background 120ms ease,
+    opacity 160ms ease;
   opacity: 0;
-  transform: scale(0.6);
-}
-
-.big.ripple::after {
-  animation: big-ripple 520ms cubic-bezier(0.18, 0.62, 0.24, 1) forwards;
-}
-
-@keyframes big-ripple {
-  0% {
-    opacity: 0.85;
-    transform: scale(0.64);
-  }
-
-  100% {
-    opacity: 0;
-    transform: scale(2.05);
-  }
+  transform: scale(0.82);
+  padding-left: 6px;
 }
 
 .big svg {
   width: 34px;
   height: 34px;
-  transition: transform 220ms cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-/* The play triangle reads better nudged a couple of pixels to the optical centre. */
-#bigPlay svg {
-  transform: translateX(2px);
 }
 
 .big svg path {
   fill: currentColor;
 }
 
-.big.is-visible:hover {
-  transform: scale(1.08);
-  background: rgba(0, 0, 0, 0.72);
+.big[hidden] {
+  display: none;
 }
 
-.big.is-visible:active {
-  transform: scale(0.94);
-  transition-duration: 90ms;
+body.paused .big {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.big:hover {
+  transform: scale(1.08);
+  background: rgba(0, 0, 0, 0.7);
+}
+
+.big:active {
+  transform: scale(0.96);
 }
 
 #error {
@@ -379,8 +328,7 @@ body.inline video {
 @media (prefers-reduced-motion: reduce) {
 
   video,
-  .big,
-  .big::after {
+  .big {
     animation: none;
     transition: none;
   }

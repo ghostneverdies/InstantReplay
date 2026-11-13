@@ -61,21 +61,6 @@ function updateVolFill() {
     `linear-gradient(to right, var(--accent) ${pct}%, rgba(255,255,255,0.25) ${pct}%)`;
 }
 
-function setCenterButton(button, visible) {
-  button.classList.toggle("is-visible", visible);
-  button.setAttribute("aria-hidden", visible ? "false" : "true");
-  button.tabIndex = visible ? 0 : -1;
-}
-
-function ripple(button) {
-  if (!button) return;
-  button.classList.remove("ripple");
-  // Force a style flush so the animation restarts on rapid consecutive taps.
-  void button.offsetWidth;
-  button.classList.add("ripple");
-  setTimeout(() => button.classList.remove("ripple"), 560);
-}
-
 function updateIcons() {
   icPlay.style.display = v.paused ? "" : "none";
   icPause.style.display = v.paused ? "none" : "";
@@ -97,10 +82,8 @@ function updateIcons() {
     icCompress.style.display = "none";
   }
 
-  // Keep both centre controls mounted and drive them with a class so the
-  // scale/fade transition can actually run (display:none would snap instantly).
-  setCenterButton(bigPlay, !v.ended && v.paused && !v.srcError);
-  setCenterButton(bigReplay, !!v.ended);
+  bigReplay.hidden = !v.ended;
+  bigPlay.hidden = v.ended || !v.paused;
   document.body.classList.toggle("paused", v.paused && !v.ended && !v.srcError);
 }
 
@@ -173,8 +156,8 @@ function togglePlay() {
 }
 
 playPause.addEventListener("click", togglePlay);
-bigPlay.addEventListener("click", () => { ripple(bigPlay); togglePlay(); });
-bigReplay.addEventListener("click", () => { ripple(bigReplay); togglePlay(); });
+bigPlay.addEventListener("click", togglePlay);
+bigReplay.addEventListener("click", togglePlay);
 
 document.addEventListener("click", (e) => {
   if (e.target.closest("#bar, #closeBtn, .big, #error")) return;

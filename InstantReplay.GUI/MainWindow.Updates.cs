@@ -2,6 +2,7 @@ using System.Runtime.InteropServices;
 using System.Text.Json;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Animation;
 using InstantReplay.Models;
 using InstantReplay.Services;
@@ -89,6 +90,26 @@ public partial class MainWindow
         UpdateStatusBar.IsOpen = _updateMessage is not null || state.Error is not null;
         UpdateStatusBar.Severity = _updateMessage is not null ? (_updateMessageIsError ? InfoBarSeverity.Error : InfoBarSeverity.Informational) : InfoBarSeverity.Error;
         UpdateStatusBar.Message = _updateMessage ?? state.Error ?? "";
+        RefreshUpdateBadge();
+    }
+
+    /// <summary>Shows a red dot on the Updates nav item whenever a newer release is waiting.</summary>
+    private void RefreshUpdateBadge()
+    {
+        if (_updates.HasUpdate)
+        {
+            NavUpdatesItem.InfoBadge = new InfoBadge
+            {
+                Value = -1,
+                MinWidth = 10,
+                MinHeight = 10,
+                Background = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 232, 17, 35)),
+            };
+        }
+        else
+        {
+            NavUpdatesItem.InfoBadge = null;
+        }
     }
 
     private async Task CheckUpdatesAsync(bool manual)
@@ -120,8 +141,6 @@ public partial class MainWindow
                 Logger.Warn($"Game database update failed: {ex.Message}");
             }
             _updateMessage = null;
-            if (!manual && _updates.HasUpdate) NavUpdatesItem.InfoBadge = new InfoBadge { Value = 1 };
-            else NavUpdatesItem.InfoBadge = null;
         }
         catch (OperationCanceledException) { }
         finally
