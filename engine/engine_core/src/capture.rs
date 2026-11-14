@@ -108,9 +108,6 @@ impl FramePacer {
             ..Self::default()
         }
     }
-    /// Read-only version of the rejection test in [`accept`]: true when `accept` would let this
-    /// frame through. Capture sources call it before doing any GPU work for a frame, so frames
-    /// that are going to be dropped for pacing never cost a composition pass.
     pub fn would_accept(&self, time: i64, fps: u32) -> bool {
         if time <= 0 || time <= self.last_seen {
             return false;
@@ -244,8 +241,6 @@ impl FramePublisher {
             placed: None,
         }
     }
-    /// Cheap pre-check (no side effects): would `publish` take this frame? False while paused,
-    /// before the recording started, or when the pacer would drop it as a duplicate.
     pub fn would_accept(&self, source_time: i64) -> bool {
         if self.shared.paused.load(Ordering::Acquire)
             || source_time < self.shared.start_qpc.load(Ordering::Acquire)
@@ -367,10 +362,6 @@ impl FramePublisher {
             texture.clone()
         };
         if self.shared.gpu_mode.load(Ordering::Acquire) == 1 {
-            // Every source is placed on a canvas that matches the encoder
-            // output.  Sources that fit are copied 1:1 and centred with black
-            // bars (never upscaled); larger sources are shrunk by the existing
-            // converter, so the input is sized to the output at that scale.
             let out_w = self.shared.res_w.load(Ordering::Relaxed).max(2) as u32;
             let out_h = self.shared.res_h.load(Ordering::Relaxed).max(2) as u32;
             let scale = (out_w as f64 / w as f64)
@@ -383,13 +374,14 @@ impl FramePublisher {
             let (cw, ch) = if scale >= 1.0 {
                 (out_w, out_h)
             } else {
-                (even(out_w as f64 / scale).max(w), even(out_h as f64 / scale).max(h))
+                (
+                    even(out_w as f64 / scale).max(w),
+                    even(out_h as f64 / scale).max(h),
+                )
             };
             let dx = ((cw - w) / 2) & !1;
             let dy = ((ch - h) / 2) & !1;
             if self.gpu.is_none() {
-                // A new capture source on the same device keeps the encoder's
-                // input, so switching WGC/DXGI never restarts the encoder.
                 let existing = self
                     .shared
                     .gpu
@@ -563,13 +555,8 @@ unsafe fn wgc_worker(
         size,
     )?;
     let session = pool.CreateCaptureSession(&item)?;
-    // A 1 ms interval asked WGC for every update the source produces (up to 1000/s). Each delivered
-    // frame costs a DWM GPU copy and a callback even when the pacer then drops it, which is what
-    // pulled a 240 FPS game down. Half a frame interval never delivers fewer frames than the
-    // recording rate for any source rate, but caps delivery at ~2x the recording rate.
     let record_fps = shared.fps.load(Ordering::Relaxed).max(1) as i64;
     let active_interval = (10_000_000 / record_fps / 2).clamp(10_000, 1_000_000);
-    // While paused nothing is encoded, so ask for very few frames (a few per second).
     let idle_interval: i64 = 2_500_000;
     let _ = session.SetMinUpdateInterval(windows::Foundation::TimeSpan {
         Duration: active_interval,
@@ -696,7 +683,11 @@ unsafe fn wgc_worker(
         if paused != throttled {
             throttled = paused;
             let _ = session.SetMinUpdateInterval(windows::Foundation::TimeSpan {
-                Duration: if paused { idle_interval } else { active_interval },
+                Duration: if paused {
+                    idle_interval
+                } else {
+                    active_interval
+                },
             });
         }
         if options & 32 != 0 && selection_check.elapsed() >= Duration::from_millis(200) {
@@ -709,11 +700,8 @@ unsafe fn wgc_worker(
             qpc100ns() - shared.start_qpc.load(Ordering::Acquire),
             Ordering::Release,
         );
-        // The heartbeat is only checked a few times per second; 20 ms is plenty.
         std::thread::sleep(Duration::from_millis(20));
     }
-    // Bit 128 is hybrid mode: the host re-targets a closed window itself, so a
-    // destroyed capture item must not stop the whole recording.
     if closed.load(Ordering::Acquire) && options & (32 | 128) == 0 {
         shared.has_error.store(true, Ordering::Release);
         shared.running.store(false, Ordering::Release);
@@ -747,8 +735,6 @@ impl CaptureSession {
         method: CaptureMethod,
     ) -> std::result::Result<Self, CapError> {
         let monitor = find_monitor(index).ok_or("no monitor found")?;
-        // Windowed and borderless games use WGC on the game window; exclusive
-        // fullscreen uses DXGI desktop duplication of the game's display.
         let method = match method {
             CaptureMethod::External | CaptureMethod::Wgc => method,
             _ => CaptureMethod::Dxgi,

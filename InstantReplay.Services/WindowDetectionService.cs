@@ -3,11 +3,6 @@ using InstantReplay.Models;
 
 namespace InstantReplay.Services;
 
-/// <summary>
-/// Classifies a detected game window as windowed, borderless fullscreen or exclusive
-/// fullscreen and finds the display it runs on. It is a pure query service: it holds
-/// no state, so the recorder can poll it continuously for real-time mode switching.
-/// </summary>
 internal static class WindowDetectionService
 {
     private const int EnumCurrentSettings = -1;
@@ -20,19 +15,11 @@ internal static class WindowDetectionService
     private const int DwmwaCloaked = 14;
     private static readonly IntPtr PerMonitorAwareV2 = new(-4);
 
-    /// <summary>Number of attached displays.</summary>
     public static int MonitorCount => EnumerateMonitors().Count;
 
-    /// <summary>
-    /// Analyses <paramref name="window"/>. Returns null when the window is gone,
-    /// minimized or not measurable, so callers keep the previous mode.
-    /// </summary>
     public static WindowSnapshot? Analyze(IntPtr window)
     {
         if (window == IntPtr.Zero || !IsWindow(window) || IsIconic(window)) return null;
-        // Alt-tab, virtual-desktop switches and suspended windows report a valid
-        // handle while the game cannot actually be captured. Treat those as "no
-        // measurement" so callers keep the last stable mode instead of flapping.
         if (!IsWindowVisible(window) || IsCloaked(window)) return null;
         IntPtr previousDpi = SetThreadDpiAwarenessContext(PerMonitorAwareV2);
         try
@@ -80,9 +67,6 @@ internal static class WindowDetectionService
         int displayW, int displayH, int nativeW, int nativeH)
     {
         long style = GetWindowLongPtrW(window, GwlStyle).ToInt64();
-        // WS_THICKFRAME is deliberately ignored: borderless games commonly keep the
-        // resize border style but have no visible frame, which used to classify
-        // them as windowed and send them to the wrong capture backend.
         bool framed = (style & WsCaption) == WsCaption;
         bool coversMonitor =
             frame.Left <= monitor.Monitor.Left + CoverTolerancePx &&
@@ -93,16 +77,11 @@ internal static class WindowDetectionService
         if (framed) return (WindowMode.Windowed, "has a title bar");
         if (!coversMonitor) return (WindowMode.Windowed, "does not cover its display");
 
-        // Past this point the window is frameless and covers its display, which is
-        // true for both borderless and exclusive fullscreen. Tell them apart.
         bool foreground = GetAncestor(GetForegroundWindow(), 2) == window;
         if (foreground && SHQueryUserNotificationState(out int state) == 0 &&
             state == QunsRunningD3dFullScreen)
             return (WindowMode.ExclusiveFullscreen, "Direct3D fullscreen notification state");
 
-        // Exclusive fullscreen changes the display mode away from the desktop's.
-        // The window style is not part of the test: games use WS_POPUP, but some
-        // keep a normal style while owning the display.
         bool modeChanged = nativeW > 0 && nativeH > 0 && (displayW != nativeW || displayH != nativeH);
         if (modeChanged)
             return (WindowMode.ExclusiveFullscreen, $"display mode {displayW}x{displayH} differs from desktop {nativeW}x{nativeH}");
@@ -110,10 +89,6 @@ internal static class WindowDetectionService
         return (WindowMode.BorderlessFullscreen, "frameless window covering its display");
     }
 
-    /// <summary>
-    /// Displays in the same order the native engine uses for its monitor index:
-    /// primary first, then the remaining displays in enumeration order.
-    /// </summary>
     public static List<IntPtr> EnumerateMonitors()
     {
         var found = new List<(IntPtr Handle, bool Primary)>();
@@ -129,7 +104,6 @@ internal static class WindowDetectionService
 
     private static bool TryGetFrame(IntPtr window, out Rect frame)
     {
-        // DWM bounds exclude the invisible resize border, so windowed games measure correctly.
         if (DwmGetWindowAttribute(window, 9, out frame, Marshal.SizeOf<Rect>()) == 0 &&
             frame.Right > frame.Left && frame.Bottom > frame.Top)
             return true;

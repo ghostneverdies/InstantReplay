@@ -355,7 +355,6 @@ impl CubicResampler {
         }
 
         let keep_from = self.pos as usize;
-        // Drop the consumed history in one move; remove(0) in a loop made this O(n^2) per packet.
         let drop = keep_from
             .saturating_sub(2)
             .min(self.hist_l.len())
@@ -461,14 +460,8 @@ fn spawn_source(
                 sink.note_fail(&shared, error.code().0 as i64);
                 return;
             }
-            // A capture target means the audio track must contain only that
-            // game's process tree. Never fall back to all-system loopback,
-            // even if the process session is temporarily unavailable.
             let process_audio_requested =
                 sink == Sink::System && shared.target_window.load(Ordering::Acquire) != 0;
-            // Audio endpoints and process-loopback sessions can invalidate
-            // transiently during display-mode and device changes. Recreate the
-            // client instead of silently ending audio for the rest of the replay.
             while shared.running.load(Ordering::Acquire) {
                 let result = (|| -> windows::core::Result<()> {
                     if process_audio_requested {
@@ -619,11 +612,6 @@ unsafe fn run_client(
         if received {
             last_packet = Instant::now();
         } else if process_loopback && last_packet.elapsed() >= Duration::from_millis(1500) {
-            // Process-loopback can stop producing events after a game changes
-            // display/audio sessions without reporting AUDCLNT_E_DEVICE_INVALIDATED.
-            // Return through the worker's retry loop to activate a fresh client.
-            // Silence is still valid game audio, so only a total packet stall
-            // restarts the session.
             return Err(Error::from_hresult(E_FAIL));
         }
     }

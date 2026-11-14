@@ -15,8 +15,6 @@ public partial class App : Application
 
     public App()
     {
-        // Program Files isn't writable for normal users, so keep WebView2's profile in %TEMP%
-        // (WebView2 recreates it if it gets cleaned up).
         try
         {
             string webViewData = Path.Combine(Path.GetTempPath(), "InstantReplay", "WebView2");

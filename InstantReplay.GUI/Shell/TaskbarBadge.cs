@@ -3,7 +3,6 @@ using InstantReplay.Services;
 
 namespace InstantReplay.GUI.Shell;
 
-/// <summary>Taskbar overlay state shown on the app's thumbnail.</summary>
 public enum BadgeKind
 {
     None,

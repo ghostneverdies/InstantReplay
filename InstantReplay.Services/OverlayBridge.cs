@@ -77,18 +77,11 @@ internal static class OverlayBridge
         }
     }
 
-    /// <summary>
-    /// Overlay without recording through the hook: the in-game card is available
-    /// (exclusive fullscreen, hooks loaded) but the hook never captures frames.
-    /// </summary>
     public static void SetOverlayOnly(bool available, int fps)
     {
         lock (Gate)
         {
             int clamped = Math.Clamp(fps, 15, 240);
-            // UpdateOverlay polls this every 200 ms. Only touch shared memory when
-            // the requested state actually changes, so the sequence is not bumped
-            // continuously (which would restart the in-game card every poll).
             if (available == _overlayOnly && clamped == _overlayFps && InGame == available) return;
             if (!EnsureOpenLocked()) return;
             _overlayOnly = available;
@@ -267,20 +260,10 @@ internal static class OverlayBridge
         return "";
     }
 
-    /// <summary>
-    /// The completion animation bundled with the app. Both the historical
-    /// "clapperboard" and "clapboard" spellings are accepted, and any other MP4 in
-    /// the folder is used as a last resort, so a re-encoded asset keeps working
-    /// without another code change.
-    /// </summary>
     public static string AnimationPath()
     {
         string bundled = BundledAnimationPath();
         if (bundled.Length == 0) return "";
-        // Mirror the asset into %TEMP% once and hand every consumer (WinUI popup
-        // and the in-game hook) that stable local copy. Reading it from the app
-        // folder can be slow on first use (antivirus/OneDrive), which made the
-        // first notification stall for seconds before the animation appeared.
         try
         {
             string dir = Path.Combine(Path.GetTempPath(), "InstantReplay", "cache");

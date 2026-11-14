@@ -118,21 +118,20 @@ This creates `installer\InstantReplaySetup.exe`. The installer does not install 
 
 ## Releases
 
-`.github/workflows/release.yml` builds and publishes on every tag that looks like a version. The tag is the version, with or without a leading `v`:
+Releases are built on demand. Run the **Release** workflow manually from the Actions tab, or from the CLI:
 
 ```
-git tag v1.6
-git push origin v1.6
+gh workflow run release.yml -f version=1.6.0
 ```
 
-Without the CLI, publish a release from the GitHub web UI (**Releases → Draft a new release**), create the tag `v1.6` there, and publish it. The workflow also runs on `release: published`, so the web flow produces the same result even though UI-created tags do not reliably emit a tag push event.
+Run it from the default branch, because the workflow creates the release tag `v<version>` at the commit it was dispatched on. Nothing runs automatically: tag pushes and published releases do not trigger the workflow.
 
-The workflow downloads and checksums the pinned FFmpeg build, runs `cargo build --release`, stages `engine\bin\engine.dll`, runs `dotnet publish` with `-p:Version=<tag>`, and attaches two assets to the GitHub Release:
+The workflow downloads and checksums the pinned FFmpeg build, runs `cargo build --release`, stages `engine\bin\engine.dll`, runs `dotnet publish` with `-p:Version=<version>`, builds the installer with the same version, and attaches two assets to the GitHub Release:
 
 - `InstantReplay-<version>-win64-portable.zip` — the publish output, including `engine\encoder\*.dll`
-- `InstantReplaySetup.exe` — the installer, stamped with the tag version (the in-app updater looks for exactly this asset name on the latest release)
+- `InstantReplaySetup.exe` — the installer, stamped with the same version (the in-app updater looks for exactly this asset name on the latest release)
 
-Run the workflow manually (`workflow_dispatch`) with a version to produce the same files as workflow artifacts without creating a release.
+Both files are also uploaded as workflow artifacts.
 
 ## Usage
 
@@ -207,9 +206,9 @@ When a newer release is found, a WinUI dialog over the app offers **Update now**
 
 **Download and install** asks before restarting, downloads the complete `InstantReplaySetup.exe`, and verifies its byte count and GitHub-provided SHA-256 digest. Recording continues during download. After verification, a temporary local PowerShell helper waits for the app to fully exit, runs the installer with `/S -quiet /UPDATE=1 /D=<current app directory>`, waits for installation to finish, and reopens the app as the original user. Windows administrator approval can still appear. Save any replay you want before installing: the in-memory buffer is cleared on exit. Cancellation or download failure leaves the running app untouched; cancelling elevation reopens the existing app and reports the failure on the Updates page.
 
-Release tags must use numeric versions such as `v1.6.0`. Upload `InstantReplaySetup.exe` as a release asset with a SHA-256 digest available through GitHub's API. No token, VPS, patching plugin, or GitHub credentials are embedded in the app. The installer source supports `-quiet` as well as NSIS's `/S`; update mode skips the finish page and browser launch and preserves existing startup and shortcut preferences. It overwrites app files directly instead of launching the uninstaller. Settings and saved recordings are retained.
+Releases are built by manually running the **Release** workflow with a numeric version such as `1.6.0`; it creates the `v1.6.0` tag and release and stamps that version into both assets. Upload `InstantReplaySetup.exe` as a release asset with a SHA-256 digest available through GitHub's API. No token, VPS, patching plugin, or GitHub credentials are embedded in the app. The installer source supports `-quiet` as well as NSIS's `/S`; update mode skips the finish page and browser launch and preserves existing startup and shortcut preferences. It overwrites app files directly instead of launching the uninstaller. Settings and saved recordings are retained.
 
-When preparing a release, keep the app version in `InstantReplay.csproj`, the installer version fields in `installer/installer.nsi`, and the GitHub release tag consistent. The updater reads the app's assembly version; uploading an older app under a newer tag would cause it to keep offering that update. There is no automatic installer rollback. A failed installation can be repaired by rerunning the full installer.
+When preparing a release, keep the committed fallback versions in `InstantReplay.csproj` and `installer/installer.nsi` close to the version you dispatch. The workflow stamps the input version into both, but local builds use the committed values. The updater reads the app's assembly version; uploading an older app under a newer tag would cause it to keep offering that update. There is no automatic installer rollback. A failed installation can be repaired by rerunning the full installer.
 
 ## Files the app writes
 

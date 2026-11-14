@@ -1,12 +1,3 @@
-# Builds the x64 in-game hooks with the installed Visual C++ toolset:
-#
-#   engine/hooks/bin/capture_hook.dll   - Rust present-hook driver (cargo build)
-#   engine/hooks/bin/overlay_hook.dll   - in-game clip notification card
-#
-#   powershell -ExecutionPolicy Bypass -File engine/hooks/build.ps1
-#
-# MinHook (BSD-2-Clause) is vendored under third_party/minhook.
-
 param(
     [ValidateSet('x64', 'x86')]
     [string]$Arch = 'x64'
@@ -54,9 +45,6 @@ try {
     }
 
     function Invoke-CaptureBuild([string]$output) {
-        # The capture hook is the Rust cdylib in capture_hook/src/capture_hook.rs.
-        # In recorder builds it only drives per-frame overlay callbacks inside
-        # the game; video capture itself uses WGC / DXGI desktop duplication.
         $manifest = Join-Path $here 'capture_hook\Cargo.toml'
         & cargo build --release --manifest-path $manifest
         if ($LASTEXITCODE -ne 0) { throw "Rust capture hook build failed with exit code $LASTEXITCODE" }

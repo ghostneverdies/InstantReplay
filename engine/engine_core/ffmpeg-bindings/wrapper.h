@@ -1,3 +1,4 @@
+//headers to generate ffmpeg bindings using bindgen
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavutil/avutil.h>

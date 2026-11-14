@@ -73,12 +73,9 @@ unsafe fn duplication(
                 continue;
             }
             let adapter: IDXGIAdapter = adapter.cast()?;
-            // Reuse the recording's shared device when the display is on the
-            // same adapter, so DXGI and WGC sources feed one encoder input.
             let reuse = match (&preferred, adapter.GetDesc()) {
                 (Some((d, _)), Ok(a))
-                    if adapter_luid(d)
-                        == Some((a.AdapterLuid.HighPart, a.AdapterLuid.LowPart)) =>
+                    if adapter_luid(d) == Some((a.AdapterLuid.HighPart, a.AdapterLuid.LowPart)) =>
                 {
                     preferred.clone()
                 }
@@ -191,8 +188,11 @@ fn run(
             );
             let mut info = DXGI_OUTDUPL_FRAME_INFO::default();
             let mut resource = None;
-            // Paused recordings do not need frames, so block longer instead of waking at 100 Hz.
-            let wait_ms = if shared.paused.load(Ordering::Acquire) { 100 } else { 10 };
+            let wait_ms = if shared.paused.load(Ordering::Acquire) {
+                100
+            } else {
+                10
+            };
             match unsafe { dup.AcquireNextFrame(wait_ms, &mut info, &mut resource) } {
                 Ok(()) => {
                     fatal_streak = 0;
@@ -211,15 +211,13 @@ fn run(
                     break;
                 }
                 Err(e) => {
-                    // A single unexpected AcquireNextFrame error (mode-switch races,
-                    // driver hiccups) must not tear down the whole recording. Retry
-                    // the duplication for ~3s before declaring the source dead.
                     shared.n_dxgi_fatal.fetch_add(1, Ordering::Relaxed);
                     shared.last_cap_hr.store(e.code().0, Ordering::Release);
                     fatal_streak += 1;
                     eprintln!(
                         "[dxgi] AcquireNextFrame failed: 0x{:08X} (streak {})",
-                        e.code().0 as u32, fatal_streak
+                        e.code().0 as u32,
+                        fatal_streak
                     );
                     if fatal_streak < 30 {
                         recreate = true;
@@ -246,10 +244,6 @@ fn run(
                 continue;
             }
             let time = crate::qpc_ticks_to_100ns(tick);
-            // Desktop duplication reports every monitor refresh (and, with the cursor enabled,
-            // every mouse update). Composition below is a GPU pass, so reject frames the pacer
-            // would drop anyway before paying for it. The duplicated surface is always the full
-            // desktop, so skipping a frame loses nothing.
             if zero_copy && !publisher.would_accept(time) {
                 shared.n_capture_drop.fetch_add(1, Ordering::Relaxed);
                 continue;

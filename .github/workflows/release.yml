@@ -1,21 +1,15 @@
 ﻿name: Release
 
-# Every tag creates (or refreshes) a GitHub Release with a portable ZIP and an installer EXE.
-# The tag name is the version: v1.6.0 -> app/installer version 1.6.0 (1.6.0.0).
+# Manual only. Run it from the Actions tab or with:
+#   gh workflow run release.yml -f version=1.6.0
+# It builds the portable ZIP and the installer, then creates (or refreshes) the GitHub
+# Release for tag v<version>. Run it from the default branch so the tag points at the
+# commit you intend to release; no tag push or published release triggers it.
 on:
-  push:
-    tags:
-      - "v*"
-      - "[0-9]*"
-  # Publishing a release from the GitHub web UI does not reliably emit a tag "push" event,
-  # so building on the release event is what makes the web-only flow work.
-  release:
-    types: [published]
-  # Manual runs build the same artifacts without publishing a release (useful for testing).
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to stamp (e.g. 1.6.0)"
+        description: "Version to stamp and release, e.g. 1.6.0"
         required: true
         type: string
 
@@ -23,7 +17,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.version }}
   cancel-in-progress: false
 
 env:
@@ -46,13 +40,9 @@ jobs:
         id: version
         shell: pwsh
         run: |
-          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
-            $raw = "${{ inputs.version }}"
-          } else {
-            $raw = "${{ github.ref_name }}"
-          }
+          $raw = "${{ inputs.version }}"
           if ($raw -notmatch '^[vV]?\d+\.\d+(\.\d+){0,2}$') {
-            throw "Version '$raw' is not valid (expected v1.6.0, v1.6 or v1.6.0.1)."
+            throw "Version '$raw' is not valid (expected 1.6, 1.6.0 or 1.6.0.1)."
           }
           $version = $raw.TrimStart('v', 'V')
 
@@ -62,9 +52,10 @@ jobs:
           $quad = $parts -join '.'
 
           "version=$version" >> $env:GITHUB_OUTPUT
-          "quad=$quad"     >> $env:GITHUB_OUTPUT
+          "quad=$quad"       >> $env:GITHUB_OUTPUT
+          "tag=v$version"    >> $env:GITHUB_OUTPUT
 
-          Write-Host "Building version $version (file version $quad)"
+          Write-Host "Building version $version (file version $quad, tag v$version)"
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -196,7 +187,6 @@ jobs:
           Write-Host "Installer: $([math]::Round((Get-Item installer/InstantReplaySetup.exe).Length / 1MB, 1)) MB"
 
       - name: Upload build artifacts
-        if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
           name: InstantReplay-${{ steps.version.outputs.version }}-win64
@@ -205,10 +195,10 @@ jobs:
             installer/InstantReplaySetup.exe
 
       - name: Create GitHub release
-        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
+          # Creates the tag at the current commit if it does not exist yet.
+          tag_name: ${{ steps.version.outputs.tag }}
           name: Instant Replay ${{ steps.version.outputs.version }}
           draft: false
           prerelease: false

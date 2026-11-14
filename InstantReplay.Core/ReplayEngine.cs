@@ -81,8 +81,6 @@ public sealed class ReplayEngine : IDisposable
             int bps = Math.Max(bitrateKbps, 1);
             int capW = Math.Max(0, outputWidthCap), capH = Math.Max(0, outputHeightCap);
 
-            // The canvas is the highest resolution the game can show on its display.
-            // Lower resolutions are letterboxed on it, so mode switches never resize the video.
             if (canvasWidth > 0 && canvasHeight > 0)
                 IrNative.IR_SetCanvasHint(_engine, canvasWidth, canvasHeight);
             if (IrNative.IR_SetCaptureTarget(_engine, targetWindow, captureOptions) != IrNative.OK)
@@ -173,10 +171,6 @@ public sealed class ReplayEngine : IDisposable
         }
     }
 
-    /// <summary>
-    /// Re-targets video capture without touching the encoder, ring or audio, so a
-    /// WGC &lt;-&gt; DXGI switch stays inside one continuous video.
-    /// </summary>
     public bool SwitchSource(CaptureMethod method, int monitorIndex, IntPtr window, uint options)
     {
         lock (_opLock)
@@ -249,10 +243,6 @@ public sealed class ReplayEngine : IDisposable
         healthHeartbeat = hb;
     }
 
-    /// <summary>
-    /// Human-readable snapshot of the native failure state, used when the capture
-    /// loop has to be torn down so the log tells us *why* instead of just looping.
-    /// </summary>
     public string DescribeFailure()
     {
         if (_engine == IntPtr.Zero) return "engine not initialised";
@@ -265,7 +255,10 @@ public sealed class ReplayEngine : IDisposable
             int method = IrNative.IR_ActiveCaptureMethod(_engine);
             string methodName = method switch
             {
-                0 => "WGC", 1 => "DXGI", 3 => "graphics hook", _ => $"method {method}"
+                0 => "WGC",
+                1 => "DXGI",
+                3 => "graphics hook",
+                _ => $"method {method}"
             };
             string err = GetLastErrorMessage();
             if (err.Length > 0) err = $"; {err}";

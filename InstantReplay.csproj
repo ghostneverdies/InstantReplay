@@ -104,19 +104,28 @@
     <_RequiredFfmpegDll Include="engine\encoder\swresample-6.dll" />
   </ItemGroup>
 
-  <Target Name="BuildNativeEngine" BeforeTargets="PrepareForBuild" Inputs="@(_NativeEngineSource)" Outputs="engine\bin\engine.dll">
+  <Target Name="BuildNativeEngine" BeforeTargets="PrepareForBuild" Inputs="@(_NativeEngineSource)"
+    Outputs="engine\bin\engine.dll">
     <MakeDir Directories="engine\bin" />
-    <Exec Command="cargo build --release --manifest-path &quot;$(MSBuildProjectDirectory)\engine\engine_core\Cargo.toml&quot;" />
-    <Copy SourceFiles="engine\engine_core\target\release\engine.dll" DestinationFiles="engine\bin\engine.dll" />
+    <Exec
+      Command="cargo build --release --manifest-path &quot;$(MSBuildProjectDirectory)\engine\engine_core\Cargo.toml&quot;" />
+    <Copy SourceFiles="engine\engine_core\target\release\engine.dll"
+      DestinationFiles="engine\bin\engine.dll" />
   </Target>
 
-  <Target Name="ValidateNativePayload" BeforeTargets="PrepareForBuild" DependsOnTargets="BuildNativeEngine">
-    <Error Condition="!Exists('engine\bin\engine.dll')" Text="Native engine is missing: engine\bin\engine.dll" />
-    <Error Condition="!Exists('%(_RequiredFfmpegDll.Identity)')" Text="Required FFmpeg library is missing: %(_RequiredFfmpegDll.Identity)" />
+  <Target Name="ValidateNativePayload" BeforeTargets="PrepareForBuild"
+    DependsOnTargets="BuildNativeEngine">
+    <Error Condition="!Exists('engine\bin\engine.dll')"
+      Text="Native engine is missing: engine\bin\engine.dll" />
+    <Error Condition="!Exists('%(_RequiredFfmpegDll.Identity)')"
+      Text="Required FFmpeg library is missing: %(_RequiredFfmpegDll.Identity)" />
   </Target>
 
-  <Target Name="BuildHook" BeforeTargets="PrepareForBuild" Inputs="engine\hooks\capture_hook\src\**\*.rs;engine\hooks\capture_hook\Cargo.toml;engine\hooks\capture_hook\Cargo.lock;engine\hooks\capture_hook\build.rs;engine\hooks\overlay_hook\overlay_hook.cpp;engine\hooks\build.ps1;engine\hooks\third_party\minhook\src\*.c;engine\hooks\third_party\minhook\src\hde\*.c;engine\hooks\third_party\minhook\include\MinHook.h" Outputs="engine\hooks\bin\capture_hook.dll;engine\hooks\bin\overlay_hook.dll">
-    <Exec Command="powershell -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\engine\hooks\build.ps1&quot;" />
+  <Target Name="BuildHook" BeforeTargets="PrepareForBuild"
+    Inputs="engine\hooks\capture_hook\src\**\*.rs;engine\hooks\capture_hook\Cargo.toml;engine\hooks\capture_hook\Cargo.lock;engine\hooks\capture_hook\build.rs;engine\hooks\overlay_hook\overlay_hook.cpp;engine\hooks\build.ps1;engine\hooks\third_party\minhook\src\*.c;engine\hooks\third_party\minhook\src\hde\*.c;engine\hooks\third_party\minhook\include\MinHook.h"
+    Outputs="engine\hooks\bin\capture_hook.dll;engine\hooks\bin\overlay_hook.dll">
+    <Exec
+      Command="powershell -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\engine\hooks\build.ps1&quot;" />
   </Target>
 
   <Target Name="ReorganizePublish" AfterTargets="Publish">
@@ -130,10 +139,13 @@
     <MakeDir Directories="$(PublishDir)assets" Condition="Exists('$(PublishDir)icon.ico')" />
 
     <Move SourceFiles="@(_PublishWinmd)" DestinationFolder="$(PublishDir)meta" />
-    <Move SourceFiles="@(_PublishSymbols)" DestinationFolder="$(PublishDir)symbols" Condition="'@(_PublishSymbols)' != ''" />
-    <Move SourceFiles="$(PublishDir)icon.ico" DestinationFolder="$(PublishDir)assets" Condition="Exists('$(PublishDir)icon.ico')" />
+    <Move SourceFiles="@(_PublishSymbols)" DestinationFolder="$(PublishDir)symbols"
+      Condition="'@(_PublishSymbols)' != ''" />
+    <Move SourceFiles="$(PublishDir)icon.ico" DestinationFolder="$(PublishDir)assets"
+      Condition="Exists('$(PublishDir)icon.ico')" />
 
-    <Message Importance="high" Text="Publish layout reorganized: engine/, meta/, symbols/ (WinUI runtime and locale folders stay at root)." />
+    <Message Importance="high"
+      Text="Publish layout reorganized: engine/, meta/, symbols/ (WinUI runtime and locale folders stay at root)." />
   </Target>
 
 </Project>

@@ -122,12 +122,12 @@
                     </NavigationViewItem.Icon>
                 </NavigationViewItem>
                 <NavigationViewItem x:Name="NavGamesItem"
-                        Content="Games"
-                        Visibility="Collapsed"
-                        ElementSoundMode="Off">
+                                    Content="Games"
+                                    Visibility="Collapsed"
+                                    ElementSoundMode="Off">
                     <NavigationViewItem.Icon>
                         <FontIcon Glyph="&#xE7FC;"
-                                FontFamily="{ThemeResource SymbolThemeFontFamily}"/>
+                                  FontFamily="{ThemeResource SymbolThemeFontFamily}"/>
                     </NavigationViewItem.Icon>
                 </NavigationViewItem>
                 <NavigationViewItem x:Name="NavSettingsItem"
@@ -141,12 +141,12 @@
             </NavigationView.MenuItems>
             <NavigationView.FooterMenuItems>
                 <NavigationViewItem x:Name="NavUpdatesItem"
-                        Content="Updates"
-                        Tag="Updates"
-                        ElementSoundMode="Off">
+                                    Content="Updates"
+                                    Tag="Updates"
+                                    ElementSoundMode="Off">
                     <NavigationViewItem.Icon>
                         <FontIcon Glyph="&#xE895;"
-                                FontFamily="{ThemeResource SymbolThemeFontFamily}"/>
+                                  FontFamily="{ThemeResource SymbolThemeFontFamily}"/>
                     </NavigationViewItem.Icon>
                 </NavigationViewItem>
             </NavigationView.FooterMenuItems>
@@ -158,11 +158,11 @@
                     <Grid x:Name="HomePage"
                           Visibility="Visible">
                         <Grid.RowDefinitions>
-                            <RowDefinition Height="5*" />
-                            <RowDefinition Height="2*" MinHeight="140" />
+                            <RowDefinition Height="5*"/>
+                            <RowDefinition Height="2*"
+                                    MinHeight="140"/>
                         </Grid.RowDefinitions>
 
-                        <!-- ===== Main card ===== -->
                         <Border x:Name="HeroCard"
                                 Grid.Row="0"
                                 CornerRadius="16"
@@ -187,14 +187,14 @@
                                                      Height="7"
                                                      Fill="{ThemeResource TextMutedBrush}"
                                                      VerticalAlignment="Center"
-                                                     Margin="0,0,8,0" />
+                                                     Margin="0,0,8,0"/>
                                             <TextBlock x:Name="StatusHeadline"
                                                        Text="STOPPED"
                                                        FontSize="11"
                                                        FontWeight="SemiBold"
                                                        CharacterSpacing="60"
                                                        Foreground="{ThemeResource TextPrimaryBrush}"
-                                                       VerticalAlignment="Center" />
+                                                       VerticalAlignment="Center"/>
                                         </StackPanel>
                                     </Border>
 
@@ -213,16 +213,16 @@
                                                       FontFamily="{ThemeResource SymbolThemeFontFamily}"
                                                       FontSize="13"
                                                       Foreground="{ThemeResource AccentBrush}"
-                                                      VerticalAlignment="Center" />
+                                                      VerticalAlignment="Center"/>
                                             <TextBlock Text="Hotkey:"
                                                        FontSize="12"
                                                        FontWeight="SemiBold"
                                                        Foreground="{ThemeResource TextPrimaryBrush}"
-                                                       VerticalAlignment="Center" />
+                                                       VerticalAlignment="Center"/>
                                             <StackPanel x:Name="HotkeyKeys"
                                                         Orientation="Horizontal"
                                                         Spacing="4"
-                                                        VerticalAlignment="Center" />
+                                                        VerticalAlignment="Center"/>
                                         </StackPanel>
                                     </Border>
                                 </Grid>
@@ -232,12 +232,11 @@
                                       HorizontalAlignment="Stretch"
                                       VerticalAlignment="Stretch">
                                     <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="Auto" />
-                                        <ColumnDefinition Width="1.4*" />
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="1.4*"/>
                                     </Grid.ColumnDefinitions>
 
-                                    <!-- Custom monitor with refresh icon -->
                                     <Grid x:Name="HeroArt"
                                           Grid.Column="0"
                                           HorizontalAlignment="Center"
@@ -246,7 +245,8 @@
                                                  Width="200"
                                                  Height="160"
                                                  Stretch="Uniform">
-                                            <Canvas Width="120" Height="96">
+                                            <Canvas Width="120"
+                                                    Height="96">
                                                 <Rectangle Width="104"
                                                            Height="70"
                                                            Canvas.Left="8"
@@ -255,13 +255,13 @@
                                                            RadiusY="9"
                                                            StrokeThickness="5"
                                                            Stroke="{ThemeResource TextPrimaryBrush}"
-                                                           Opacity="0.78" />
+                                                           Opacity="0.78"/>
                                                 <Rectangle Width="14"
                                                            Height="11"
                                                            Canvas.Left="53"
                                                            Canvas.Top="76"
                                                            Fill="{ThemeResource TextPrimaryBrush}"
-                                                           Opacity="0.78" />
+                                                           Opacity="0.78"/>
                                                 <Rectangle Width="58"
                                                            Height="7"
                                                            Canvas.Left="31"
@@ -269,19 +269,19 @@
                                                            RadiusX="3.5"
                                                            RadiusY="3.5"
                                                            Fill="{ThemeResource TextPrimaryBrush}"
-                                                           Opacity="0.78" />
+                                                           Opacity="0.78"/>
                                                 <Path Stroke="{ThemeResource AccentBrush}"
                                                       StrokeThickness="6"
                                                       StrokeStartLineCap="Round"
                                                       StrokeEndLineCap="Round"
-                                                      Data="M 45.3,31.5 A 17,17 0 1 1 43.7,45" />
+                                                      Data="M 45.3,31.5 A 17,17 0 1 1 43.7,45"/>
                                                 <Polygon Fill="{ThemeResource AccentBrush}"
-                                                         Points="36.5,45 50.5,45 43.5,34" />
+                                                         Points="36.5,45 50.5,45 43.5,34"/>
                                                 <Ellipse Width="6"
                                                          Height="6"
                                                          Canvas.Left="95"
                                                          Canvas.Top="58"
-                                                         Fill="{ThemeResource AccentBrush}" />
+                                                         Fill="{ThemeResource AccentBrush}"/>
                                             </Canvas>
                                         </Viewbox>
                                     </Grid>
@@ -290,7 +290,7 @@
                                                Width="1"
                                                Margin="8,20"
                                                VerticalAlignment="Stretch"
-                                               Fill="{ThemeResource StatCardBorderBrush}" />
+                                               Fill="{ThemeResource StatCardBorderBrush}"/>
 
                                     <StackPanel Grid.Column="2"
                                                 Margin="36,0,0,0"
@@ -300,26 +300,27 @@
                                                    FontSize="42"
                                                    FontWeight="SemiBold"
                                                    TextWrapping="Wrap"
-                                                   Foreground="{ThemeResource TextPrimaryBrush}" />
+                                                   Foreground="{ThemeResource TextPrimaryBrush}"/>
                                         <StackPanel x:Name="HeroSubtitle"
                                                     Spacing="12"
                                                     Margin="0,6,0,0">
                                             <TextBlock Text="Record your last moments, instantly."
                                                        FontSize="19"
                                                        TextWrapping="Wrap"
-                                                       Foreground="{ThemeResource StatHintBrush}" />
+                                                       Foreground="{ThemeResource StatHintBrush}"/>
                                             <TextBlock Text="Press the hotkey to save the last seconds of your screen."
                                                        FontSize="14"
                                                        TextWrapping="Wrap"
                                                        MaxWidth="360"
                                                        HorizontalAlignment="Left"
-                                                       Foreground="{ThemeResource StatLabelBrush}" />
+                                                       Foreground="{ThemeResource StatLabelBrush}"/>
                                         </StackPanel>
                                         <StackPanel x:Name="HeroActions"
                                                     Orientation="Horizontal"
                                                     Spacing="12"
                                                     Margin="0,26,0,0">
                                             <Button x:Name="SaveReplayButton"
+                                                    controls:UiHover.IsEnabled="True"
                                                     Style="{StaticResource HomeAccentButtonStyle}"
                                                     Height="46"
                                                     MinWidth="160"
@@ -332,15 +333,16 @@
                                                     <FontIcon Glyph="&#xE74E;"
                                                               FontFamily="{ThemeResource SymbolThemeFontFamily}"
                                                               FontSize="15"
-                                                              Foreground="{Binding Foreground, ElementName=SaveReplayButton}" />
+                                                              Foreground="{Binding Foreground, ElementName=SaveReplayButton}"/>
                                                     <TextBlock Text="Save Replay"
                                                                FontSize="14"
                                                                FontWeight="SemiBold"
                                                                VerticalAlignment="Center"
-                                                               Foreground="{Binding Foreground, ElementName=SaveReplayButton}" />
+                                                               Foreground="{Binding Foreground, ElementName=SaveReplayButton}"/>
                                                 </StackPanel>
                                             </Button>
                                             <Button x:Name="StartStopButton"
+                                                    controls:UiHover.IsEnabled="True"
                                                     ElementSoundMode="Off"
                                                     Style="{StaticResource HomeNeutralButtonStyle}"
                                                     Height="46"
@@ -354,13 +356,13 @@
                                                               Glyph="&#xE768;"
                                                               FontFamily="{ThemeResource SymbolThemeFontFamily}"
                                                               FontSize="15"
-                                                              Foreground="{Binding Foreground, ElementName=StartStopButton}" />
+                                                              Foreground="{Binding Foreground, ElementName=StartStopButton}"/>
                                                     <TextBlock x:Name="StartStopText"
                                                                Text="Start Replay"
                                                                FontSize="14"
                                                                FontWeight="SemiBold"
                                                                VerticalAlignment="Center"
-                                                               Foreground="{Binding Foreground, ElementName=StartStopButton}" />
+                                                               Foreground="{Binding Foreground, ElementName=StartStopButton}"/>
                                                 </StackPanel>
                                             </Button>
                                         </StackPanel>
@@ -369,14 +371,13 @@
                             </Grid>
                         </Border>
 
-                        <!-- ===== CPU / RAM cards ===== -->
                         <Grid x:Name="StatsRow"
                               Grid.Row="1"
                               Margin="0,16,0,0"
                               ColumnSpacing="16">
                             <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="*"/>
                             </Grid.ColumnDefinitions>
 
                             <Border x:Name="CpuCard"
@@ -387,9 +388,9 @@
                                     VerticalAlignment="Stretch">
                                 <Grid ColumnSpacing="16">
                                     <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="Auto" />
-                                        <ColumnDefinition Width="Auto" />
-                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
                                     </Grid.ColumnDefinitions>
                                     <Border x:Name="CpuIconBg"
                                             Width="48"
@@ -404,23 +405,23 @@
                                                   FontSize="24"
                                                   Foreground="{ThemeResource AccentBrush}"
                                                   HorizontalAlignment="Center"
-                                                  VerticalAlignment="Center" />
+                                                  VerticalAlignment="Center"/>
                                     </Border>
                                     <StackPanel Grid.Column="1"
                                                 Spacing="2"
                                                 VerticalAlignment="Center">
                                         <TextBlock Text="CPU Usage"
                                                    FontSize="13"
-                                                   Foreground="{ThemeResource StatLabelBrush}" />
+                                                   Foreground="{ThemeResource StatLabelBrush}"/>
                                         <TextBlock x:Name="CpuValueText"
                                                    Text="&#x2014;"
                                                    FontSize="30"
                                                    FontWeight="SemiBold"
-                                                   Foreground="{ThemeResource TextPrimaryBrush}" />
+                                                   Foreground="{ThemeResource TextPrimaryBrush}"/>
                                         <TextBlock x:Name="CpuHintText"
                                                    Text="overall usage"
                                                    FontSize="12"
-                                                   Foreground="{ThemeResource StatHintBrush}" />
+                                                   Foreground="{ThemeResource StatHintBrush}"/>
                                     </StackPanel>
                                     <Grid x:Name="CpuSparkHost"
                                           Grid.Column="2"
@@ -431,13 +432,13 @@
                                                  Opacity="0.18"
                                                  Fill="{ThemeResource AccentBrush}"
                                                  HorizontalAlignment="Left"
-                                                 VerticalAlignment="Top" />
+                                                 VerticalAlignment="Top"/>
                                         <Polyline x:Name="CpuSparkLine"
                                                   Stroke="{ThemeResource AccentBrush}"
                                                   StrokeThickness="2"
                                                   StrokeLineJoin="Round"
                                                   HorizontalAlignment="Left"
-                                                  VerticalAlignment="Top" />
+                                                  VerticalAlignment="Top"/>
                                     </Grid>
                                 </Grid>
                             </Border>
@@ -450,9 +451,9 @@
                                     VerticalAlignment="Stretch">
                                 <Grid ColumnSpacing="16">
                                     <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="Auto" />
-                                        <ColumnDefinition Width="Auto" />
-                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
                                     </Grid.ColumnDefinitions>
                                     <Border x:Name="RamIconBg"
                                             Width="48"
@@ -467,23 +468,23 @@
                                                   FontSize="24"
                                                   Foreground="{ThemeResource AccentBrush}"
                                                   HorizontalAlignment="Center"
-                                                  VerticalAlignment="Center" />
+                                                  VerticalAlignment="Center"/>
                                     </Border>
                                     <StackPanel Grid.Column="1"
                                                 Spacing="2"
                                                 VerticalAlignment="Center">
                                         <TextBlock Text="Memory Usage"
                                                    FontSize="13"
-                                                   Foreground="{ThemeResource StatLabelBrush}" />
+                                                   Foreground="{ThemeResource StatLabelBrush}"/>
                                         <TextBlock x:Name="RamValueText"
                                                    Text="&#x2014;"
                                                    FontSize="30"
                                                    FontWeight="SemiBold"
-                                                   Foreground="{ThemeResource TextPrimaryBrush}" />
+                                                   Foreground="{ThemeResource TextPrimaryBrush}"/>
                                         <TextBlock x:Name="RamHintText"
                                                    Text="memory in use"
                                                    FontSize="12"
-                                                   Foreground="{ThemeResource StatHintBrush}" />
+                                                   Foreground="{ThemeResource StatHintBrush}"/>
                                     </StackPanel>
                                     <Grid x:Name="RamSparkHost"
                                           Grid.Column="2"
@@ -494,13 +495,13 @@
                                                  Opacity="0.18"
                                                  Fill="{ThemeResource AccentBrush}"
                                                  HorizontalAlignment="Left"
-                                                 VerticalAlignment="Top" />
+                                                 VerticalAlignment="Top"/>
                                         <Polyline x:Name="RamSparkLine"
                                                   Stroke="{ThemeResource AccentBrush}"
                                                   StrokeThickness="2"
                                                   StrokeLineJoin="Round"
                                                   HorizontalAlignment="Left"
-                                                  VerticalAlignment="Top" />
+                                                  VerticalAlignment="Top"/>
                                     </Grid>
                                 </Grid>
                             </Border>
@@ -579,7 +580,9 @@
                                                           Foreground="White"/>
                                             </Border>
 
-                                            <Grid x:Name="CardDetails" Opacity="0" IsHitTestVisible="False">
+                                            <Grid x:Name="CardDetails"
+                                                    Opacity="0"
+                                                    IsHitTestVisible="False">
                                                 <Border Background="#99000000"
                                                         CornerRadius="6"
                                                         Padding="6,2"
@@ -615,19 +618,29 @@
                                                             Margin="8"
                                                             HorizontalAlignment="Left"
                                                             VerticalAlignment="Bottom">
-                                                    <Button Width="34" Height="34" Padding="0"
-                                                            CornerRadius="17" Background="#A6000000"
-                                                            Foreground="White" Tag="{x:Bind}"
+                                                    <Button Width="34"
+                                                            Height="34"
+                                                            Padding="0"
+                                                            CornerRadius="17"
+                                                            Background="#A6000000"
+                                                            Foreground="White"
+                                                            Tag="{x:Bind}"
                                                             ToolTipService.ToolTip="More options"
                                                             Click="CardMoreButton_Click">
-                                                                <FontIcon Glyph="&#xE712;" FontSize="14"/>
+                                                        <FontIcon Glyph="&#xE712;"
+                                                                FontSize="14"/>
                                                     </Button>
-                                                    <Button Width="34" Height="34" Padding="0"
-                                                            CornerRadius="17" Background="#A6000000"
-                                                            Foreground="White" Tag="{x:Bind}"
+                                                    <Button Width="34"
+                                                            Height="34"
+                                                            Padding="0"
+                                                            CornerRadius="17"
+                                                            Background="#A6000000"
+                                                            Foreground="White"
+                                                            Tag="{x:Bind}"
                                                             ToolTipService.ToolTip="Show in File Explorer"
                                                             Click="CardOpenFolderButton_Click">
-                                                        <FontIcon Glyph="&#xE838;" FontSize="14"/>
+                                                        <FontIcon Glyph="&#xE838;"
+                                                                FontSize="14"/>
                                                     </Button>
                                                 </StackPanel>
                                             </Grid>
@@ -637,11 +650,11 @@
                             </GridView>
 
                             <StackPanel x:Name="GalleryEmptyState"
-                                         Visibility="Collapsed"
-                                         HorizontalAlignment="Center"
-                                         VerticalAlignment="Center"
-                                         Orientation="Horizontal"
-                                         Spacing="14">
+                                        Visibility="Collapsed"
+                                        HorizontalAlignment="Center"
+                                        VerticalAlignment="Center"
+                                        Orientation="Horizontal"
+                                        Spacing="14">
                                 <Image Width="42"
                                        Height="42"
                                        Source="ms-appx:///assets/icons/clapperboard.png"
@@ -649,9 +662,9 @@
                                        Opacity="0.38"
                                        VerticalAlignment="Center"/>
                                 <TextBlock Text="No Clips Yet"
-                                            Style="{StaticResource Title}"
-                                            Opacity="0.55"
-                                            VerticalAlignment="Center"/>
+                                           Style="{StaticResource Title}"
+                                           Opacity="0.55"
+                                           VerticalAlignment="Center"/>
                             </StackPanel>
                         </Grid>
                     </Grid>
@@ -685,8 +698,8 @@
                         </Button>
 
                         <Grid x:Name="PlayerViewport"
-                                Grid.Row="1"
-                                SizeChanged="PlayerViewport_SizeChanged"
+                              Grid.Row="1"
+                              SizeChanged="PlayerViewport_SizeChanged"
                               ColumnSpacing="16">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*"/>
@@ -707,72 +720,74 @@
                     </Grid>
 
                     <ScrollViewer x:Name="GamesPage"
-                            Visibility="Collapsed"
-                            VerticalScrollBarVisibility="Auto"
-                            HorizontalScrollBarVisibility="Disabled">
+                                  Visibility="Collapsed"
+                                  VerticalScrollBarVisibility="Auto"
+                                  HorizontalScrollBarVisibility="Disabled">
                         <StackPanel Spacing="16"
-                                MaxWidth="980"
-                                HorizontalAlignment="Stretch">
+                                    MaxWidth="980"
+                                    HorizontalAlignment="Stretch">
                             <Grid>
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*"/>
                                     <ColumnDefinition Width="Auto"/>
                                 </Grid.ColumnDefinitions>
                                 <TextBlock Text="Games"
-                                        FontSize="28"
-                                        FontWeight="SemiBold"
-                                        VerticalAlignment="Center"/>
+                                           FontSize="28"
+                                           FontWeight="SemiBold"
+                                           VerticalAlignment="Center"/>
                                 <Button Grid.Column="1"
                                         Click="AddGame_Click">
                                     <StackPanel Orientation="Horizontal"
-                                            Spacing="8">
+                                                Spacing="8">
                                         <FontIcon Glyph="&#xE710;"
-                                                FontSize="14"/>
+                                                  FontSize="14"/>
                                         <TextBlock Text="Add"/>
                                     </StackPanel>
                                 </Button>
                             </Grid>
                             <TextBlock Text="Capture requires a match in the built-in or custom games list and a window in foreground focus. Add custom apps by executable name, with an optional title keyword."
-                                    TextWrapping="Wrap"
-                                    Opacity="0.75"/>
+                                       TextWrapping="Wrap"
+                                       Opacity="0.75"/>
                             <InfoBar x:Name="GameInfoBar1"
-                                    IsOpen="True"
-                                    IsClosable="False"
-                                    Severity="Informational"
-                                    Title="Focus controls capture"
-                                    Message="Killing The Game Clears The Buffer Automatically And Changing Focus To Any Other App Will Pause The Buffer. The Buffer Will Be Unpaused When You Return Focus On The Same Game.">
+                                     IsOpen="True"
+                                     IsClosable="False"
+                                     Severity="Informational"
+                                     Title="Focus controls capture"
+                                     Message="Killing The Game Clears The Buffer Automatically And Changing Focus To Any Other App Will Pause The Buffer. The Buffer Will Be Unpaused When You Return Focus On The Same Game.">
                                 <InfoBar.ActionButton>
-                                    <Button Content="Dismiss" Click="DismissGameInfoBar1_Click"/>
+                                    <Button Content="Dismiss"
+                                            Click="DismissGameInfoBar1_Click"/>
                                 </InfoBar.ActionButton>
                             </InfoBar>
                             <InfoBar x:Name="GameInfoBar2"
-                                    IsOpen="True"
-                                    IsClosable="False"
-                                    Severity="Informational"
-                                    Title="Built-in games">
+                                     IsOpen="True"
+                                     IsClosable="False"
+                                     Severity="Informational"
+                                     Title="Built-in games">
                                 <InfoBar.ActionButton>
-                                    <Button Content="Dismiss" Click="DismissGameInfoBar2_Click"/>
+                                    <Button Content="Dismiss"
+                                            Click="DismissGameInfoBar2_Click"/>
                                 </InfoBar.ActionButton>
                             </InfoBar>
                             <TextBlock Text="Your apps"
-                                    FontSize="18"
-                                    FontWeight="SemiBold"/>
+                                       FontSize="18"
+                                       FontWeight="SemiBold"/>
                             <StackPanel x:Name="GamesEmptyState"
-                                    HorizontalAlignment="Center"
-                                    Orientation="Horizontal"
-                                    Spacing="14"
-                                    Margin="0,8,0,8">
+                                        HorizontalAlignment="Center"
+                                        Orientation="Horizontal"
+                                        Spacing="14"
+                                        Margin="0,8,0,8">
                                 <FontIcon Glyph="&#xE7FC;"
-                                        FontFamily="{ThemeResource SymbolThemeFontFamily}"
-                                        FontSize="42"
-                                        Foreground="{ThemeResource TextMutedBrush}"
-                                        Opacity="0.38"
-                                        VerticalAlignment="Center"/>
+                                          FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                                          FontSize="42"
+                                          Foreground="{ThemeResource TextMutedBrush}"
+                                          Opacity="0.38"
+                                          VerticalAlignment="Center"/>
                                 <TextBlock Text="No Custom Games Yet"
-                                        Style="{StaticResource Title}"
-                                        Opacity="0.55"
-                                        TextWrapping="Wrap"
-                                        VerticalAlignment="Center"/>
+                                           Style="{StaticResource Title}"
+                                           Opacity="0.55"
+                                           TextWrapping="Wrap"
+                                           VerticalAlignment="Center"/>
                             </StackPanel>
                             <ItemsControl x:Name="CustomGamesList">
                                 <ItemsControl.ItemTemplate>
@@ -786,10 +801,10 @@
                                                 </Grid.ColumnDefinitions>
                                                 <StackPanel Spacing="4">
                                                     <TextBlock Text="{x:Bind Name}"
-                                                            FontWeight="SemiBold"/>
+                                                               FontWeight="SemiBold"/>
                                                     <TextBlock Text="{x:Bind Description}"
-                                                            TextWrapping="Wrap"
-                                                            Opacity="0.7"/>
+                                                               TextWrapping="Wrap"
+                                                               Opacity="0.7"/>
                                                 </StackPanel>
                                                 <Button Grid.Column="1"
                                                         Content="Remove"
@@ -805,17 +820,17 @@
                     </ScrollViewer>
 
                     <ScrollViewer x:Name="UpdatesPage"
-                            Visibility="Collapsed"
-                            VerticalScrollBarVisibility="Auto"
-                            HorizontalScrollBarVisibility="Disabled">
+                                  Visibility="Collapsed"
+                                  VerticalScrollBarVisibility="Auto"
+                                  HorizontalScrollBarVisibility="Disabled">
                         <StackPanel x:Name="UpdatesContent"
-                                Spacing="20"
-                                MaxWidth="980"
-                                HorizontalAlignment="Stretch">
+                                    Spacing="20"
+                                    MaxWidth="980"
+                                    HorizontalAlignment="Stretch">
                             <StackPanel Spacing="6">
                                 <TextBlock Text="Updates"
-                                        FontSize="28"
-                                        FontWeight="SemiBold"/>
+                                           FontSize="28"
+                                           FontWeight="SemiBold"/>
                             </StackPanel>
                             <Border Style="{StaticResource SettingsCard}"
                                     Padding="24">
@@ -829,31 +844,32 @@
                                                 CornerRadius="12"
                                                 Width="56"
                                                 Height="56">
-                                            <FontIcon x:Name="UpdateIcon" Glyph="&#xE895;"
-                                                    FontFamily="{ThemeResource SymbolThemeFontFamily}"
-                                                    FontSize="26"
-                                                    Foreground="{ThemeResource AccentBrush}"
-                                                    RenderTransformOrigin="0.5,0.5">
+                                            <FontIcon x:Name="UpdateIcon"
+                                                    Glyph="&#xE895;"
+                                                      FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                                                      FontSize="26"
+                                                      Foreground="{ThemeResource AccentBrush}"
+                                                      RenderTransformOrigin="0.5,0.5">
                                                 <FontIcon.RenderTransform>
                                                     <RotateTransform x:Name="UpdateIconRotation"/>
                                                 </FontIcon.RenderTransform>
                                             </FontIcon>
                                         </Border>
                                         <StackPanel Grid.Column="1"
-                                                Spacing="5"
-                                                VerticalAlignment="Center">
+                                                    Spacing="5"
+                                                    VerticalAlignment="Center">
                                             <TextBlock x:Name="UpdateHeading"
-                                                    Text="Keep Instant Replay up to date"
-                                                    FontSize="20"
-                                                    FontWeight="SemiBold"
-                                                    TextWrapping="Wrap"/>
+                                                       Text="Keep Instant Replay up to date"
+                                                       FontSize="20"
+                                                       FontWeight="SemiBold"
+                                                       TextWrapping="Wrap"/>
                                             <TextBlock x:Name="UpdateDescription"
-                                                    TextWrapping="Wrap"
-                                                    Foreground="{ThemeResource TextMutedBrush}"/>
+                                                       TextWrapping="Wrap"
+                                                       Foreground="{ThemeResource TextMutedBrush}"/>
                                         </StackPanel>
                                     </Grid>
                                     <StackPanel Orientation="Horizontal"
-                                            Spacing="12">
+                                                Spacing="12">
                                         <Button x:Name="CheckUpdatesButton"
                                                 Content="Check for updates"
                                                 Click="CheckUpdates_Click"/>
@@ -868,21 +884,21 @@
                                                 Click="CancelUpdate_Click"/>
                                     </StackPanel>
                                     <ProgressBar x:Name="UpdateProgress"
-                                            Visibility="Collapsed"
-                                            Maximum="100"/>
+                                                 Visibility="Collapsed"
+                                                 Maximum="100"/>
                                     <InfoBar x:Name="UpdateStatusBar"
-                                            IsOpen="False"
-                                            IsClosable="False"/>
+                                             IsOpen="False"
+                                             IsClosable="False"/>
                                     <Grid>
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="*"/>
                                             <ColumnDefinition Width="Auto"/>
                                         </Grid.ColumnDefinitions>
                                         <TextBlock x:Name="InstalledVersionLabel"
-                                                Foreground="{ThemeResource TextMutedBrush}"/>
+                                                   Foreground="{ThemeResource TextMutedBrush}"/>
                                         <TextBlock x:Name="LastUpdateCheckLabel"
-                                                Grid.Column="1"
-                                                Foreground="{ThemeResource TextMutedBrush}"/>
+                                                   Grid.Column="1"
+                                                   Foreground="{ThemeResource TextMutedBrush}"/>
                                     </Grid>
                                 </StackPanel>
                             </Border>
@@ -891,11 +907,11 @@
                                     Visibility="Collapsed">
                                 <StackPanel Spacing="12">
                                     <TextBlock Text="What's new"
-                                            FontSize="18"
-                                            FontWeight="SemiBold"/>
+                                               FontSize="18"
+                                               FontWeight="SemiBold"/>
                                     <TextBlock x:Name="UpdateReleaseNotes"
-                                            TextWrapping="Wrap"
-                                            IsTextSelectionEnabled="True"/>
+                                               TextWrapping="Wrap"
+                                               IsTextSelectionEnabled="True"/>
                                 </StackPanel>
                             </Border>
                         </StackPanel>
@@ -906,7 +922,7 @@
                                   VerticalScrollBarVisibility="Auto"
                                   Padding="0,0,12,0">
                         <StackPanel x:Name="SettingsContent"
-                                Spacing="12">
+                                    Spacing="12">
                             <Border Style="{StaticResource SettingsCard}">
                                 <StackPanel>
                                     <StackPanel Orientation="Horizontal"
@@ -922,35 +938,35 @@
                                                    Foreground="{ThemeResource SettingsAreaTextBrush}"/>
                                     </StackPanel>
                                     <controls:SettingRow Label="Capture target"
-                                            Margin="0,0,0,6">
+                                                         Margin="0,0,0,6">
                                         <ComboBox x:Name="CaptureTargetCombo"
-                                                HorizontalAlignment="Stretch"
-                                                SelectionChanged="CaptureTargetCombo_SelectionChanged">
+                                                  HorizontalAlignment="Stretch"
+                                                  SelectionChanged="CaptureTargetCombo_SelectionChanged">
                                             <ComboBoxItem Content="Whole desktop"/>
                                             <ComboBoxItem Content="Game Capture"/>
 
                                         </ComboBox>
                                     </controls:SettingRow>
                                     <controls:SettingRow x:Name="CaptureMonitorRow"
-                                            Label="Display"
-                                            Margin="0,0,0,6">
+                                                         Label="Display"
+                                                         Margin="0,0,0,6">
                                         <ComboBox x:Name="CaptureMonitorCombo"
-                                                HorizontalAlignment="Stretch"
-                                                SelectionChanged="CaptureMonitorCombo_SelectionChanged"/>
+                                                  HorizontalAlignment="Stretch"
+                                                  SelectionChanged="CaptureMonitorCombo_SelectionChanged"/>
                                     </controls:SettingRow>
                                     <controls:SettingRow Label="Show mouse cursor"
-                                            Margin="0,0,0,6">
+                                                         Margin="0,0,0,6">
                                         <CheckBox x:Name="CaptureCursorCheck"
-                                                AutomationProperties.Name="Show mouse cursor in recordings"
-                                                Checked="WindowCaptureOption_Changed"
-                                                Unchecked="WindowCaptureOption_Changed"/>
+                                                  AutomationProperties.Name="Show mouse cursor in recordings"
+                                                  Checked="WindowCaptureOption_Changed"
+                                                  Unchecked="WindowCaptureOption_Changed"/>
                                     </controls:SettingRow>
                                     <controls:SettingRow Label="Capture border"
-                                             Margin="0,0,0,6">
+                                                         Margin="0,0,0,6">
                                         <CheckBox x:Name="CaptureBorderCheck"
-                                                IsEnabled="False"
-                                                Checked="WindowCaptureOption_Changed"
-                                                Unchecked="WindowCaptureOption_Changed"/>
+                                                  IsEnabled="False"
+                                                  Checked="WindowCaptureOption_Changed"
+                                                  Unchecked="WindowCaptureOption_Changed"/>
                                     </controls:SettingRow>
 
                                 </StackPanel>
@@ -971,7 +987,7 @@
                                     </StackPanel>
 
                                     <controls:SettingRow Label="Replay duration"
-                                                      Margin="0,0,0,8">
+                                                         Margin="0,0,0,8">
                                         <ComboBox x:Name="DurationCombo"
                                                   HorizontalAlignment="Stretch"
                                                   SelectionChanged="DurationCombo_SelectionChanged">
@@ -981,7 +997,7 @@
                                         </ComboBox>
                                     </controls:SettingRow>
                                     <controls:SettingRow Label="Frame rate"
-                                                      Margin="0,0,0,8">
+                                                         Margin="0,0,0,8">
                                         <ComboBox x:Name="FpsCombo"
                                                   HorizontalAlignment="Stretch"
                                                   SelectionChanged="FpsCombo_SelectionChanged">
@@ -991,7 +1007,7 @@
                                         </ComboBox>
                                     </controls:SettingRow>
                                     <controls:SettingRow Label="Quality"
-                                                       Margin="0,0,0,8">
+                                                         Margin="0,0,0,8">
                                         <ComboBox x:Name="QualityCombo"
                                                   HorizontalAlignment="Stretch"
                                                   SelectionChanged="QualityCombo_SelectionChanged">
@@ -1000,7 +1016,8 @@
                                             <ComboBoxItem Content="High"/>
                                         </ComboBox>
                                     </controls:SettingRow>
-                                    <controls:SettingRow Label="Bitrate (Kbps)" Margin="0">
+                                    <controls:SettingRow Label="Bitrate (Kbps)"
+                                            Margin="0">
                                         <NumberBox x:Name="BitrateBox"
                                                    Minimum="1000"
                                                    Maximum="100000"
@@ -1035,15 +1052,15 @@
                                               Margin="0,0,0,14"/>
 
                                     <controls:SettingRow Label="Record microphone"
-                                                      Margin="0,0,0,8">
+                                                         Margin="0,0,0,8">
                                         <ToggleSwitch x:Name="MicToggle"
                                                       OnContent=""
                                                       OffContent=""
                                                       Toggled="MicToggle_Changed"/>
                                     </controls:SettingRow>
                                     <controls:SettingRow x:Name="RecordAudioRow"
-                                            Label="Record system audio"
-                                                      Margin="0,0,0,8">
+                                                         Label="Record system audio"
+                                                         Margin="0,0,0,8">
                                         <ToggleSwitch x:Name="SysAudioToggle"
                                                       OnContent=""
                                                       OffContent=""
@@ -1081,6 +1098,7 @@
                                                  VerticalContentAlignment="Center"
                                                  TextChanged="SaveLocationBox_TextChanged"/>
                                         <Button x:Name="BrowseSaveLocationButton"
+                                                controls:UiHover.IsEnabled="True"
                                                 Grid.Column="2"
                                                 Height="32"
                                                 Padding="16,0"
@@ -1101,8 +1119,9 @@
                                     </Grid>
 
                                     <controls:SettingRow Label="Save replay hotkey"
-                                                      Margin="0">
+                                                         Margin="0">
                                         <Button x:Name="HotkeyCaptureButton"
+                                                controls:UiHover.IsEnabled="True"
                                                 Height="32"
                                                 Padding="16,0"
                                                 HorizontalAlignment="Stretch"
@@ -1139,7 +1158,7 @@
                                     </StackPanel>
 
                                     <controls:SettingRow Label="Start with Windows"
-                                                      Margin="0,0,0,8">
+                                                         Margin="0,0,0,8">
                                         <ToggleSwitch x:Name="StartupToggle"
                                                       OnContent=""
                                                       OffContent=""
@@ -1161,18 +1180,20 @@
                                                    FontWeight="SemiBold"
                                                    Foreground="{ThemeResource SettingsAreaTextBrush}"/>
                                     </StackPanel>
-                                    <InfoBar x:Name="AdvancedWarningBar" IsOpen="True"
-                                            IsClosable="False"
-                                            Severity="Warning"
-                                            Title="Capture compatibility"
+                                    <InfoBar x:Name="AdvancedWarningBar"
+                                            IsOpen="True"
+                                             IsClosable="False"
+                                             Severity="Warning"
+                                             Title="Capture compatibility"
                                              Message="DXGI remains the desktop capture method. Game capture support is being updated. Encoding uses FFmpeg."
-                                            Margin="0,0,0,12">
+                                             Margin="0,0,0,12">
                                         <InfoBar.ActionButton>
-                                            <Button Content="Dismiss" Click="DismissAdvancedWarning_Click"/>
+                                            <Button Content="Dismiss"
+                                                    Click="DismissAdvancedWarning_Click"/>
                                         </InfoBar.ActionButton>
                                     </InfoBar>
                                     <controls:SettingRow Label="Video encoder"
-                                                      Margin="0,0,0,8">
+                                                         Margin="0,0,0,8">
                                         <ComboBox x:Name="EncoderCombo"
                                                   HorizontalAlignment="Stretch"
                                                   SelectionChanged="EncoderCombo_SelectionChanged">
@@ -1185,7 +1206,7 @@
                                         </ComboBox>
                                     </controls:SettingRow>
                                     <controls:SettingRow Label="Video codec"
-                                                      Margin="0,0,0,8">
+                                                         Margin="0,0,0,8">
                                         <ComboBox x:Name="CodecCombo"
                                                   HorizontalAlignment="Stretch"
                                                   SelectionChanged="CodecCombo_SelectionChanged">
@@ -1195,7 +1216,7 @@
                                         </ComboBox>
                                     </controls:SettingRow>
                                     <controls:SettingRow Label="Rate control"
-                                                      Margin="0,0,0,8">
+                                                         Margin="0,0,0,8">
                                         <ComboBox x:Name="RateControlCombo"
                                                   HorizontalAlignment="Stretch"
                                                   SelectionChanged="RateControlCombo_SelectionChanged">
@@ -1204,7 +1225,7 @@
                                         </ComboBox>
                                     </controls:SettingRow>
                                     <controls:SettingRow Label="Encoder preset"
-                                                      Margin="0,0,0,8">
+                                                         Margin="0,0,0,8">
                                         <ComboBox x:Name="EncoderPresetCombo"
                                                   HorizontalAlignment="Stretch"
                                                   SelectionChanged="EncoderPresetCombo_SelectionChanged">
@@ -1214,7 +1235,7 @@
                                         </ComboBox>
                                     </controls:SettingRow>
                                     <controls:SettingRow Label="Video container"
-                                                      Margin="0,0,0,8">
+                                                         Margin="0,0,0,8">
                                         <ComboBox x:Name="ContainerCombo"
                                                   HorizontalAlignment="Stretch"
                                                   SelectionChanged="ContainerCombo_SelectionChanged">
@@ -1226,7 +1247,7 @@
                                         </ComboBox>
                                     </controls:SettingRow>
                                     <controls:SettingRow Label="Capture method"
-                                                      Margin="0,0,0,6">
+                                                         Margin="0,0,0,6">
                                         <StackPanel Spacing="6">
                                             <ComboBox x:Name="CaptureMethodCombo"
                                                       HorizontalAlignment="Stretch"
@@ -1237,7 +1258,7 @@
                                                 <ComboBoxItem x:Name="CaptureDxgiItem"
                                                               Content="DXGI"/>
                                             </ComboBox>
-                                             <TextBlock Text="Coming Soon"
+                                            <TextBlock Text="Coming Soon"
                                                        TextWrapping="Wrap"
                                                        FontSize="12"
                                                        Opacity="0.65"/>
@@ -1246,7 +1267,7 @@
 
 
                                     <controls:SettingRow Label="Debug logging"
-                                                      Margin="0,0,0,8">
+                                                         Margin="0,0,0,8">
                                         <ToggleSwitch x:Name="DebugToggle"
                                                       OnContent=""
                                                       OffContent=""
@@ -1283,7 +1304,7 @@
                         Margin="0,10,0,0"
                         Visibility="Collapsed"
                         Opacity="0"
-                         RenderTransformOrigin="0.5,0.5">
+                        RenderTransformOrigin="0.5,0.5">
                     <Border.Background>
                         <AcrylicBrush TintColor="#202020"
                                       TintOpacity="0.6"
@@ -1320,8 +1341,8 @@
                                           FontSize="14"
                                           Margin="0,0,6,0"/>
                                 <TextBlock Text="Save"
-                                        FontFamily="Segoe UI Variable"
-                                        FontSize="{StaticResource BodyFontSize}"/>
+                                           FontFamily="Segoe UI Variable"
+                                           FontSize="{StaticResource BodyFontSize}"/>
                             </StackPanel>
                         </Button>
                         <Button x:Name="PendingDiscardButton"
@@ -1336,8 +1357,8 @@
                                           FontSize="14"
                                           Margin="0,0,6,0"/>
                                 <TextBlock Text="Discard"
-                                        FontFamily="Segoe UI Variable"
-                                        FontSize="{StaticResource BodyFontSize}"/>
+                                           FontFamily="Segoe UI Variable"
+                                           FontSize="{StaticResource BodyFontSize}"/>
                             </StackPanel>
                         </Button>
                     </StackPanel>

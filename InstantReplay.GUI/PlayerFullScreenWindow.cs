@@ -12,15 +12,6 @@ using InstantReplay.Services;
 
 namespace InstantReplay.GUI;
 
-/// <summary>
-/// Fullscreen player. Entering and leaving fullscreen follows the YouTube pattern: the player does not
-/// fade in as a separate window, it grows out of the inline player's rectangle until it fills the
-/// monitor, and on exit it shrinks back into that same rectangle.
-///
-/// While animating, the window is a borderless overlapped window whose bounds are interpolated every
-/// rendered frame (so it keeps pace with the display, not with a coarse timer). Once it exactly covers
-/// the monitor it is promoted to the real FullScreen presenter, which makes the hand-over invisible.
-/// </summary>
 public sealed class PlayerFullScreenWindow : Window
 {
     private const int OpenMs = 320;
@@ -53,10 +44,6 @@ public sealed class PlayerFullScreenWindow : Window
 
     public event Action<bool>? NavigationCompleted;
 
-    /// <summary>
-    /// Where the player should shrink back to on exit (screen pixels), usually the inline player's
-    /// current rectangle. Evaluated at the moment of closing so it follows window moves and resizes.
-    /// </summary>
     public Func<RectInt32?>? ReturnBounds { get; set; }
 
     [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW")]
@@ -82,8 +69,6 @@ public sealed class PlayerFullScreenWindow : Window
             _fullBounds = ResolveDisplayBounds(sourceBounds, ownerHwnd);
             _restBounds = sourceBounds ?? CenterInset(_fullBounds, 0.58);
 
-            // Start as a borderless window sitting exactly on top of the inline player. It stays
-            // cloaked while the page loads so nothing flashes.
             ConfigureBorderless(_appWindow);
             _appWindow.MoveAndResize(_restBounds);
             Cloak(true);
@@ -105,7 +90,6 @@ public sealed class PlayerFullScreenWindow : Window
             try { _web.Focus(FocusState.Programmatic); } catch { }
             WebReady = true;
 
-            // If navigation never reports back, still show the window rather than leave it cloaked.
             var failsafe = DispatcherQueue.CreateTimer();
             failsafe.Interval = TimeSpan.FromSeconds(5);
             failsafe.IsRepeating = false;
@@ -147,7 +131,6 @@ public sealed class PlayerFullScreenWindow : Window
                 return;
             }
 
-            // Where we are right now: the full monitor, or part-way through the opening animation.
             RectInt32 from = _appWindow.Presenter.Kind == AppWindowPresenterKind.FullScreen
                 ? _fullBounds
                 : new RectInt32(_appWindow.Position.X, _appWindow.Position.Y, _appWindow.Size.Width, _appWindow.Size.Height);
@@ -169,7 +152,6 @@ public sealed class PlayerFullScreenWindow : Window
         }
     }
 
-    // ------------------------------------------------------------------ animation
 
     private void PlayOpenAnimation()
     {
@@ -179,15 +161,10 @@ public sealed class PlayerFullScreenWindow : Window
         Cloak(false);
         AnimateBounds(_restBounds, _fullBounds, OpenMs, EaseOutQuint, () =>
         {
-            // Already exactly on the monitor, so promoting to the real fullscreen presenter is seamless.
             try { _appWindow.SetPresenter(AppWindowPresenterKind.FullScreen); } catch { }
         });
     }
 
-    /// <summary>
-    /// Interpolates the window rectangle once per rendered frame. A dispatcher timer would tick at
-    /// roughly 15 ms granularity and visibly stutter; the rendering callback follows the display.
-    /// </summary>
     private void AnimateBounds(RectInt32 from, RectInt32 to, int milliseconds, Func<double, double> ease, Action done)
     {
         _cancelAnimation?.Invoke();
@@ -225,7 +202,6 @@ public sealed class PlayerFullScreenWindow : Window
         Apply(from);
         CompositionTarget.Rendering += OnFrame;
 
-        // Guarantees the end state even if no frames are delivered (for example a minimized owner).
         safety = DispatcherQueue.CreateTimer();
         safety.Interval = TimeSpan.FromMilliseconds(milliseconds + 600);
         safety.IsRepeating = false;
@@ -246,13 +222,11 @@ public sealed class PlayerFullScreenWindow : Window
         (int)Math.Round(a.Width + (b.Width - a.Width) * t),
         (int)Math.Round(a.Height + (b.Height - a.Height) * t));
 
-    // Fast start, long gentle landing: the same feel as YouTube's player expansion.
     private static double EaseOutQuint(double t) => 1 - Math.Pow(1 - t, 5);
 
     private static double EaseInOutCubic(double t) =>
         t < 0.5 ? 4 * t * t * t : 1 - Math.Pow(-2 * t + 2, 3) / 2;
 
-    // ------------------------------------------------------------------ window helpers
 
     private static void ConfigureBorderless(AppWindow window)
     {
@@ -275,7 +249,7 @@ public sealed class PlayerFullScreenWindow : Window
             int value = on ? 1 : 0;
             DwmSetWindowAttribute(_hwnd, DwmaCloak, ref value, sizeof(int));
         }
-        catch { /* cosmetic only */ }
+        catch { }
     }
 
     private static RectInt32 ResolveDisplayBounds(RectInt32? source, IntPtr ownerHwnd)

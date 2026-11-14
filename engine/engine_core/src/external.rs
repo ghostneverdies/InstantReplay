@@ -46,16 +46,12 @@ const OFF_GPU_NAMES: usize = 192;
 const GPU_NAME_CHARS: usize = 96;
 const GPU_ACCESS: u32 = 0x8000_0001;
 
-// OBS-derived dynamic CPU transport. The control mapping remains fixed-size;
-// frame storage is recreated at the exact captured resolution each generation.
 const OFF_CPU_GENERATION: usize = 100;
 const OFF_CPU_SLOT_BYTES: usize = 120;
 const OFF_CPU_NAME: usize = 1024;
 const CPU_NAME_CHARS: usize = 128;
 
-// Version-3 ordered CPU ring.
 const OFF_READ_SEQ: usize = 800;
-// Per-slot geometry (width, height, stride) matches the hook's layout.
 const OFF_SLOT_GEOMETRY: usize = 848;
 const SLOT_GEOMETRY_BYTES: usize = 12;
 
@@ -290,8 +286,6 @@ fn run(shared: Arc<SharedState>) {
         if view.is_none() {
             if Instant::now() >= next_open {
                 if let Some(v) = View::open(FRAME_RING_NAME) {
-                    // Skip anything already queued before this consumer opened;
-                    // the recorder clock restarts when buffering starts.
                     let seq = unsafe { read_u32(v.base, OFF_SEQ) };
                     unsafe { write_u32(v.base, OFF_READ_SEQ, seq) };
                     view = Some(v);
@@ -324,11 +318,6 @@ fn run(shared: Arc<SharedState>) {
             {
                 gpu = unsafe { GpuShared::open(v) };
                 if let Some(state) = &gpu {
-                    // The hook can fill all keyed-mutex slots before this
-                    // consumer finishes opening them. We intentionally skip
-                    // those pre-start frames, but must still acknowledge each
-                    // key-1 slot or the producer has no key-0 slot left and
-                    // shared-texture capture deadlocks at startup.
                     for (_, keyed) in &state.slots {
                         if unsafe { keyed.AcquireSync(1, 0) }.is_ok() {
                             let _ = unsafe { keyed.ReleaseSync(0) };
@@ -388,7 +377,10 @@ fn run(shared: Arc<SharedState>) {
 
         if transport == 2 {
             let generation = unsafe { read_u32(v.base, OFF_CPU_GENERATION) };
-            if cpu.as_ref().is_none_or(|state| state.generation != generation) {
+            if cpu
+                .as_ref()
+                .is_none_or(|state| state.generation != generation)
+            {
                 cpu = unsafe { CpuShared::open(v) };
                 if cpu.is_none() {
                     std::thread::sleep(Duration::from_millis(20));
@@ -403,9 +395,6 @@ fn run(shared: Arc<SharedState>) {
 
         let seq = unsafe { read_u32(v.base, OFF_SEQ) };
         let mut read = unsafe { read_u32(v.base, OFF_READ_SEQ) };
-        // The producer stops publishing once three slots are outstanding. If
-        // the consumer is further behind than the ring can hold, resync to the
-        // oldest still-publishable slot rather than reading live memory.
         if seq.wrapping_sub(read) > SLOTS as u32 {
             read = seq.wrapping_sub(SLOTS as u32);
             unsafe { write_u32(v.base, OFF_READ_SEQ, read) };
@@ -420,11 +409,15 @@ fn run(shared: Arc<SharedState>) {
         let width = unsafe { read_u32(v.base, geometry) } as usize;
         let height = unsafe { read_u32(v.base, geometry + 4) } as usize;
         let stride = unsafe { read_u32(v.base, geometry + 8) } as usize;
-        let slot_capacity = cpu.as_ref().map_or(MAX_SLOT_BYTES, |state| state.slot_bytes);
+        let slot_capacity = cpu
+            .as_ref()
+            .map_or(MAX_SLOT_BYTES, |state| state.slot_bytes);
         let valid = width >= 16
             && height >= 16
             && stride >= width * 4
-            && stride.checked_mul(height).is_some_and(|bytes| bytes <= slot_capacity);
+            && stride
+                .checked_mul(height)
+                .is_some_and(|bytes| bytes <= slot_capacity);
         if !valid {
             unsafe { write_u32(v.base, OFF_READ_SEQ, read.wrapping_add(1)) };
             std::thread::sleep(Duration::from_millis(1));
@@ -437,9 +430,6 @@ fn run(shared: Arc<SharedState>) {
         } else {
             crate::qpc100ns()
         };
-        // Route the hook clock through the shared pause clock. Paused time must
-        // be absent from the timeline, exactly as it is for DXGI frames, or the
-        // video track would keep advancing while game audio is cut.
         let Some(pts) = shared.capture_time(raw_pts) else {
             unsafe { write_u32(v.base, OFF_READ_SEQ, read.wrapping_add(1)) };
             continue;
@@ -474,8 +464,6 @@ fn run(shared: Arc<SharedState>) {
             w: width as u32,
             h: height as u32,
             pts100ns: pts,
-            // The hook frame number is not pause-aware. Deriving the CFR slot
-            // from the pause-adjusted PTS keeps both tracks on one timeline.
             frame_no: 0,
         });
         unsafe { write_u32(v.base, OFF_READ_SEQ, read.wrapping_add(1)) };

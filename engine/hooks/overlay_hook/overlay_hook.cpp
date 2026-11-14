@@ -129,7 +129,6 @@
 
 using namespace Gdiplus;
 
-
 #define IR_CTL_NAME L"Local\\InstantReplay.Control.v1"
 #define IR_READY_NAME L"Local\\InstantReplay.OverlayHook.Ready.v1"
 
@@ -160,16 +159,11 @@ constexpr float IR_CARD_W = 382.0f;
 constexpr float IR_CARD_H = 108.0f;
 constexpr float IR_CARD_MARGIN = 24.0f;
 
-// Motion and render pacing (units are 100 ns, like qpc_100ns()).
-// The card used to crawl in over 3.2 s on a cubic ease-out whose long tail moved by sub-pixel amounts,
-// which a whole-pixel quad turned into visible stepping. A short decelerating glide with a sub-pixel
-// quad position reads as smooth motion.
-constexpr int64_t IR_SLIDE_IN_100NS = 6500000LL;       // 650 ms
-constexpr int64_t IR_SLIDE_OUT_100NS = 4500000LL;      // 450 ms
-constexpr int64_t IR_HIDE_TAIL_100NS = 5500000LL;      // keep drawing until the slide-out has finished
-constexpr int64_t IR_ANIM_MIN_INTERVAL_100NS = 160000LL; // video frames: at most ~60 card re-renders/s
-constexpr int64_t IR_FADE_INTERVAL_100NS = 333333LL;     // text/bar fades: ~30 card re-renders/s
-
+constexpr int64_t IR_SLIDE_IN_100NS = 6500000LL;
+constexpr int64_t IR_SLIDE_OUT_100NS = 4500000LL;
+constexpr int64_t IR_HIDE_TAIL_100NS = 5500000LL;
+constexpr int64_t IR_ANIM_MIN_INTERVAL_100NS = 160000LL;
+constexpr int64_t IR_FADE_INTERVAL_100NS = 333333LL;
 
 static HMODULE g_self;
 static int64_t g_qpc_freq = 1;
@@ -197,7 +191,6 @@ static inline int64_t qpc_100ns()
     return (qpc_ticks() * 10000000LL) / g_qpc_freq;
 }
 static inline float ir_clamp01(float v) { return v < 0 ? 0 : (v > 1 ? 1 : v); }
-
 
 static HANDLE g_log = INVALID_HANDLE_VALUE;
 static SRWLOCK g_log_lock = SRWLOCK_INIT;
@@ -249,7 +242,6 @@ static void hook_log(const wchar_t *fmt, ...)
     }
     ReleaseSRWLockExclusive(&g_log_lock);
 }
-
 
 struct ControlSnapshot
 {
@@ -394,7 +386,6 @@ static void log_ensure(const ControlSnapshot &ctl)
     ReleaseSRWLockExclusive(&g_log_lock);
 }
 
-
 typedef void(APIENTRY *PFN_ActiveTexture)(GLenum);
 typedef void(APIENTRY *PFN_UseProgram)(GLuint);
 typedef void(APIENTRY *PFN_BindFramebuffer)(GLenum, GLuint);
@@ -506,7 +497,6 @@ static void load_gl()
         (PFN_VertexAttribPointer)wglGetProcAddress("glVertexAttribPointer");
 }
 
-
 struct OverlayState
 {
     int64_t last_seq = -1;
@@ -609,8 +599,6 @@ static std::wstring g_loaded_animation;
 static std::wstring g_attempted_animation;
 static bool g_mf_started = false;
 
-// The completion clip is decoded on a background thread and handed over through this staging area.
-// Decoding it inside the game's Present call (as this used to) froze the game for ~2 s.
 static SRWLOCK g_anim_lock = SRWLOCK_INIT;
 static std::vector<AnimationFrame> g_anim_staging;
 static int64_t g_anim_staging_duration = 0;
@@ -646,7 +634,6 @@ static void animation_free_frames(std::vector<AnimationFrame> &frames)
     frames.clear();
 }
 
-// Runs on the worker thread only: touches nothing but its arguments.
 static bool animation_decode(const std::wstring &path, std::vector<AnimationFrame> &frames,
                              int64_t &duration)
 {
@@ -692,7 +679,6 @@ static bool animation_decode(const std::wstring &path, std::vector<AnimationFram
         hr = reader->GetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, &current);
     if (SUCCEEDED(hr))
         hr = MFGetAttributeSize(current, MF_MT_FRAME_SIZE, &width, &height);
-    // MF delivers RGB32 as a bottom-up DIB unless the type says otherwise.
     bool bottom_up = true;
     if (current)
     {
@@ -849,10 +835,6 @@ static Bitmap *animation_frame(int64_t now)
     return index < 0 ? nullptr : g_animation_frames[index].bitmap;
 }
 
-// Called on every sync (render thread). It never decodes anything itself: it adopts a finished
-// background decode, or starts one. Decoding starts as soon as the card is on screen, so the clip
-// is normally ready long before the success state (the "saving" card precedes it by seconds).
-// A failed decode is remembered for this card only, so a broken asset is not retried endlessly.
 static void animation_ensure()
 {
     if (g_ov.animation_path.empty())
@@ -910,12 +892,6 @@ static void overlay_free_bitmap()
     g_ov.bitmap_w = g_ov.bitmap_h = 0;
 }
 
-// Scale of the card in percent. The WinUI card is drawn at the system UI scale on
-// the desktop, so the in-game card must end up the same size relative to the
-// screen. A DPI-unaware game window reports 96 DPI and a virtualized monitor size,
-// so the real monitor DPI and native desktop height are queried explicitly and the
-// result is scaled by how much of the native display height the game's
-// back buffer covers (exclusive fullscreen can run below native resolution).
 static int dpi_scale_100(HWND hwnd, int screen_h)
 {
     static HWND cache_hwnd;
@@ -958,7 +934,7 @@ static int dpi_scale_100(HWND hwnd, int screen_h)
     if (monitor && get_dpi_monitor)
     {
         UINT dx = 0, dy = 0;
-        if (SUCCEEDED(get_dpi_monitor(monitor, 0 /* MDT_EFFECTIVE_DPI */, &dx, &dy)) && dx)
+        if (SUCCEEDED(get_dpi_monitor(monitor, 0 , &dx, &dy)) && dx)
             dpi = dx;
     }
     if (previous)
@@ -1037,9 +1013,6 @@ static void add_round_rect(GraphicsPath &path, const RectF &r, float radius)
     path.CloseFigure();
 }
 
-// Everything expensive that does not change between renders lives here. Building FontFamily/Font
-// objects, cloning StringFormats, measuring the tracked header glyph by glyph and decoding + scaling
-// the icon PNG used to happen on every render, which is every game frame while the success clip plays.
 static const wchar_t kHeaderText[] = L"INSTANT REPLAY";
 
 struct RenderCache
@@ -1103,9 +1076,6 @@ static void render_cache_prepare(int scale100, Graphics &g)
         return;
     render_cache_free_fonts();
 
-    // The WinUI card uses the system UI font (Segoe UI Variable on Windows 11, Segoe UI on
-    // Windows 10). GDI+ cannot open the variable font by its generic name, so use its static
-    // "Text" instances when present.
     FontFamily *var_regular = render_cache_family(L"Segoe UI Variable Text");
     FontFamily *var_semibold = render_cache_family(L"Segoe UI Variable Text Semibold");
     FontFamily *seg_regular = render_cache_family(L"Segoe UI");
@@ -1124,7 +1094,6 @@ static void render_cache_prepare(int scale100, Graphics &g)
         g_rc.regular = FontFamily::GenericSansSerif()->Clone();
     if (!g_rc.message)
         g_rc.message = FontFamily::GenericSansSerif()->Clone();
-    // When one family serves both roles it must not be freed twice.
     if (g_rc.regular == g_rc.message)
         g_rc.message = g_rc.message->Clone();
 
@@ -1144,7 +1113,6 @@ static void render_cache_prepare(int scale100, Graphics &g)
     g_rc.fmt_detail->SetTrimming(StringTrimmingEllipsisCharacter);
     g_rc.fmt_detail->SetFormatFlags(g_rc.fmt_detail->GetFormatFlags() | StringFormatFlagsNoWrap);
 
-    // Pen position of every glyph of the letter-spaced header, measured once.
     const float tracking = 1.4f * s;
     float x = 0.0f;
     const size_t len = wcslen(kHeaderText);
@@ -1160,7 +1128,6 @@ static void render_cache_prepare(int scale100, Graphics &g)
     g_rc.scale100 = scale100;
 }
 
-// The app icon, decoded and scaled once for the current card size.
 static Bitmap *render_cache_icon(const std::wstring &path, int size_px)
 {
     if (path.empty() || size_px <= 0)
@@ -1200,8 +1167,6 @@ static void overlay_render(int card_w, int card_h, int scale100, float text_alph
         return;
     }
 
-    // Reuse the card bitmap while the size is unchanged: it is cleared below, so there is no
-    // reason to allocate and free ~0.4 MB of pixels on every re-render.
     Bitmap *bmp = g_ov.bitmap;
     if (!bmp || g_ov.bitmap_w != card_w || g_ov.bitmap_h != card_h)
     {
@@ -1235,8 +1200,6 @@ static void overlay_render(int card_w, int card_h, int scale100, float text_alph
     g.SetSmoothingMode(SmoothingModeAntiAlias);
     g.SetPixelOffsetMode(PixelOffsetModeHighQuality);
     g.SetInterpolationMode(InterpolationModeHighQualityBicubic);
-    // Grid-fitted anti-aliasing keeps stems crisp; the text is positioned on whole
-    // pixels below, like the WinUI card (DirectWrite snaps its baselines).
     g.SetTextRenderingHint(TextRenderingHintAntiAliasGridFit);
     g.Clear(Color(0, 0, 0, 0));
     render_cache_prepare(scale100, g);
@@ -1247,8 +1210,6 @@ static void overlay_render(int card_w, int card_h, int scale100, float text_alph
     GraphicsPath card_path;
     add_round_rect(card_path, card, 12.0f * s);
 
-    // The completion animation is opaque H.264 with a #242E40 background.
-    // Use that exact solid colour so the 54x54 video blends into the card.
     SolidBrush bg(Color(255, 36, 46, 64));
     g.FillPath(&bg, &card_path);
 
@@ -1346,17 +1307,11 @@ static void overlay_render(int card_w, int card_h, int scale100, float text_alph
     g_ov.bitmap_h = card_h;
 }
 
-// True while the card is on screen or still sliding out. Everything else returns before touching
-// the game's graphics API, so an idle overlay costs the game nothing per frame.
 static inline bool overlay_active(int64_t now)
 {
     return g_ov.visible || (g_ov.hide_at && now - g_ov.hide_at < IR_HIDE_TAIL_100NS);
 }
 
-// Advances the text/bar fade state and re-renders the card bitmap only when its content can actually
-// have changed: new state or text, a new video frame, or a fade step (rate-limited). Sliding the card
-// across the screen never needs a re-render; that is only a different quad position.
-// Returns true when the bitmap was re-rendered and must be uploaded again.
 static bool overlay_update_content(int64_t now, int card_w, int card_h, int scale100)
 {
     float bar_alpha = g_ov.state == 1 ? 1.0f : 0.0f;
@@ -1398,9 +1353,6 @@ static bool overlay_update_content(int64_t now, int card_w, int card_h, int scal
     return true;
 }
 
-// Horizontal position of the card. Motion is time-based (independent of the game's frame rate) and uses
-// a sub-pixel position while moving, so the glide is smooth instead of advancing in whole-pixel steps.
-// Once settled the card is snapped to whole pixels so its text stays crisp.
 static float overlay_slide_x(int64_t now, int margin, int card_w)
 {
     float slide;
@@ -1409,13 +1361,13 @@ static float overlay_slide_x(int64_t now, int margin, int card_w)
     {
         const float t = ir_clamp01(static_cast<float>(now - g_ov.show_at) / static_cast<float>(IR_SLIDE_IN_100NS));
         const float inv = 1.0f - t;
-        slide = 1.0f - inv * inv * inv * inv * inv; // ease-out quint: quick arrival, soft landing
+        slide = 1.0f - inv * inv * inv * inv * inv;
         moving = t < 1.0f;
     }
     else
     {
         const float t = ir_clamp01(static_cast<float>(now - g_ov.hide_at) / static_cast<float>(IR_SLIDE_OUT_100NS));
-        slide = 1.0f - t * t * t; // ease-in cubic
+        slide = 1.0f - t * t * t;
         moving = true;
     }
     const float hidden = -static_cast<float>(card_w) - 16.0f;
@@ -2071,8 +2023,6 @@ static void overlay_sync(const ControlSnapshot &ctl)
             g_ov.hide_at = 0;
             if (ctl.overlay_state == 2)
             {
-                // A second save may reuse the already-decoded frames; restart the
-                // clip from frame zero instead of continuing mid-loop.
                 g_ov.animation_at = now;
                 g_attempted_animation.clear();
             }
@@ -2109,7 +2059,6 @@ static void overlay_sync(const ControlSnapshot &ctl)
     if (changed)
         g_ov.dirty = true;
 }
-
 
 static void present_overlay()
 {
@@ -2149,7 +2098,6 @@ static void present_overlay()
         return;
     log_ensure(ctl);
     overlay_sync(ctl);
-    // Idle overlay: leave before any glGet* call (those stall the GL pipeline every frame).
     if (!overlay_active(qpc_100ns()))
         return;
 
@@ -2168,7 +2116,6 @@ static void present_overlay()
         p_glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(previous_fbo));
     }
 }
-
 
 static IDirect3DDevice9 *g_ov9_device;
 static IDirect3DTexture9 *g_ov9_texture;
@@ -2235,7 +2182,6 @@ static void present_overlay_d3d9(IDirect3DDevice9 *device)
     {
         float x, y, z, rhw, u, v;
     };
-    // The D3D9 path samples with the default point filter, so keep its quad on whole pixels.
     const float snapped_x = floorf(layout.x + 0.5f);
     const float x0 = snapped_x - 0.5f, y0 = layout.y - 0.5f;
     const float x1 = snapped_x + layout.w - 0.5f, y1 = layout.y + layout.h - 0.5f;
@@ -3030,22 +2976,13 @@ static BOOL WINAPI wgl_swap_detour(HDC hdc)
     return result;
 }
 
-
-// ---------------------------------------------------------------------------
-// Standalone present hooks. The overlay DLL is injected on its own (the video is
-// recorded outside the game with WGC/DXGI), so it must find the game's present
-// calls itself instead of being driven by capture_hook.dll. Only entry points of
-// graphics APIs the game already loaded are hooked, and the hooks never touch
-// frame contents: they draw the small clip card while it is visible and
-// otherwise return immediately.
-// ---------------------------------------------------------------------------
 typedef HRESULT(STDMETHODCALLTYPE *DxgiPresentFn)(IDXGISwapChain *, UINT, UINT);
 typedef HRESULT(STDMETHODCALLTYPE *DxgiPresent1Fn)(IDXGISwapChain1 *, UINT, UINT,
-                                                  const DXGI_PRESENT_PARAMETERS *);
+                                                   const DXGI_PRESENT_PARAMETERS *);
 typedef void(STDMETHODCALLTYPE *D3D12ExecuteFn)(ID3D12CommandQueue *, UINT,
-                                               ID3D12CommandList *const *);
+                                                ID3D12CommandList *const *);
 typedef HRESULT(STDMETHODCALLTYPE *D3D9PresentFn)(IDirect3DDevice9 *, const RECT *, const RECT *,
-                                                 HWND, const RGNDATA *);
+                                                  HWND, const RGNDATA *);
 
 static DxgiPresentFn g_dxgi_present_original;
 static DxgiPresent1Fn g_dxgi_present1_original;
@@ -3098,8 +3035,6 @@ static void overlay_for_swap(IDXGISwapChain *swap)
 
 static HRESULT STDMETHODCALLTYPE dxgi_present_detour(IDXGISwapChain *swap, UINT sync, UINT flags)
 {
-    // Counted for the whole call, including the original, so unloading waits
-    // for threads still blocked inside Present.
     PresentGuard in_detour;
     const bool outer = (t_depth++ == 0);
     if (outer && !(flags & DXGI_PRESENT_TEST))
@@ -3113,8 +3048,6 @@ static HRESULT STDMETHODCALLTYPE dxgi_present_detour(IDXGISwapChain *swap, UINT 
 static HRESULT STDMETHODCALLTYPE dxgi_present1_detour(IDXGISwapChain1 *swap, UINT sync, UINT flags,
                                                       const DXGI_PRESENT_PARAMETERS *params)
 {
-    // Counted for the whole call, including the original, so unloading waits
-    // for threads still blocked inside Present.
     PresentGuard in_detour;
     const bool outer = (t_depth++ == 0);
     if (outer && !(flags & DXGI_PRESENT_TEST))
@@ -3128,8 +3061,6 @@ static HRESULT STDMETHODCALLTYPE dxgi_present1_detour(IDXGISwapChain1 *swap, UIN
 static void STDMETHODCALLTYPE d3d12_execute_detour(ID3D12CommandQueue *queue, UINT count,
                                                    ID3D12CommandList *const *lists)
 {
-    // Counted for the whole call, including the original, so unloading waits
-    // for threads still blocked inside Present.
     PresentGuard in_detour;
     if (g_d3d12_execute_original)
         g_d3d12_execute_original(queue, count, lists);
@@ -3151,8 +3082,6 @@ static HRESULT STDMETHODCALLTYPE d3d9_present_detour(IDirect3DDevice9 *device, c
                                                      const RECT *dst, HWND window,
                                                      const RGNDATA *dirty)
 {
-    // Counted for the whole call, including the original, so unloading waits
-    // for threads still blocked inside Present.
     PresentGuard in_detour;
     const bool outer = (t_depth++ == 0);
     if (outer)
@@ -3176,7 +3105,7 @@ static HWND create_probe_window()
 
 static bool install_dxgi_present_hooks()
 {
-    HMODULE d3d11 = LoadLibraryW(L"d3d11.dll"); // system DLL, needed for the probe swap chain
+    HMODULE d3d11 = LoadLibraryW(L"d3d11.dll");
     auto create = d3d11 ? reinterpret_cast<PFN_D3D11_CREATE_DEVICE_AND_SWAP_CHAIN>(
                               GetProcAddress(d3d11, "D3D11CreateDeviceAndSwapChain"))
                         : nullptr;
@@ -3237,14 +3166,16 @@ static bool install_d3d12_queue_hook()
         return false;
     ID3D12Device *device = nullptr;
     if (FAILED(create(nullptr, D3D_FEATURE_LEVEL_11_0, __uuidof(ID3D12Device),
-                      reinterpret_cast<void **>(&device))) || !device)
+                      reinterpret_cast<void **>(&device))) ||
+        !device)
         return false;
     D3D12_COMMAND_QUEUE_DESC desc = {};
     desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
     ID3D12CommandQueue *queue = nullptr;
     bool hooked = false;
     if (SUCCEEDED(device->CreateCommandQueue(&desc, __uuidof(ID3D12CommandQueue),
-                                             reinterpret_cast<void **>(&queue))) && queue)
+                                             reinterpret_cast<void **>(&queue))) &&
+        queue)
     {
         hooked = MH_CreateHook(vtable_entry(queue, 10), reinterpret_cast<void *>(&d3d12_execute_detour),
                                reinterpret_cast<void **>(&g_d3d12_execute_original)) == MH_OK;
@@ -3312,8 +3243,6 @@ static bool install_standalone_hooks()
     }
     bool any = false;
 
-    // Direct3D 9 / 11 / 12 through the game's own DLLs (only what it already loaded).
-    // Decide from the game's modules before this DLL loads d3d11.dll for its probe.
     const bool uses_d3d12 = GetModuleHandleW(L"d3d12.dll") != nullptr;
     const bool uses_dxgi_api = uses_d3d12 || GetModuleHandleW(L"d3d11.dll") != nullptr;
     if (uses_dxgi_api && GetModuleHandleW(L"dxgi.dll") && install_dxgi_present_hooks())
@@ -3329,7 +3258,6 @@ static bool install_standalone_hooks()
         any = true;
     }
 
-    // OpenGL
     if (GetModuleHandleW(L"opengl32.dll"))
     {
         HMODULE gdi32 = GetModuleHandleW(L"gdi32.dll");
@@ -3386,8 +3314,6 @@ static DWORD WINAPI init_thread(LPVOID)
         return 0;
     }
     hook_log(L"standalone mode (hooking presents directly)");
-    // Ready only when something was hooked, so the host falls back to the normal
-    // popup instead of waiting for a card that can never be drawn.
     if (install_standalone_hooks())
         set_ready();
     else
@@ -3455,14 +3381,9 @@ extern "C" __declspec(dllexport) BOOL WINAPI IR_RequestShutdown(void *)
     return TRUE;
 }
 
-// Anti-cheat friendly injection, same scheme as OBS's "compatibility hook":
-// the host installs a WH_GETMESSAGE hook on the game's window thread and posts
-// WM_USER+432 carrying the hook handle.  Windows loads this DLL into the game
-// when the thread next pumps a message; the first such message removes the
-// hook again and pins the module so only IR_RequestShutdown unloads it.
 #define IR_MSG_SAFE_INJECT (WM_USER + 432)
 extern "C" __declspec(dllexport) LRESULT CALLBACK dummy_debug_proc(int code, WPARAM wparam,
-                                                                  LPARAM lparam)
+                                                                   LPARAM lparam)
 {
     static volatile LONG hooking = 1;
     MSG *msg = reinterpret_cast<MSG *>(lparam);

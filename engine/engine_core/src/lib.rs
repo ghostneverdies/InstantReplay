@@ -86,8 +86,6 @@ pub struct RawFrame {
     pub w: u32,
     pub h: u32,
     pub pts100ns: i64,
-    /// Recorder clock frame number from the capture hook. Zero means the
-    /// producer did not supply one and the consumer derives it from PTS.
     pub frame_no: u64,
 }
 
@@ -108,14 +106,11 @@ pub struct RingAudio {
 pub struct SharedState {
     pub running: AtomicBool,
     pub pause_clock: Mutex<(Option<i64>, i64, i64)>,
-    /// Lock-free mirror of "the pause clock is stopped". Capture and encode loops read this on
-    /// every wake-up, so they do not have to take the clock mutex just to find out they are idle.
     pub paused: AtomicBool,
     pub mic_continuous: AtomicBool,
     pub target_window: AtomicIsize,
     pub capture_options: AtomicU32,
     pub has_error: AtomicBool,
-    /// HRESULT/status of the most recent capture failure (0 = none), for diagnostics.
     pub last_cap_hr: AtomicI32,
     pub ring_seconds: AtomicI32,
     pub fps: AtomicI32,
@@ -189,15 +184,12 @@ pub struct SharedState {
     pub n_slot_resync: AtomicI64,
     pub bgra_pool: Mutex<Vec<Vec<u8>>>,
     pub n_capture_drop: AtomicI64,
-    /// One D3D11 device shared by every capture source of a recording, so a
-    /// WGC <-> DXGI switch keeps feeding the same encoder input.
     pub enc_device: Mutex<
         Option<(
             windows::Win32::Graphics::Direct3D11::ID3D11Device,
             windows::Win32::Graphics::Direct3D11::ID3D11DeviceContext,
         )>,
     >,
-    /// Host supplied canvas size (highest resolution expected) used by start.
     pub canvas_hint_w: AtomicI32,
     pub canvas_hint_h: AtomicI32,
 }
@@ -370,9 +362,6 @@ impl SharedState {
 
     pub fn push_frame(&self, frame: RawFrame) {
         let mut q = self.raw.lock().unwrap_or_else(|e| e.into_inner());
-        // Mirror oCam's bounded producer queue. Blocking here stops the shared
-        // ring consumer from acknowledging frames, which applies backpressure
-        // to the game hook instead of overwriting frames it has not read.
         while q.len() >= MAX_RAW_QUEUE && self.running.load(Ordering::Acquire) {
             let waited = self
                 .raw_space
@@ -501,9 +490,6 @@ impl SharedState {
         self.sys_peak.store(0, Ordering::Relaxed);
         self.mic_peak.store(0, Ordering::Relaxed);
         self.health_heartbeat.store(0, Ordering::Relaxed);
-        // A previous session may have latched an error (e.g. a WGC->DXGI
-        // switch that failed once). Clear it so the next start is judged on
-        // its own merits instead of reporting a permanent error.
         self.has_error.store(false, Ordering::Relaxed);
         self.last_cap_hr.store(0, Ordering::Relaxed);
         self.n_capture.store(0, Ordering::Relaxed);
@@ -551,8 +537,6 @@ fn trim_video_ring(ring: &mut Vec<RingVideo>, shared: &SharedState, ring_seconds
     if ring.is_empty() {
         return;
     }
-    // Work out how many packets fall off the front first, then remove them with a single drain.
-    // The old code called remove(0) per packet, shifting the whole ring each time.
     let mut remove = 0usize;
     let mut freed = 0i64;
     if ring_seconds > 0 {
@@ -881,16 +865,11 @@ fn gpu_loop(
     cfg: &EncoderConfig,
     enc: &mut encoder::GpuEncoder,
 ) -> GpuExit {
-    // The GPU encoder feeds a hardware encoder and converts on the GPU, so it needs very little
-    // CPU time. Run it below the game's priority so it can never take a core from the render
-    // thread when the machine is saturated.
     lower_current_thread_priority();
     let mut out = Vec::new();
     let mut seen_gen = shared.gpu_gen.load(Ordering::Acquire);
     let mut fails = 0;
     let tick = Duration::from_micros((500_000 / cfg.fps.max(1) as u64).clamp(1_000, 10_000));
-    // While the recording is paused (no eligible game in the foreground) there is nothing to
-    // encode. The first frame after resuming notifies raw_wait, so a long wait costs no latency.
     let idle_tick = Duration::from_millis(250);
     while shared.running.load(Ordering::Acquire) {
         let generation = shared.gpu_gen.load(Ordering::Acquire);
@@ -906,8 +885,6 @@ fn gpu_loop(
             if enc.rebind(input).is_err() {
                 return GpuExit::Fallback(-112);
             }
-            // A resized window/fullscreen source starts a new prediction chain.
-            // Do not let pre-transition references contaminate the new surface.
             enc.force_idr();
         }
         let pending = std::mem::take(
@@ -1040,12 +1017,9 @@ fn cpu_loop(shared: &Arc<SharedState>, enc: &mut encoder::VideoEncoder) {
                 fallback_pts
             }
         };
-        let geometry_changed = source_geometry
-            .is_some_and(|geometry| geometry != (frame.w, frame.h));
+        let geometry_changed =
+            source_geometry.is_some_and(|geometry| geometry != (frame.w, frame.h));
         if geometry_changed {
-            // Never CFR-fill a new surface from the old window/fullscreen
-            // image. Start the new geometry at its own frame and immediately
-            // break the encoder prediction chain with an IDR.
             if let Some((bgra, _, _)) = previous.take() {
                 shared.recycle_bgra(bgra);
             }
@@ -1054,8 +1028,6 @@ fn cpu_loop(shared: &Arc<SharedState>, enc: &mut encoder::VideoEncoder) {
         source_geometry = Some((frame.w, frame.h));
         if let Some(expected) = next_frame_no {
             if frame_no < expected {
-                // The hook clock restarts when capture stops or the frame rate
-                // changes; re-anchor instead of dropping every later frame.
                 next_frame_no = Some(frame_no);
             } else if frame_no > expected {
                 let missing = frame_no - expected;
@@ -1064,8 +1036,6 @@ fn cpu_loop(shared: &Arc<SharedState>, enc: &mut encoder::VideoEncoder) {
                 } else {
                     2
                 };
-                // oCam duplicates the previous frame to keep the stream CFR.
-                // A huge gap means a clock reset, so resync instead of filling.
                 if missing <= max_fill {
                     if let Some((bgra, w, h)) = &previous {
                         for number in expected..frame_no {
@@ -1104,7 +1074,16 @@ fn cpu_loop(shared: &Arc<SharedState>, enc: &mut encoder::VideoEncoder) {
                 .unwrap_or_else(|e| e.into_inner()),
         );
         let keyframe = geometry_changed || pending_keyframe;
-        encode_raw(shared, enc, &mut out, &frame.bgra, frame.w, frame.h, pts, keyframe);
+        encode_raw(
+            shared,
+            enc,
+            &mut out,
+            &frame.bgra,
+            frame.w,
+            frame.h,
+            pts,
+            keyframe,
+        );
         last_pts = pts;
         next_frame_no = Some(frame_no.saturating_add(1));
         let old = previous.replace((frame.bgra, frame.w, frame.h));
@@ -1243,8 +1222,6 @@ impl Engine {
             return IR_FAIL;
         };
         let method = capture::CaptureMethod::from_i32(capture_method);
-        // WGC captures windowed/borderless games, DXGI duplicates the display
-        // for exclusive fullscreen.  The host can switch between them live.
         let method = match method {
             capture::CaptureMethod::External | capture::CaptureMethod::Wgc => method,
             _ => capture::CaptureMethod::Dxgi,
@@ -1263,8 +1240,6 @@ impl Engine {
                 }
             }
         } else {
-            // The canvas is the highest resolution the recording can see: the
-            // display, or the larger size the host expects for this game.
             let hint_w = self.shared.canvas_hint_w.load(Ordering::Acquire);
             let hint_h = self.shared.canvas_hint_h.load(Ordering::Acquire);
             Some((mon.w.max(hint_w), mon.h.max(hint_h)))
@@ -1273,10 +1248,6 @@ impl Engine {
             self.note_fail(STAGE_CREATE_ITEM, -1);
             return IR_FAIL;
         };
-        // A hook source may change size without restarting (for example a game
-        // switching from windowed to fullscreen).  Encode it into a stable
-        // canvas sized for the display, then letterbox each source frame.  A
-        // video encoder cannot safely change its coded dimensions mid-stream.
         let (canvas_w, canvas_h) = if external {
             (width.max(mon.w), height.max(mon.h))
         } else {
@@ -1298,9 +1269,6 @@ impl Engine {
         let (ff_opts, ff_video) = if ffmpeg_on {
             let opts = ffmpeg::VideoOptions::from_pref(encoder_pref, res_w, res_h, fps, bps);
             match ffmpeg::FfVideo::open(&opts) {
-                // Never silently replace the selected quality preset with
-                // ultrafast for hook capture. That produced a Constrained
-                // Baseline stream with severe temporal smearing during motion.
                 Ok(video) => (Some(opts), Some(video)),
                 Err(message) => {
                     ffmpeg::set_last_error(message);
@@ -1467,8 +1435,6 @@ impl Engine {
         IR_OK
     }
 
-    /// Re-targets video capture while recording continues.  The encoder, ring,
-    /// audio and clock are untouched, so the output is one continuous video.
     pub fn switch_source(
         &self,
         method: i32,
@@ -1512,8 +1478,6 @@ impl Engine {
             .store(options | 128, Ordering::Release);
         match capture::CaptureSession::start(self.shared.clone(), monitor_index, method) {
             Ok(s) => {
-                // A source switch is a fresh capture attempt; clear any error
-                // latched by the previous source so status does not stay red.
                 self.shared.has_error.store(false, Ordering::Release);
                 self.shared.last_cap_hr.store(0, Ordering::Relaxed);
                 *slot = Some(s);

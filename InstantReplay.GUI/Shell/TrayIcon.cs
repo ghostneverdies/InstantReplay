@@ -5,16 +5,10 @@ using InstantReplay.Services;
 
 namespace InstantReplay.GUI.Shell;
 
-/// <summary>
-/// System tray icon backed by Win32 <see cref="Shell_NotifyIcon"/> with a native
-/// Win32 popup menu styled dark via uxtheme ordinals (#135 SetPreferredAppMode,
-/// #136 FlushMenuThemes).
-/// </summary>
 public sealed class TrayIcon : IDisposable
 {
     public const int IconInfo = 1, IconWarning = 2, IconError = 3;
 
-    /// <summary>Retained so older window-message plumbing still compiles.</summary>
     public const uint WM_TRAYICON = 0x8001;
 
     private readonly IntPtr _hwnd;
@@ -31,7 +25,6 @@ public sealed class TrayIcon : IDisposable
         set => _itemsProvider = value;
     }
 
-    // uxtheme ordinals for dark-mode popups.
     private enum PreferredAppMode { Default = 0, AllowDark = 1, ForceDark = 2, ForceLight = 3, Max = 4 }
 
     [DllImport("uxtheme.dll", EntryPoint = "#135", SetLastError = true, CharSet = CharSet.Unicode)]
@@ -96,13 +89,12 @@ public sealed class TrayIcon : IDisposable
         _hwnd = hwnd;
         _itemsProvider = null;
 
-        // Request dark mode for native menus (ordinal 135).
         try
         {
             SetPreferredAppMode(PreferredAppMode.AllowDark);
             FlushMenuThemes();
         }
-        catch { /* uxtheme ordinals unavailable on older Windows */ }
+        catch { }
 
         _hIcon = LoadImageW(IntPtr.Zero, iconPath, 2, 16, 16, 0x10);
 

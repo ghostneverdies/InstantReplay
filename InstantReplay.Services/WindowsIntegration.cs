@@ -1,6 +1,5 @@
 namespace InstantReplay.Services;
 
-/// <summary>Reads the user's Windows appearance settings and manages start-at-login.</summary>
 public static class WindowsTheme
 {
     public static (byte R, byte G, byte B) GetAccentColor()
@@ -41,7 +40,6 @@ public static class WindowsTheme
     }
 }
 
-/// <summary>Manages the per-user Run entry that starts the app at login.</summary>
 public static class StartupManager
 {
     private const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";

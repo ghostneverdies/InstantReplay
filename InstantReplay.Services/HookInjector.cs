@@ -22,7 +22,7 @@ internal static class HookInjector
     private const uint PageReadWrite = 0x04;
     private const uint DontResolveDllReferences = 0x00000001;
     private const int WhGetMessage = 3;
-    private const uint SafeInjectMessage = 0x0400 + 432; // WM_USER + 432, same as OBS
+    private const uint SafeInjectMessage = 0x0400 + 432;
     private const uint Th32CsSnapshotModule = 0x00000008;
     private const uint Th32CsSnapshotModule32 = 0x00000010;
 
@@ -38,8 +38,6 @@ internal static class HookInjector
     public static bool RequestShutdown(uint processId, out string error)
     {
         error = "";
-        // Only the overlay is injected now; the capture hook entry stays so a hook left
-        // over from an older build is still unloaded cleanly.
         foreach (string moduleName in new[] { CaptureDll, OverlayDll })
         {
             if (!TryFindModule(processId, moduleName, out ModuleEntry32 remote))
@@ -167,22 +165,12 @@ internal static class HookInjector
         return false;
     }
 
-    /// <summary>
-    /// Loads the overlay hook (and the capture hook DLL that drives its per-frame
-    /// callbacks; video capture itself stays disabled) into the game using the
-    /// anti-cheat compatibility scheme from OBS: a WH_GETMESSAGE hook on the game's
-    /// window thread, no remote threads and no LoadLibrary call inside the game.
-    /// </summary>
     public static bool EnsureInjected(uint processId, uint threadId, out bool overlayReady, out string error)
     {
         overlayReady = false;
         error = "";
         Logger.Info($"Overlay injection starting for pid {processId} ('{OverlayDllPath}').");
 
-        // Only the overlay DLL is ever loaded into a game. It hooks the game's present
-        // calls itself and never reads frames; video is recorded outside the process
-        // (WGC / DXGI), so the game keeps its frame rate and cannot be crashed by
-        // frame interception.
         if (!File.Exists(OverlayDllPath))
         {
             error = $"hook DLL missing: {OverlayDllPath}";
@@ -204,7 +192,6 @@ internal static class HookInjector
             return false;
         }
 
-        // Only a query handle: the compatibility hook needs no memory or thread access.
         IntPtr handle = OpenProcess(ProcessQueryInformation, false, (int)processId);
         if (handle == IntPtr.Zero)
         {
@@ -253,8 +240,6 @@ internal static class HookInjector
             return false;
         }
 
-        // Map the DLL without running its DllMain: only its export address and file
-        // name are needed, and the hook must not initialise inside this process.
         IntPtr local = LoadLibraryExW(dll, IntPtr.Zero, DontResolveDllReferences);
         if (local == IntPtr.Zero)
         {
@@ -279,8 +264,6 @@ internal static class HookInjector
                 return false;
             }
 
-            // The hook only injects once the thread processes a message, so post one
-            // that carries the hook handle. The DLL unhooks itself and pins itself.
             if (!PostThreadMessageW(threadId, SafeInjectMessage, UIntPtr.Zero, hook))
             {
                 error = $"PostThreadMessage failed for {name} (error {Marshal.GetLastWin32Error()}); " +
@@ -293,7 +276,7 @@ internal static class HookInjector
             {
                 if (IsModuleLoaded(processId, name))
                 {
-                    Thread.Sleep(150); // let the DLL pin itself before the hook goes away
+                    Thread.Sleep(150);
                     Logger.Info($"Hook injection pid {processId}: {name} loaded through the compatibility hook.");
                     return true;
                 }

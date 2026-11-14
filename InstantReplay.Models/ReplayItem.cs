@@ -7,8 +7,6 @@ namespace InstantReplay.Models;
 
 public sealed class ReplayItem : INotifyPropertyChanged
 {
-    // Cached event args: the gallery raises these for every card as its metadata arrives,
-    // so allocating a fresh PropertyChangedEventArgs per notification showed up in profiles.
     private static readonly PropertyChangedEventArgs[] MetadataChanged =
     {
         new(nameof(Duration)), new(nameof(DurationText)),
@@ -30,7 +28,6 @@ public sealed class ReplayItem : INotifyPropertyChanged
         VideoPath = videoPath;
         Created = created;
         _sizeBytes = sizeBytes;
-        // Hashing the path on every access was measurable with hundreds of replays.
         ThumbPath = ReplayLibrary.ThumbnailPathFor(folderPath);
     }
 
@@ -41,8 +38,7 @@ public sealed class ReplayItem : INotifyPropertyChanged
     public DateTime Created { get; }
     public string ThumbPath { get; }
 
-    // Preparation bookkeeping owned by ReplayLibrary (guarded by its lock).
-    internal int PrepareState;          // 0 idle, 1 queued, 2 running
+    internal int PrepareState;
     internal bool QueuedAsVisible;
     internal int Failures;
     internal readonly TaskCompletionSource Prepared =
@@ -50,7 +46,6 @@ public sealed class ReplayItem : INotifyPropertyChanged
 
     public volatile bool MetadataLoaded;
 
-    /// <summary>True once both the metadata and the thumbnail are in place.</summary>
     internal bool IsReady => MetadataLoaded && _thumbnail != null;
 
     public long SizeBytes
@@ -71,10 +66,6 @@ public sealed class ReplayItem : INotifyPropertyChanged
 
     public ImageSource? Thumbnail => _thumbnail;
 
-    /// <summary>
-    /// Applies everything the background workers produced in one UI-thread pass and raises
-    /// each change notification once, instead of one round of notifications per property.
-    /// </summary>
     internal void ApplyPrepared(bool hasMetadata, TimeSpan duration, int width, int height, double fps,
         ImageSource? thumbnail)
     {

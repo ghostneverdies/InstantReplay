@@ -42,8 +42,6 @@ public sealed class RecorderEngine : IDisposable
     private DateTime _moduleCheckAt;
     private DateTime _analysisMissSince;
 
-    // Anti-cheat module probe cache. Walking a game's module list is a toolhelp snapshot of the
-    // game process; doing it on every 200 ms poll cost the game a hitch five times a second.
     private uint _antiCheatPid;
     private string _antiCheatModule = "";
     private int _antiCheatChecks;
@@ -220,8 +218,6 @@ public sealed class RecorderEngine : IDisposable
         int bitrateKbps = _captureSettings.BitrateKbps > 0
             ? _captureSettings.BitrateKbps
             : quality.BitrateKbps;
-        // Windowed and borderless games use WGC on the window. Exclusive fullscreen
-        // (and whole-display recording) uses DXGI desktop duplication on the display.
         CaptureMethod method = snap != null && snap.Source == CaptureSource.Wgc && !forceDxgi
             ? CaptureMethod.Wgc
             : CaptureMethod.Dxgi;
@@ -283,10 +279,6 @@ public sealed class RecorderEngine : IDisposable
         _moduleCheckAt = default;
     }
 
-    /// <summary>
-    /// Follows the game's window mode in real time. The encoder, ring and audio keep
-    /// running; only the video source changes, so the output stays one seamless video.
-    /// </summary>
     private void FollowWindowMode(WindowSnapshot snap)
     {
         string key = snap.SourceKey;
@@ -302,7 +294,6 @@ public sealed class RecorderEngine : IDisposable
             _pendingKeySince = now;
             return;
         }
-        // Debounce: alt-tab and mode changes briefly look like other modes.
         if (now - _pendingKeySince < TimeSpan.FromMilliseconds(350) || now < _switchRetryAt) return;
 
         uint options = CaptureOptions();
@@ -326,11 +317,6 @@ public sealed class RecorderEngine : IDisposable
         _switchRetryAt = now.AddSeconds(2);
     }
 
-    /// <summary>
-    /// The in-game card only exists in exclusive fullscreen, where normal windows cannot
-    /// draw over the game. Anti-cheat protected games are never injected: there the
-    /// clip notification silently stays the regular popup.
-    /// </summary>
     private void UpdateOverlay(CaptureWindow game, WindowSnapshot snap, bool protectedGame, string protectedName)
     {
         bool exclusive = snap.Mode == WindowMode.ExclusiveFullscreen;
@@ -343,9 +329,6 @@ public sealed class RecorderEngine : IDisposable
         }
 
         bool wantOverlay = exclusive && !protectedGame;
-        // Enumerating the game's modules is relatively expensive; checking twice a
-        // second is enough to notice the hook being unloaded, and it stops the
-        // 200 ms poll from taking a module snapshot of the game every time.
         if (_hookedPid == game.ProcessId && DateTime.UtcNow >= _moduleCheckAt)
         {
             _moduleCheckAt = DateTime.UtcNow.AddSeconds(8);
@@ -393,8 +376,6 @@ public sealed class RecorderEngine : IDisposable
         {
             if (!_armed || !_specific || _detector == null) return;
 
-            // A game can destroy and recreate its window when it changes display mode.
-            // Keep the replay while the process lives; only a gone process discards it.
             if (_target != null && !GameDetector.IsAlive(_target))
             {
                 if (_targetLostSince == default) _targetLostSince = DateTime.UtcNow;
@@ -436,9 +417,6 @@ public sealed class RecorderEngine : IDisposable
             WindowSnapshot? snap = WindowDetectionService.Analyze(foreground.Handle);
             if (snap == null)
             {
-                // Minimized/cloaked/transient window recreation. Pause instead of
-                // leaving the status on "SWITCHING DISPLAY MODE" forever, but keep
-                // the short message while the mode change is likely still settling.
                 _analysisMissSince = _analysisMissSince == default ? DateTime.UtcNow : _analysisMissSince;
                 bool transient = DateTime.UtcNow - _analysisMissSince < TimeSpan.FromSeconds(2);
                 if (!_paused) _engine.SetPaused(true);
@@ -518,10 +496,6 @@ public sealed class RecorderEngine : IDisposable
         }
     }
 
-    /// <summary>
-    /// Polls quickly while a game is being tracked (mode changes must be followed promptly) and
-    /// slowly while simply waiting for one, so an idle recorder wakes twice a second, not five times.
-    /// </summary>
     private void AdjustPollInterval()
     {
         int desired = _target != null || _candidate != IntPtr.Zero ? 250 : 500;
@@ -530,11 +504,6 @@ public sealed class RecorderEngine : IDisposable
         _targetTimer?.Change(desired, desired);
     }
 
-    /// <summary>
-    /// Anti-cheat drivers load shortly after a game starts, so probe a new process a few times
-    /// early on (immediately, then after 5 s and 15 s) and then only occasionally, instead of
-    /// snapshotting its modules on every poll. A positive result is kept for the process lifetime.
-    /// </summary>
     private bool ProbeAntiCheatModule(uint processId, out string module)
     {
         DateTime now = DateTime.UtcNow;

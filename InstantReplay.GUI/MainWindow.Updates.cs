@@ -93,7 +93,6 @@ public partial class MainWindow
         RefreshUpdateBadge();
     }
 
-    /// <summary>Shows a red dot on the Updates nav item whenever a newer release is waiting.</summary>
     private void RefreshUpdateBadge()
     {
         if (_updates.HasUpdate)

@@ -16,9 +16,6 @@ use windows::Win32::Graphics::Dxgi::Common::*;
 use windows::Win32::Graphics::Dxgi::*;
 
 const MAGIC: u32 = 0x4952_4652;
-// The managed control block and overlay hook remain on v2. The CPU frame-ring
-// layout below is independently versioned at v3. Conflating the two caused
-// every present callback to reject capture after the ring protocol was bumped.
 const CONTROL_VERSION: u32 = 2;
 const VERSION: u32 = 3;
 const SLOTS: usize = 3;
@@ -42,8 +39,7 @@ const OFF_SLOT_SEQ: usize = 40;
 const OFF_SLOT_PTS: usize = 56;
 const OFF_PUBLISHED: usize = 88;
 
-// Version-2-compatible extension. Old consumers ignore this part of the header.
-const OFF_TRANSPORT: usize = 96; // 0 = CPU BGRA ring, 1 = named D3D11 textures
+const OFF_TRANSPORT: usize = 96;
 const OFF_GPU_GENERATION: usize = 100;
 const OFF_GPU_LATEST: usize = 104;
 const OFF_GPU_SEQ: usize = 108;
@@ -56,15 +52,10 @@ const OFF_GPU_ADAPTER_LUID: usize = 176;
 const OFF_GPU_NAMES: usize = 192;
 const GPU_NAME_CHARS: usize = 96;
 
-// Version-3 recorder clock. The producer publishes only when the recorder
-// frame number advances; the consumer acknowledges every slot it drains so a
-// full three-slot queue applies backpressure instead of overwriting frames.
 const OFF_READ_SEQ: usize = 800;
 const OFF_FRAME_NO: usize = 808;
 const OFF_SLOT_FRAME: usize = 816;
 const OFF_DROPPED: usize = 792;
-// Per-slot geometry (width, height, stride). A global size can change while
-// older slots are still queued, which would make those rows unreadable.
 const OFF_SLOT_GEOMETRY: usize = 848;
 const SLOT_GEOMETRY_BYTES: usize = 12;
 
@@ -213,7 +204,6 @@ extern "system" {
     fn GetModuleHandleExW(flags: u32, address: *const u16, module: *mut *mut c_void) -> i32;
 }
 
-/// Leading fields of the Win32 `MSG` structure (x64 layout).
 #[repr(C)]
 struct HookMsg {
     hwnd: *mut c_void,
@@ -225,11 +215,6 @@ const WM_USER_SAFE_INJECT: u32 = 0x0400 + 432;
 const GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS: u32 = 0x4;
 static SAFE_HOOK_ARMED: AtomicBool = AtomicBool::new(true);
 
-/// Anti-cheat friendly injection entry point, the same scheme as OBS's
-/// compatibility hook: the host installs a WH_GETMESSAGE hook on the game's
-/// window thread and posts WM_USER+432 with the hook handle.  Windows loads
-/// this DLL when that thread pumps the message; the first one removes the hook
-/// and pins the module so only IR_RequestShutdown unloads it.
 #[no_mangle]
 pub unsafe extern "system" fn dummy_debug_proc(code: i32, wparam: usize, lparam: isize) -> isize {
     let msg = lparam as *const HookMsg;
@@ -456,9 +441,7 @@ impl Protocol {
             return None;
         }
         let base = self.control.as_ref()?.base;
-        if read_u32(base, CTL_MAGIC) != MAGIC
-            || read_u32(base, CTL_VERSION) != CONTROL_VERSION
-        {
+        if read_u32(base, CTL_MAGIC) != MAGIC || read_u32(base, CTL_VERSION) != CONTROL_VERSION {
             return None;
         }
         configure_log(base);
@@ -504,9 +487,6 @@ impl Protocol {
         self.ensure_ring().then(|| self.ring.as_ref().unwrap().base)
     }
 
-    /// Recorder clock. oCam converts elapsed recording time into a target
-    /// frame number and only submits when that number advances, so multiple
-    /// game presents inside one output interval are discarded before capture.
     unsafe fn next_frame(&mut self, control: Control) -> Option<u64> {
         if !control.active {
             self.clock_start = 0;
@@ -544,8 +524,6 @@ impl Protocol {
             return;
         }
         let Some(base) = self.base() else { return };
-        // oCam's producer waits for a free queue slot instead of overwriting.
-        // Bound the wait so a dead recorder can never freeze the game forever.
         let deadline = qpc_100ns() + 1_000_000;
         loop {
             let seq = read_u32(base, OFF_SEQ);
@@ -573,8 +551,6 @@ impl Protocol {
         } else {
             std::ptr::copy_nonoverlapping(pixels.as_ptr(), dst, bytes);
         }
-        // A mode switch may happen while this large copy is in progress. Leave
-        // the uncommitted slot invisible instead of publishing stale geometry.
         if generation != CPU_FRAME_GENERATION.load(Ordering::Acquire) {
             return;
         }
@@ -665,9 +641,6 @@ fn fence() {
 }
 
 static PROTOCOL: Mutex<Protocol> = Mutex::new(Protocol::new());
-// Invalidates CPU frames that were staged before an OpenGL context/geometry
-// transition. The publisher checks this again after its potentially large copy,
-// so a resize cannot commit an old-generation frame behind the new surface.
 static CPU_FRAME_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 struct CpuFrame {
@@ -727,8 +700,6 @@ fn queue_cpu(pixels: &[u8], w: u32, h: u32, bottom_up: bool, frame_no: u64) {
     };
     if let Ok(sender) = CPU_PUBLISHER.try_lock() {
         if let Some(sender) = sender.as_ref() {
-            // Never wait in a game's Present/SwapBuffers callback. CFR fills a
-            // missed slot from the previous frame if this bounded queue is full.
             let _ = sender.try_send(frame);
         }
     }
@@ -1667,9 +1638,6 @@ impl GlInterop {
         .map_err(|e| format!("OpenGL bridge D3D11CreateDevice failed: {:#x}", e.code().0))?;
         let device = device.ok_or("OpenGL bridge D3D11 device missing")?;
         let shared = SharedTextures::create(&device, w, h)?;
-        // NVIDIA's WGL interop rejects keyed/shared NT-handle textures on some
-        // older drivers. Register ordinary local render-target textures and
-        // copy them into the cross-process keyed textures entirely on the GPU.
         let local_desc = D3D11_TEXTURE2D_DESC {
             Width: w,
             Height: h,
@@ -1883,9 +1851,6 @@ unsafe fn present_gl() {
         call_overlay_gl();
         return;
     }
-    // Decide whether this present is due *before* asking GL anything. glGetIntegerv forces a
-    // round trip to the driver, and doing it on every swap (hundreds per second) for frames that
-    // are about to be discarded was pure overhead on the game's render thread.
     let Some(frame_no) = with_protocol(|protocol| protocol.next_frame(control)).flatten() else {
         call_overlay_gl();
         return;
@@ -1898,13 +1863,12 @@ unsafe fn present_gl() {
         return;
     }
 
-    // OBS prefers WGL_NV_DX_interop and only uses PBO/shared-memory capture as
-    // a fallback. This avoids both the driver's unreliable PBO maps and the
-    // full-frame CPU copy in the game's SwapBuffers callback.
     let signature = (context as usize, w as u32, h as u32);
     if let Ok(mut interop) = GL_INTEROP.try_lock() {
         let must_rebuild = interop.as_ref().is_some_and(|state| {
-            state.context != signature.0 || state.shared.w != signature.1 || state.shared.h != signature.2
+            state.context != signature.0
+                || state.shared.w != signature.1
+                || state.shared.h != signature.2
         });
         if must_rebuild {
             if let Some(state) = interop.as_mut() {
@@ -1929,7 +1893,9 @@ unsafe fn present_gl() {
                         }
                     }
                     Err(error) => {
-                        log(&format!("OpenGL shared-texture bridge unavailable: {error}; using PBO fallback"));
+                        log(&format!(
+                            "OpenGL shared-texture bridge unavailable: {error}; using PBO fallback"
+                        ));
                         if let Ok(mut failed) = GL_INTEROP_FAILURE.try_lock() {
                             *failed = Some(signature);
                         }
@@ -1954,9 +1920,6 @@ unsafe fn present_gl() {
     };
     let bytes = w as usize * h as usize * 4;
     fallback.pixels.resize(bytes, 0);
-    // Core-profile games expose glBindFramebuffer. Legacy GL 2.x titles may
-    // only export the EXT/ARB spelling, and some have no FBO support at all;
-    // in that case the default framebuffer is already the read target.
     let bind_fbo = gl_proc::<GlBindFramebuffer>(b"glBindFramebuffer\0")
         .or_else(|| gl_proc::<GlBindFramebuffer>(b"glBindFramebufferEXT\0"))
         .or_else(|| gl_proc::<GlBindFramebuffer>(b"glBindFramebufferARB\0"));
@@ -1987,9 +1950,19 @@ unsafe fn present_gl() {
     );
     let mut published_frame = None;
     if let (
-        Some(gen), Some(delete), Some(bind), Some(allocate), Some(map), Some(unmap),
-        Some(gen_fbo), Some(delete_fbo), Some(bind_fbo), Some(attach), Some(blit),
-    ) = pbo {
+        Some(gen),
+        Some(delete),
+        Some(bind),
+        Some(allocate),
+        Some(map),
+        Some(unmap),
+        Some(gen_fbo),
+        Some(delete_fbo),
+        Some(bind_fbo),
+        Some(attach),
+        Some(blit),
+    ) = pbo
+    {
         let context_changed = fallback.context != context as usize;
         let size_changed = fallback.w != w as u32 || fallback.h != h as u32;
         if context_changed || size_changed || fallback.pbos[0] == 0 {
@@ -2002,8 +1975,6 @@ unsafe fn present_gl() {
                 "OpenGL surface transition: context 0x{old_context:X}->0x{:X}, {}x{}->{}x{}, generation {generation}, discarded {discarded} staged frame(s)",
                 context as usize, old_w, old_h, w, h
             ));
-            // Buffer names belong to their creating context. A destroyed old
-            // context owns its cleanup; only delete while still in that context.
             if !context_changed && fallback.pbos[0] != 0 {
                 delete(SLOTS as i32, fallback.pbos.as_ptr());
                 glDeleteTextures(SLOTS as i32, fallback.textures.as_ptr());
@@ -2059,9 +2030,6 @@ unsafe fn present_gl() {
         glGetIntegerv(GL_TEXTURE_BINDING_2D, &mut previous_texture);
         glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &mut previous_draw_fbo);
 
-        // Match OBS's shared-memory rotation exactly: map next_tex while staging
-        // cur_tex. Mapping and immediately restaging the same PBO in one swap
-        // callback produced temporal block mixing on this OpenGL driver.
         let next_tex = (fallback.cur_tex + 1) % SLOTS;
         if fallback.ready[next_tex] {
             fallback.ready[next_tex] = false;
@@ -2212,9 +2180,6 @@ unsafe fn install_gl_hooks() -> bool {
 
 struct D3D9Capture {
     stage: Option<IDirect3DSurface9>,
-    // GetRenderTargetData cannot read a multisampled render target, so resolve
-    // through a single-sample render target first, exactly like a back-buffer
-    // resolve. None when the game's back buffer is not multisampled.
     resolve: Option<IDirect3DSurface9>,
     w: u32,
     h: u32,
@@ -2486,8 +2451,6 @@ unsafe extern "system" fn init_thread(_: *mut c_void) -> u32 {
     }
     QPC_FREQ.store(frequency.quad as u64, Ordering::Release);
     start_cpu_publisher();
-    // The control block opens lazily from present detours. Never hold hook
-    // readiness on the desktop process during game startup or reinjection.
     with_protocol(|protocol| protocol.ensure_control());
     log(&format!(
         "capture_hook loaded (pid {}, v{})",
@@ -2577,8 +2540,6 @@ unsafe fn shutdown() {
 unsafe extern "system" fn shutdown_thread(_: *mut c_void) -> u32 {
     SHUTTING_DOWN.store(true, Ordering::Release);
     log("cooperative shutdown requested");
-    // Give an OpenGL present detour a short opportunity to unregister WGL/DX
-    // objects on the owning context before detours are disabled.
     for _ in 0..50 {
         if GL_CLEANED.load(Ordering::Acquire) {
             break;
@@ -2653,8 +2614,6 @@ unsafe extern "system" fn tls_callback(module: *mut c_void, reason: u32, _: *mut
     }
 }
 
-// Rust's MSVC cdylib startup does not call an exported user DllMain. A PE TLS
-// callback is invoked directly by the Windows loader on process attachment.
 #[used]
 #[cfg_attr(target_env = "msvc", unsafe(link_section = ".CRT$XLB"))]
 #[no_mangle]

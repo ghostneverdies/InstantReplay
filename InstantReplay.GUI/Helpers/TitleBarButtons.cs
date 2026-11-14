@@ -180,7 +180,6 @@ internal static class TitleBarButtons
     }
 }
 
-/// <summary>Window-level chrome: system backdrop and rounded, accent-tinted frame.</summary>
 internal static class Chrome
 {
     public static void ApplyBackdrop(Window window)

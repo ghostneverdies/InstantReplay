@@ -27,9 +27,6 @@ public sealed class ReplayLibrary
 
     private readonly DispatcherQueueTimer _debounce;
 
-    // Two-tier work list. Cards that are on screen go on a LIFO stack (the card the user just
-    // scrolled to is served first); everything else drains from a FIFO background queue. The old
-    // single FIFO channel made visible cards wait behind the entire library after startup.
     private readonly object _gate = new();
     private readonly Stack<ReplayItem> _visible = new();
     private readonly Queue<ReplayItem> _background = new();
@@ -55,10 +52,6 @@ public sealed class ReplayLibrary
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "InstantReplay", "cache", "thumbnails");
 
-    /// <summary>
-    /// Thumbnails live in the app's own cache folder. They used to be written to %TEMP%, which
-    /// Storage Sense and Disk Cleanup wipe, so the gallery kept regenerating (or never showed) them.
-    /// </summary>
     public static string ThumbnailPathFor(string folderPath)
     {
         string name = Path.GetFileName(folderPath.TrimEnd('\\', '/'));
@@ -70,11 +63,6 @@ public sealed class ReplayLibrary
     private static string LegacyThumbnailPathFor(string thumbPath) =>
         Path.Combine(Path.GetTempPath(), "thumbnails", Path.GetFileName(thumbPath));
 
-    /// <summary>
-    /// Scans the library on a worker thread and starts preparing every entry in
-    /// the background. Called once at startup so the gallery opens immediately
-    /// with thumbnails and metadata already warm.
-    /// </summary>
     public async Task WarmUpAsync(string dir)
     {
         await RefreshAsync(dir);
@@ -110,15 +98,11 @@ public sealed class ReplayLibrary
 
             if (item.SizeBytes != f.Size)
             {
-                // The file changed (for example it was still being written when first seen):
-                // give preparation a fresh set of attempts and re-queue it.
                 item.SizeBytes = f.Size;
                 item.Failures = 0;
                 Queue(item, visible: false);
             }
 
-            // Only touch the collection when an entry is actually out of place; moving items
-            // that are already where they belong made the grid re-measure for nothing.
             if (i < Items.Count && !ReferenceEquals(Items[i], item))
             {
                 int cur = Items.IndexOf(item);
@@ -126,8 +110,6 @@ public sealed class ReplayLibrary
             }
         }
 
-        // Metadata and thumbnails are never produced here        // Metadata and thumbnails are never produced here: the background
-        // workers fill them in and marshal the results back to the UI thread.
     }
 
     private static List<ScanEntry> Scan(string dir)
@@ -168,11 +150,6 @@ public sealed class ReplayLibrary
             CultureInfo.InvariantCulture, DateTimeStyles.None, out DateTime dt) ? dt : null;
     }
 
-    /// <summary>
-    /// Queues an item for background preparation and returns immediately. Cards that are
-    /// realized on screen pass <paramref name="visible"/> so they jump ahead of the warm-up
-    /// backlog; asking again for an item that is already waiting simply promotes it.
-    /// </summary>
     public void Queue(ReplayItem item, bool visible = false)
     {
         if (item.IsReady) return;
@@ -200,10 +177,6 @@ public sealed class ReplayLibrary
         }
     }
 
-    /// <summary>
-    /// Awaitable preparation used by pages that need metadata immediately (the
-    /// viewer). Completion is still produced on the background workers.
-    /// </summary>
     public Task EnsureAsync(ReplayItem item)
     {
         if (item.IsReady) return Task.CompletedTask;
@@ -220,8 +193,6 @@ public sealed class ReplayLibrary
             _workersStarted = true;
         }
 
-        // Two concurrent decoders keep the disk and CPU cost bounded (the recorder may be
-        // running next to us) while still filling a large library quickly.
         for (int i = 0; i < 2; i++) _ = Task.Run(WorkerLoopAsync);
     }
 
@@ -234,7 +205,6 @@ public sealed class ReplayLibrary
                 bool fromVisible = _visible.Count > 0;
                 ReplayItem candidate = fromVisible ? _visible.Pop() : _background.Dequeue();
 
-                // An item can sit in both tiers after a promotion; serve it once.
                 if (candidate.PrepareState != StateQueued) continue;
 
                 candidate.PrepareState = StateRunning;
@@ -285,11 +255,6 @@ public sealed class ReplayLibrary
         }
     }
 
-    /// <summary>
-    /// Produces metadata and a thumbnail entirely off the UI thread, then hands both to the UI
-    /// in a single dispatcher turn (low priority for background work so input always wins).
-    /// Returns true when the item ended up with a thumbnail.
-    /// </summary>
     private async Task<bool> PrepareAsync(ReplayItem item, bool visible)
     {
         MetaCache? meta = TryReadMetaCache(item);
@@ -332,7 +297,7 @@ public sealed class ReplayLibrary
             Directory.CreateDirectory(Path.GetDirectoryName(item.ThumbPath)!);
             File.Copy(legacy, item.ThumbPath, overwrite: false);
         }
-        catch { /* regenerated below */ }
+        catch { }
     }
 
     private async Task<MetaCache?> ReadVideoMetaAsync(ReplayItem item)
@@ -456,7 +421,6 @@ public sealed class ReplayLibrary
     private Task OnUiAsync(Action action, DispatcherQueuePriority priority = DispatcherQueuePriority.Normal)
     {
         var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        // Deliberately never blocks the caller; the dispatcher runs the action.
         if (!DispatcherQueue.TryEnqueue(priority, () =>
             {
                 try { action(); tcs.TrySetResult(); }
@@ -468,17 +432,10 @@ public sealed class ReplayLibrary
         return tcs.Task;
     }
 
-    /// <summary>
-    /// Creates the bitmap with UriSource so WinUI decodes it asynchronously off
-    /// the UI thread; SetSourceAsync (the old path) decoded synchronously while
-    /// opening the file, which made cards feel sticky.
-    /// </summary>
     private static ImageSource CreateThumbnailSource(string thumbPath)
     {
         return new BitmapImage
         {
-            // Cards are 252 DIP wide; decoding at 480 px covers 175% scaling without holding
-            // full-size bitmaps for hundreds of replays in memory.
             DecodePixelWidth = 480,
             UriSource = new Uri(thumbPath),
         };

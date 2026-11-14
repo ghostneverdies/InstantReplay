@@ -15,10 +15,8 @@ internal sealed class GameDetector
     private readonly Dictionary<uint, (string Executable, long Expiry)> _processCache = [];
     public int CatalogCount => SharedCatalog.Count;
 
-    /// <summary>Number of games in the shared catalog, without building a detector.</summary>
     public static int TotalCatalogCount => SharedCatalog.Count;
 
-    /// <summary>Forces the catalog to load now (call from a background thread at startup).</summary>
     internal static void Preload() => _ = SharedCatalog;
     private static readonly HashSet<string> Excluded = new(StringComparer.OrdinalIgnoreCase)
     {

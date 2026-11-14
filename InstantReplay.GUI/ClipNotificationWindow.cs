@@ -104,8 +104,6 @@ public sealed class ClipNotificationWindow : Window
             _playWhenOpened = false;
             DispatcherQueue.TryEnqueue(StartAnimationPlayback);
         };
-        // Media Foundation only decodes 8-bit 4:2:0 H.264. If a clip ever fails to
-        // open, fall back to the static icon instead of showing an empty tile.
         _animationPlayer.MediaFailed += (_, args) =>
         {
             _animationReady = false;
@@ -123,8 +121,6 @@ public sealed class ClipNotificationWindow : Window
             IsHitTestVisible = false
         };
         _animatedIcon.SetMediaPlayer(_animationPlayer);
-        // No rounded tile behind the icon: the completion animation carries the
-        // card-coloured background itself, and the static icon is transparent.
         var iconContent = new Grid
         {
             Width = 54,
@@ -136,9 +132,6 @@ public sealed class ClipNotificationWindow : Window
         content.Children.Add(iconContent);
         Grid.SetColumn(_textStack, 1);
         content.Children.Add(_textStack);
-        // The completion animation is H.264, so it carries an opaque
-        // #242E40 background. The card must be that exact solid colour;
-        // a gradient would show the 54x54 video as a visible rectangle.
         var background = new SolidColorBrush(Color.FromArgb(255, 36, 46, 64));
         var layout = new Grid();
         layout.Children.Add(content);
@@ -189,8 +182,6 @@ public sealed class ClipNotificationWindow : Window
         }
         SetStyle(_hwnd, -20, new IntPtr((GetStyle(_hwnd, -20).ToInt64() | 0x08000080L) & ~0x00040000L));
         TitleBarButtons.StripWindowFrame(_hwnd);
-        // DWMWA_NCRENDERING_POLICY (2) = DWMNCRP_DISABLED (2). No DWM frame
-        // or drop shadow: the card itself is the whole popup, like the hook.
         int noNonClientRendering = 2;
         _ = DwmSetWindowAttribute(_hwnd, 2, ref noNonClientRendering, sizeof(int));
         TitleBarButtons.SetCornerPreference(_hwnd, round: true);
@@ -228,12 +219,6 @@ public sealed class ClipNotificationWindow : Window
         }
     }
 
-    /// <summary>
-    /// Creates the hidden popup and opens/decodes the completion animation
-    /// ahead of time. Nothing is shown, but Media Foundation has already
-    /// parsed the file, so the first saved clip plays instantly instead of
-    /// stalling while the media opens.
-    /// </summary>
     public static void WarmUp()
     {
         if (_instance != null) return;
@@ -260,8 +245,6 @@ public sealed class ClipNotificationWindow : Window
         }
         try
         {
-            // Force the decoder to open and produce the first frame while the
-            // card is still hidden, then rewind and hold on it.
             _animationPlayer.Play();
             _animationPlayer.Pause();
             var session = _animationPlayer.PlaybackSession;
@@ -374,9 +357,6 @@ public sealed class ClipNotificationWindow : Window
     {
         if (_animationPlayer.Source == null)
         {
-            // The asset may have been missing when the window was created
-            // (for example a fresh build finishing after launch). Re-resolve
-            // it before giving up on the animation.
             string path = OverlayBridge.AnimationPath();
             if (path.Length == 0)
             {
@@ -395,9 +375,6 @@ public sealed class ClipNotificationWindow : Window
                 return;
             }
         }
-        // Keep the static icon visible until the first decoded frame is ready;
-        // it stays underneath as a fallback. Playback starts only once the
-        // media is actually open.
         if (_animationReady)
         {
             DispatcherQueue.TryEnqueue(StartAnimationPlayback);

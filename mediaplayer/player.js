@@ -329,7 +329,7 @@ window.receiveCommand = function (cmd) {
         if (Number.isFinite(cmd.t)) v.currentTime = cmd.t;
         if (Number.isFinite(cmd.v)) { v.volume = Math.max(0, Math.min(1, cmd.v)); vol.value = v.volume; }
         v.muted = !!cmd.m; mutedByUser = v.muted;
-        if (cmd.playing) v.play().catch(() => {}); else v.pause();
+        if (cmd.playing) v.play().catch(() => { }); else v.pause();
         updateVolFill(); updateSeekFill(); updateIcons();
         break;
       case "play":

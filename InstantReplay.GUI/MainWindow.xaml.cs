@@ -76,9 +76,6 @@ public partial class MainWindow : Window
     private const int WM_INPUT = 0x00FF;
     private const uint WM_APP = 0x8000;
 
-    // Some games (GTA V) take exclusive keyboard control - raw input with "no hotkeys"
-    // or exclusive DirectInput - which silently disables RegisterHotKey while they are
-    // focused. A raw-input sink still receives every key, so it backs the hotkey up.
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool RegisterRawInputDevices(RawInputDevice[] devices, uint count, uint size);
     [DllImport("user32.dll")]
@@ -105,7 +102,7 @@ public partial class MainWindow : Window
         {
             UsagePage = 1,
             Usage = 6,
-            Flags = enable ? 0x00000100u /* RIDEV_INPUTSINK */ : 0x00000001u /* RIDEV_REMOVE */,
+            Flags = enable ? 0x00000100u : 0x00000001u ,
             Target = enable ? _hwnd : IntPtr.Zero,
         };
         if (!RegisterRawInputDevices(new[] { device }, 1, (uint)Marshal.SizeOf<RawInputDevice>()))
@@ -125,13 +122,13 @@ public partial class MainWindow : Window
     {
         uint header = (uint)(IntPtr.Size == 8 ? 24 : 16);
         uint size = 0;
-        GetRawInputData(rawInput, 0x10000003 /* RID_INPUT */, IntPtr.Zero, ref size, header);
+        GetRawInputData(rawInput, 0x10000003 , IntPtr.Zero, ref size, header);
         if (size == 0 || size > 512) return;
         IntPtr buffer = Marshal.AllocHGlobal((int)size);
         try
         {
             if (GetRawInputData(rawInput, 0x10000003, buffer, ref size, header) != size) return;
-            if (Marshal.ReadInt32(buffer, 0) != 1 /* RIM_TYPEKEYBOARD */) return;
+            if (Marshal.ReadInt32(buffer, 0) != 1 ) return;
             ushort flags = (ushort)Marshal.ReadInt16(buffer, (int)header + 2);
             ushort vk = (ushort)Marshal.ReadInt16(buffer, (int)header + 6);
             ProcessRawKey(vk, (flags & 1) != 0);
@@ -156,13 +153,12 @@ public partial class MainWindow : Window
         }
         if (vk != _settings.HotkeyVk) return;
         if (released) { _rawHotkeyDown = false; return; }
-        if (_rawHotkeyDown) return; // key auto-repeat
+        if (_rawHotkeyDown) return;
         _rawHotkeyDown = true;
         if (_capturingHotkey || _rawModifiers != (_settings.HotkeyModifiers & 0xF)) return;
         TriggerHotkeySave();
     }
 
-    /// <summary>One save per key press even though both RegisterHotKey and raw input may report it.</summary>
     private void TriggerHotkeySave()
     {
         long now = Environment.TickCount64;
@@ -239,8 +235,6 @@ public partial class MainWindow : Window
     private int _viewerGeneration;
     private double _playerAspect = 16.0 / 9.0;
 
-    // Card hover uses keyframe animations created once and reused for every card: they start
-    // from the current value, so a quick in/out never snaps, and nothing is allocated per hover.
     private CubicBezierEasingFunction? _hoverEase;
     private Vector3KeyFrameAnimation? _hoverLiftAnim;
     private Vector3KeyFrameAnimation? _hoverRestAnim;
@@ -255,9 +249,6 @@ public partial class MainWindow : Window
     private readonly Queue<FrameworkElement> _prewarmPages = new();
     private FrameworkElement? _prewarmedPage;
 
-    // Home surface: the accent is applied in code so the hero card follows the live Windows
-    // accent colour instead of a hardcoded palette. The usage bars are animated from the last
-    // target value; the timer runs far slower than the transition, so they never fight.
     private SolidColorBrush _accentPlateBrush = new(Color.FromArgb(0x30, 0x8B, 0x5F, 0xBF));
     private SolidColorBrush _normalBarBrush = new(Color.FromArgb(0xFF, 0x60, 0xA5, 0xFA));
     private const int SparkSamples = 40;
@@ -363,14 +354,9 @@ public partial class MainWindow : Window
         };
         UpdateGalleryChrome();
 
-        // Build the library and warm the thumbnail/metadata cache on background
-        // workers as soon as the window is up, so the gallery never pays for it
-        // when the user navigates.
         _galleryDir = _settings.GetEffectiveSaveDestination();
         _ = _library.WarmUpAsync(_galleryDir);
 
-        // Parsing the 8,000+ entry game catalog used to happen on the UI thread the first time the
-        // Games page opened. Load it once, now, off the UI thread.
         _ = Task.Run(GameDetector.Preload);
 
         Closed += (_, _) =>
@@ -428,8 +414,6 @@ public partial class MainWindow : Window
 
         _ = InitialStartAsync();
 
-        // Prepare the clip notification and its animation while idle so the first
-        // save shows the animation immediately instead of waiting for the decoder.
         _dq.TryEnqueue(ClipNotificationWindow.WarmUp);
 
         Microsoft.Win32.SystemEvents.UserPreferenceChanged += SystemEvents_UserPreferenceChanged;
@@ -591,7 +575,6 @@ public partial class MainWindow : Window
             _taskbarBadge?.Reset();
             _dq.TryEnqueue(() => RefreshAppBadge());
         }
-        // Route tray icon messages (Shell_NotifyIcon callback) to the tray icon.
         if (msg == WM_APP + 1 && _trayIcon is not null)
         {
             _trayIcon.HandleMessage(lParam);
@@ -811,8 +794,6 @@ public partial class MainWindow : Window
 
     private void ResetPageScroll(FrameworkElement page)
     {
-        // Pages are either a ScrollViewer themselves or (gallery) host one inside the GridView.
-        // Walking the whole visual tree of the page on every navigation was needless work.
         if (page is ScrollViewer scroll)
         {
             scroll.ChangeView(0, 0, null, disableAnimation: true);
@@ -838,11 +819,6 @@ public partial class MainWindow : Window
         return null;
     }
 
-    /// <summary>
-    /// Lays out every heavy page once, invisibly and one per tick, shortly after startup. The first
-    /// visit to Settings or Gallery then only has to show an already-measured tree instead of
-    /// building and measuring it inside the navigation click (that was the multi-second stall).
-    /// </summary>
     private void StartPagePrewarm()
     {
         if (_prewarmTimer != null) return;
@@ -859,7 +835,6 @@ public partial class MainWindow : Window
 
     private void PrewarmNextPage()
     {
-        // Put the previously warmed page back before warming the next one.
         if (_prewarmedPage != null)
         {
             if (!ReferenceEquals(_currentPage, _prewarmedPage))
@@ -974,8 +949,6 @@ public partial class MainWindow : Window
         if (ReferenceEquals(page, SettingsPage))
             return Array.Empty<FrameworkElement>();
         if (ReferenceEquals(page, GalleryPage))
-            // The grid itself is not translated: moving a full virtualized GridView forces it
-            // onto its own layer. The page-level fade is enough for the body.
             return new FrameworkElement[] { GalleryHeader };
         if (ReferenceEquals(page, UpdatesPage))
             return UpdatesContent.Children.OfType<FrameworkElement>().ToList();
@@ -1119,14 +1092,12 @@ public partial class MainWindow : Window
         (byte)Math.Clamp(c.G + (255f - c.G) * amount, 0f, 255f),
         (byte)Math.Clamp(c.B + (255f - c.B) * amount, 0f, 255f));
 
-    /// <summary>Black or white, whichever reads better on the accent-coloured primary button.</summary>
     private static Color ContrastForeground(Color c)
     {
         double luminance = (0.2126 * c.R + 0.7152 * c.G + 0.0722 * c.B) / 255.0;
         return luminance > 0.55 ? Color.FromArgb(255, 16, 16, 16) : Colors.White;
     }
 
-    /// <summary>The user's current Windows accent colour (live, not the registry's frame colour).</summary>
     private static Windows.UI.Color GetSystemAccent()
     {
         try
@@ -1228,12 +1199,10 @@ public partial class MainWindow : Window
             return;
         }
 
-        // Cards that are on screen jump ahead of the warm-up backlog.
         if (args.Item is ReplayItem item) _library.Queue(item, visible: true);
 
         if (!_hoverWired.Add(card)) return;
 
-        // ContentTemplateRoot is the template's root element, so no visual-tree walk is needed.
         if (card.ContentTemplateRoot is not FrameworkElement root)
         {
             _hoverWired.Remove(card);
@@ -1278,7 +1247,6 @@ public partial class MainWindow : Window
 
         _hoverEase = compositor.CreateCubicBezierEasingFunction(new Vector2(0.2f, 0f), new Vector2(0f, 1f));
 
-        // No start key frame: the animation begins from wherever the card currently is.
         _hoverLiftAnim = compositor.CreateVector3KeyFrameAnimation();
         _hoverLiftAnim.InsertKeyFrame(1f, new Vector3(1.03f, 1.03f, 1f), _hoverEase);
         _hoverLiftAnim.Duration = TimeSpan.FromMilliseconds(140);
@@ -1296,11 +1264,6 @@ public partial class MainWindow : Window
         _detailsHideAnim.Duration = TimeSpan.FromMilliseconds(90);
     }
 
-    /// <summary>
-    /// Lifts the whole card slightly and fades its overlay in. The whole card scales together, so
-    /// no per-card geometric clip is needed; that clip forced every card through an offscreen mask
-    /// and was the main reason hover felt heavy.
-    /// </summary>
     private void AnimateCardHover(FrameworkElement? root, FrameworkElement? details, bool hover)
     {
         try
@@ -1315,7 +1278,6 @@ public partial class MainWindow : Window
 
             if (details != null)
             {
-                // Overlay buttons only take clicks while they are actually visible.
                 details.IsHitTestVisible = hover;
                 var detailVisual = Microsoft.UI.Xaml.Hosting.ElementCompositionPreview.GetElementVisual(details);
                 detailVisual.StartAnimation("Opacity", hover ? _detailsShowAnim! : _detailsHideAnim!);
@@ -1327,7 +1289,6 @@ public partial class MainWindow : Window
     private ReplayItem? _cardMenuTarget;
     private MenuFlyout? _cardMenu;
 
-    /// <summary>One shared flyout for every card instead of one MenuFlyout per realized card.</summary>
     private void CardMoreButton_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not FrameworkElement element ||
@@ -1560,10 +1521,6 @@ public partial class MainWindow : Window
     [DllImport("user32.dll")]
     private static extern bool ClientToScreen(IntPtr hWnd, ref ScreenPoint point);
 
-    /// <summary>
-    /// The inline player's rectangle in screen pixels. The fullscreen player grows out of this
-    /// rectangle and shrinks back into it. Null when the viewer is not on screen.
-    /// </summary>
     private RectInt32? GetPlayerScreenBounds()
     {
         try
@@ -2057,10 +2014,6 @@ public partial class MainWindow : Window
             return;
         }
 
-        // Starting a new capture session (desktop -> direct hook, game swap,
-        // fullscreen transition) allocates a fresh ring and encoder set. That
-        // legitimate step change has to become the new baseline instead of
-        // being reported as runaway growth.
         int generation = _engine.CaptureGeneration;
         if (generation != _memoryGeneration)
         {
@@ -2080,9 +2033,6 @@ public partial class MainWindow : Window
             return;
         }
 
-        // The replay ring, encoder, conversion buffers, and gallery UI are all
-        // intentionally resident. Establish the baseline only after the ring
-        // has filled, then diagnose sustained growth rather than a fixed total.
         TimeSpan fillAndSettle = TimeSpan.FromSeconds(
             Math.Max(_settings.ReplayDurationSeconds, 1) + 60);
         if (now - _memoryObservationStartedUtc < fillAndSettle)
@@ -2517,8 +2467,6 @@ public partial class MainWindow : Window
 
     private void InitCaptureSegments()
     {
-        // DXGI only. WGC remains compiled in the native engine but is no longer
-        // selectable or used as a fallback.
         _settings.CaptureMethod = "Dxgi";
         CaptureWgcItem.IsEnabled = false;
         CaptureMethodCombo.SelectedIndex = 1;
@@ -2541,7 +2489,6 @@ public partial class MainWindow : Window
             CaptureTargetCombo.SelectedIndex = _settings.CaptureTarget == "SpecificWindows" ? 1 : 0;
             _captureMonitors = ReplayEngine.EnumerateMonitors();
             CaptureMonitorCombo.ItemsSource = _captureMonitors.Select(m => m.Name).ToList();
-            // Fall back to the first (primary) display when the saved one is unplugged.
             int savedMonitor = _settings.CaptureMonitorIndex < 0 ? 0 : _captureMonitors.FindIndex(m => m.Index == _settings.CaptureMonitorIndex);
             CaptureMonitorCombo.SelectedIndex = savedMonitor < 0 ? 0 : savedMonitor;
             CaptureCursorCheck.IsChecked = _settings.CaptureCursor;
@@ -2719,7 +2666,6 @@ public partial class MainWindow : Window
         UpdateHomeHotkeyDisplay();
     }
 
-    /// <summary>Renders the configured shortcut as keycaps in the home-page hotkey pill.</summary>
     private void UpdateHomeHotkeyDisplay()
     {
         HotkeyKeys.Children.Clear();
@@ -3146,7 +3092,6 @@ public partial class MainWindow : Window
         catch (Exception ex) { Logger.Warn($"Memory stats failed: {ex.Message}"); }
     }
 
-    /// <summary>Adds a sample to a usage graph and recolours it while usage is at or above 90%.</summary>
     private void UpdateSpark(List<double> history, double pct, FrameworkElement host,
         Microsoft.UI.Xaml.Shapes.Polyline line, Microsoft.UI.Xaml.Shapes.Polygon area)
     {

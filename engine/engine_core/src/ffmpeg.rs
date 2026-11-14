@@ -340,11 +340,13 @@ impl VideoOptions {
 
 fn candidates(enc: Enc, codec: Codec) -> &'static [&'static str] {
     match (enc, codec) {
-        // Only Auto is allowed to fall back. Prefer hardware HEVC, then the
-        // oCam-compatible hardware AVC path, with CPU x264 as the final resort.
         (Enc::Auto, Codec::Auto) => &[
-            "hevc_nvenc", "hevc_amf", "hevc_qsv",
-            "h264_nvenc", "h264_amf", "h264_qsv",
+            "hevc_nvenc",
+            "hevc_amf",
+            "hevc_qsv",
+            "h264_nvenc",
+            "h264_amf",
+            "h264_qsv",
             "libx264",
         ],
         (Enc::Auto, Codec::Hevc) => &["hevc_nvenc", "hevc_amf", "hevc_qsv"],
@@ -355,7 +357,6 @@ fn candidates(enc: Enc, codec: Codec) -> &'static [&'static str] {
         (Enc::Amf, _) => &["hevc_amf"],
         (Enc::Qsv, Codec::H264) => &["h264_qsv"],
         (Enc::Qsv, _) => &["hevc_qsv"],
-        // Software encoding is AVC only. HEVC is restricted to hardware.
         (Enc::X264, Codec::Hevc) => &[],
         (Enc::X264, _) => &["libx264"],
         (Enc::Mf, Codec::H264) => &["h264_mf"],
@@ -410,8 +411,6 @@ fn qsv_preset(p: Preset) -> &'static str {
 }
 
 fn x264_preset(_p: Preset) -> &'static str {
-    // Software encoding must remain real-time. Quality comes from the bitrate
-    // tier; slower x264 presets caused sustained frame loss on supported CPUs.
     "veryfast"
 }
 
@@ -519,8 +518,22 @@ fn codec_options(name: &str, o: &VideoOptions) -> Vec<(&'static str, &'static st
             ("profile", "high"),
             ("forced-idr", "1"),
             ("spatial-aq", "1"),
-            ("temporal-aq", if o.preset == Preset::Quality { "1" } else { "0" }),
-            ("multipass", if o.preset == Preset::Quality { "qres" } else { "disabled" }),
+            (
+                "temporal-aq",
+                if o.preset == Preset::Quality {
+                    "1"
+                } else {
+                    "0"
+                },
+            ),
+            (
+                "multipass",
+                if o.preset == Preset::Quality {
+                    "qres"
+                } else {
+                    "disabled"
+                },
+            ),
             ("rc-lookahead", if cbr { "0" } else { "20" }),
         ],
         "h264_amf" => vec![
@@ -530,7 +543,14 @@ fn codec_options(name: &str, o: &VideoOptions) -> Vec<(&'static str, &'static st
             ("profile", "high"),
             ("forced_idr", "1"),
             ("header_spacing", "1"),
-            ("preanalysis", if o.preset == Preset::Quality { "1" } else { "0" }),
+            (
+                "preanalysis",
+                if o.preset == Preset::Quality {
+                    "1"
+                } else {
+                    "0"
+                },
+            ),
             ("vbaq", "1"),
             ("enforce_hrd", if cbr { "1" } else { "0" }),
         ],
@@ -724,8 +744,6 @@ fn packet_has_picture(data: &[u8], hevc: bool) -> bool {
             return true;
         }
     }
-    // Preserve backends that emit length-prefixed packets; this validation is
-    // only authoritative for the Annex-B packets emitted by x264/NVENC/AMF/QSV.
     !found_nal
 }
 
@@ -776,13 +794,11 @@ impl FfVideo {
         let c = &mut *ctx;
         let hevc = name.starts_with("hevc_");
         let h264 = name.starts_with("h264_") || name == "libx264";
-        // VideoOptions carries the hardware-HEVC tier. AVC needs moderately
-        // more bits for equivalent quality, without oCam's oversized 76 Mbps.
         let bps = if h264 {
             match o.preset {
-                Preset::Quality => o.bps as i64 * 4 / 3, // 30 -> 40 Mbps
-                Preset::Balanced => o.bps as i64 * 7 / 5, // 20 -> 28 Mbps
-                Preset::Speed => o.bps as i64 * 3 / 2, // 12 -> 18 Mbps
+                Preset::Quality => o.bps as i64 * 4 / 3,
+                Preset::Balanced => o.bps as i64 * 7 / 5,
+                Preset::Speed => o.bps as i64 * 3 / 2,
             }
         } else {
             o.bps as i64
@@ -797,12 +813,8 @@ impl FfVideo {
         } else {
             sys::AVPixelFormat_AV_PIX_FMT_NV12
         };
-        // Bound propagation if a captured source frame is damaged. Two seconds
-        // retains good compression while recovering much faster than the old
-        // five-second GOP that made random artifacts linger visibly.
         c.gop_size = o.fps.saturating_mul(2);
         c.max_b_frames = 0;
-        // HEVC Main or AVC High, both 8-bit 4:2:0.
         c.profile = if hevc { 1 } else { 100 };
         c.bit_rate = bps;
         match o.rate {
@@ -1555,16 +1567,13 @@ mod tests {
     #[test]
     fn parameter_sets_are_detected_and_extracted() {
         let keyframe = [
-            0, 0, 0, 1, 0x40, 1, 2, 3, 0, 0, 0, 1, 0x42, 4, 5, 0, 0, 1,
-            0x44, 6, 7, 0, 0, 1, 0x26, 9, 9, 9,
+            0, 0, 0, 1, 0x40, 1, 2, 3, 0, 0, 0, 1, 0x42, 4, 5, 0, 0, 1, 0x44, 6, 7, 0, 0, 1, 0x26,
+            9, 9, 9,
         ];
         assert!(has_param_sets(&keyframe));
         assert_eq!(
             extract_param_sets(&keyframe),
-            vec![
-                0, 0, 0, 1, 0x40, 1, 2, 3, 0, 0, 0, 1, 0x42, 4, 5, 0, 0, 0, 1,
-                0x44, 6, 7,
-            ]
+            vec![0, 0, 0, 1, 0x40, 1, 2, 3, 0, 0, 0, 1, 0x42, 4, 5, 0, 0, 0, 1, 0x44, 6, 7,]
         );
         assert!(parameter_sets_are_hevc(&extract_param_sets(&keyframe)));
 
@@ -1573,7 +1582,10 @@ mod tests {
         ];
         assert!(has_param_sets(&avc_keyframe));
         let avc_sets = extract_param_sets(&avc_keyframe);
-        assert_eq!(avc_sets, vec![0, 0, 0, 1, 0x67, 1, 2, 3, 0, 0, 0, 1, 0x68, 4, 5]);
+        assert_eq!(
+            avc_sets,
+            vec![0, 0, 0, 1, 0x67, 1, 2, 3, 0, 0, 0, 1, 0x68, 4, 5]
+        );
         assert!(!parameter_sets_are_hevc(&avc_sets));
         assert!(packet_has_picture(&avc_keyframe, false));
         assert!(!packet_has_picture(&avc_sets, false));
@@ -1610,8 +1622,13 @@ mod tests {
         assert_eq!(
             candidates(Enc::Auto, Codec::Auto),
             &[
-                "hevc_nvenc", "hevc_amf", "hevc_qsv",
-                "h264_nvenc", "h264_amf", "h264_qsv", "libx264",
+                "hevc_nvenc",
+                "hevc_amf",
+                "hevc_qsv",
+                "h264_nvenc",
+                "h264_amf",
+                "h264_qsv",
+                "libx264",
             ]
         );
         assert_eq!(candidates(Enc::Nvenc, Codec::Auto), &["hevc_nvenc"]);
@@ -1619,7 +1636,10 @@ mod tests {
         assert_eq!(candidates(Enc::Qsv, Codec::Auto), &["hevc_qsv"]);
         assert_eq!(candidates(Enc::X264, Codec::Auto), &["libx264"]);
         assert_eq!(candidates(Enc::Mf, Codec::Auto), &["hevc_mf"]);
-        assert_eq!(candidates(Enc::Auto, Codec::H264), &["h264_nvenc", "h264_amf", "h264_qsv", "libx264"]);
+        assert_eq!(
+            candidates(Enc::Auto, Codec::H264),
+            &["h264_nvenc", "h264_amf", "h264_qsv", "libx264"]
+        );
     }
 
     #[test]
@@ -1790,8 +1810,6 @@ mod tests {
             let _ = std::fs::remove_file(path);
         }
 
-        // The Auto fallback may switch codec families. Verify that AVC Annex-B
-        // parameter sets select an H.264 MP4 stream rather than being tagged HEVC.
         let mut avc = unsafe { FfVideo::try_open(&ff, "libx264", &o) }.expect("libx264");
         let mut avc_frames = Vec::new();
         for i in 0..(fps as usize * 2) {
@@ -1800,13 +1818,28 @@ mod tests {
         }
         let avc_samples: Vec<VideoSample> = avc_frames
             .iter()
-            .map(|f| VideoSample { data: &f.data, keyframe: f.keyframe, pts100ns: f.pts100ns })
+            .map(|f| VideoSample {
+                data: &f.data,
+                keyframe: f.keyframe,
+                pts100ns: f.pts100ns,
+            })
             .collect();
         let avc_path = tmp.join("avc-fallback.mp4");
         let avc_path_str = avc_path.to_str().expect("utf-8 path");
         let avc_end = avc_frames.last().expect("AVC frames").pts100ns + frame_dur;
         assert_eq!(
-            mux_until(avc_path_str, &avc_samples, &[], 48_000, 2, fps, w as u32, h as u32, 0, avc_end),
+            mux_until(
+                avc_path_str,
+                &avc_samples,
+                &[],
+                48_000,
+                2,
+                fps,
+                w as u32,
+                h as u32,
+                0,
+                avc_end
+            ),
             IR_OK,
             "AVC fallback MP4 muxing failed: {}",
             last_error()

@@ -26,6 +26,7 @@ Newest entries go on top.
   - `InstantReplay.Native/IrNative.cs` — now also contains the audio endpoint COM interop (`MMDeviceEnumeratorComObject`, `IMMDeviceEnumerator`, `PropertyKey`, `IMMNotificationClient`)
   - `InstantReplay.Services/WindowsIntegration.cs` — `WindowsTheme` and `StartupManager`
 - Temporary first-chance and `AppDomain` crash-diagnostic hooks were removed from `App.xaml.cs`.
+- **Releases are manual.** `.github/workflows/release.yml` now runs only from `workflow_dispatch`; tag pushes and published releases no longer start it. A run takes the version as input, stamps it into the app and installer, creates tag `v<version>` at the dispatched commit and publishes the GitHub Release, so the in-app updater keeps reading the latest stable release.
 
 ### Notes
 

@@ -1,6 +1,5 @@
 namespace InstantReplay.Models;
 
-/// <summary>Hardware or software encoder the user wants the engine to prefer.</summary>
 public enum EncoderPreference
 {
     Auto = 0,
@@ -11,15 +10,12 @@ public enum EncoderPreference
     MediaFoundation = 5,
 }
 
-/// <summary>Bitrate and canvas derived from the quality preset and frame rate.</summary>
 public readonly record struct VideoQualityProfile(string Name, int BitrateKbps, int MaxWidth, int MaxHeight)
 {
     public static VideoQualityProfile FromPreset(string preset, int fps)
     {
         var (name, at60Fps) = preset switch
         {
-            // Hardware HEVC tiers. AVC backends scale these internally to
-            // 40/28/18 Mbps because H.264 needs more bits at equal quality.
             "Quality" or "High" => ("High", 30000),
             "Balanced" => ("Balanced", 20000),
             _ => ("Low", 12000)

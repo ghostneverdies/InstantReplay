@@ -929,9 +929,6 @@ impl GpuInput {
         stamp.1 = pts;
     }
 
-    /// Copies `frame` (w x h) 1:1 into this input at (dx, dy). With `clear`
-    /// the whole input is first reset to black, which gives letterbox and
-    /// pillarbox bars whenever the placed rectangle changes.
     pub fn submit_at(
         &self,
         frame: &windows::Win32::Graphics::Direct3D11::ID3D11Texture2D,
@@ -2628,7 +2625,6 @@ fn bgra_to_i420_scaled(
     let (y_plane, uv) = dst.split_at_mut(dw * dh);
     let (u_plane, v_plane) = uv.split_at_mut(cw * ch);
 
-    // Preserve the source aspect ratio. Full-range black is Y=0, U=V=128.
     y_plane.fill(0);
     u_plane.fill(128);
     v_plane.fill(128);
@@ -2910,10 +2906,6 @@ pub fn bgra_to_nv12(
         return true;
     }
 
-    // Fast letterbox path: the source already fits the canvas at 1:1 and only
-    // needs centering. This is the common windowed-game case (for example
-    // 1280x720 inside a 1280x1024 canvas); bilinear scaling here wasted most of
-    // the software encoder's frame budget without changing image dimensions.
     let sw = src_w as usize;
     let sh = src_h as usize;
     if sw <= dw && sh <= dh {
