@@ -1,5 +1,43 @@
 namespace InstantReplay.Models;
 
+/// <summary>Capture backend requested by the user.</summary>
+public enum CaptureMethod
+{
+    Wgc = 0,
+    Dxgi = 1,
+    External = 3,
+}
+
+/// <summary>Capture backend that suits a <see cref="WindowMode"/>.</summary>
+internal enum CaptureSource
+{
+    /// <summary>Windows Graphics Capture of the game window.</summary>
+    Wgc,
+    /// <summary>DXGI desktop duplication of the whole display the game is on.</summary>
+    Dxgi,
+}
+
+/// <summary>How the game presents itself on screen.</summary>
+internal enum WindowMode
+{
+    /// <summary>Normal window (title bar / frame), including maximized windows.</summary>
+    Windowed,
+    /// <summary>Frameless window that covers its monitor but is still composed by DWM.</summary>
+    BorderlessFullscreen,
+    /// <summary>Exclusive fullscreen: the game owns the display and bypasses normal composition.</summary>
+    ExclusiveFullscreen,
+}
+
+/// <summary>Geometry and monitor information for a window that could be captured.</summary>
+internal readonly record struct CaptureSurface(int Width, int Height, long Style, IntPtr Monitor, int DisplayWidth, int DisplayHeight);
+
+/// <summary>A top-level window offered as a capture target.</summary>
+internal sealed record CaptureWindow(IntPtr Handle, uint ProcessId, string Executable, string Title, string Game)
+{
+    public CaptureSurface Surface { get; init; }
+}
+
+/// <summary>Snapshot of the window and display state at the moment capture is (re)configured.</summary>
 internal sealed record WindowSnapshot(
     IntPtr Handle,
     uint ProcessId,

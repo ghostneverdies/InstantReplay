@@ -1,5 +1,15 @@
 ﻿namespace InstantReplay.Models;
 
+public enum SaveReplayOutcome
+{
+    Success,
+    NotRecording,
+    NoSegments,
+    WriteBlocked,
+    MergeFailed,
+    LowMemory,
+}
+
 public readonly struct SaveReplayResult
 {
     public SaveReplayOutcome Outcome { get; }

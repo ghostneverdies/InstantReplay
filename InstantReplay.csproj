@@ -85,11 +85,11 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </None>
-    <None Include="engine\hooks\bin\capture_hook.dll" Link="engine\hooks\capture_hook.dll">
+    <None Include="engine\hooks\bin\capture_hook.dll" Link="engine\hooks\bin\capture_hook.dll">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </None>
-    <None Include="engine\hooks\bin\overlay_hook.dll" Link="engine\hooks\overlay_hook.dll">
+    <None Include="engine\hooks\bin\overlay_hook.dll" Link="engine\hooks\bin\overlay_hook.dll">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </None>

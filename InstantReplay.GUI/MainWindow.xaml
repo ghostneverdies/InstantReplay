@@ -158,25 +158,21 @@
                     <Grid x:Name="HomePage"
                           Visibility="Visible">
                         <Grid.RowDefinitions>
-                            <RowDefinition Height="*" />
-                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="5*" />
+                            <RowDefinition Height="2*" MinHeight="140" />
                         </Grid.RowDefinitions>
 
+                        <!-- ===== Main card ===== -->
                         <Border x:Name="HeroCard"
                                 Grid.Row="0"
-                                MinHeight="272"
-                                Padding="24"
                                 CornerRadius="16"
                                 BorderThickness="1"
-                                Background="{ThemeResource HeroBackgroundBrush}"
-                                BorderBrush="{ThemeResource HeroBorderBrush}">
-                            <Grid RowSpacing="18">
-                                <Grid.RowDefinitions>
-                                    <RowDefinition Height="Auto" />
-                                    <RowDefinition Height="*" />
-                                </Grid.RowDefinitions>
-
-                                <Grid x:Name="HeroTopBar">
+                                Background="{ThemeResource StatCardBrush}"
+                                BorderBrush="{ThemeResource StatCardBorderBrush}">
+                            <Grid>
+                                <Grid x:Name="HeroTopBar"
+                                      VerticalAlignment="Top"
+                                      Margin="20,16,20,0">
                                     <Border x:Name="StatusPill"
                                             HorizontalAlignment="Left"
                                             VerticalAlignment="Center"
@@ -197,7 +193,7 @@
                                                        FontSize="11"
                                                        FontWeight="SemiBold"
                                                        CharacterSpacing="60"
-                                                       Foreground="#E6FFFFFF"
+                                                       Foreground="{ThemeResource TextPrimaryBrush}"
                                                        VerticalAlignment="Center" />
                                         </StackPanel>
                                     </Border>
@@ -205,24 +201,23 @@
                                     <Border x:Name="HotkeyPill"
                                             HorizontalAlignment="Right"
                                             VerticalAlignment="Center"
-                                            Padding="10,4"
-                                            CornerRadius="10"
+                                            Padding="12,5"
+                                            CornerRadius="14"
                                             Background="#14FFFFFF"
                                             BorderBrush="#26FFFFFF"
                                             BorderThickness="1">
                                         <StackPanel Orientation="Horizontal"
                                                     Spacing="8"
                                                     VerticalAlignment="Center">
-                                            <FontIcon Glyph="&#xE765;"
+                                            <FontIcon Glyph="&#xE945;"
                                                       FontFamily="{ThemeResource SymbolThemeFontFamily}"
-                                                      FontSize="12"
-                                                      Foreground="#B3FFFFFF"
+                                                      FontSize="13"
+                                                      Foreground="{ThemeResource AccentBrush}"
                                                       VerticalAlignment="Center" />
-                                            <TextBlock Text="HOTKEY"
-                                                       FontSize="10"
+                                            <TextBlock Text="Hotkey:"
+                                                       FontSize="12"
                                                        FontWeight="SemiBold"
-                                                       CharacterSpacing="80"
-                                                       Foreground="#B3FFFFFF"
+                                                       Foreground="{ThemeResource TextPrimaryBrush}"
                                                        VerticalAlignment="Center" />
                                             <StackPanel x:Name="HotkeyKeys"
                                                         Orientation="Horizontal"
@@ -233,322 +228,279 @@
                                 </Grid>
 
                                 <Grid x:Name="HeroContent"
-                                      Grid.Row="1"
-                                      ColumnSpacing="24"
+                                      Margin="32,56,32,32"
                                       HorizontalAlignment="Stretch"
-                                      VerticalAlignment="Center">
+                                      VerticalAlignment="Stretch">
                                     <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="Auto" />
                                         <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="1.4*" />
                                     </Grid.ColumnDefinitions>
 
+                                    <!-- Custom monitor with refresh icon -->
                                     <Grid x:Name="HeroArt"
-                                          Width="112"
-                                          Height="64"
+                                          Grid.Column="0"
+                                          HorizontalAlignment="Center"
                                           VerticalAlignment="Center">
-                                        <Canvas>
-                                            <!-- Animated star particles around the monitor -->
-                                            <Ellipse x:Name="Star1" Width="6" Height="6" Fill="#FFFFFF" Opacity="0"
-                                                     Canvas.Left="20" Canvas.Top="4" />
-                                            <Ellipse x:Name="Star2" Width="4" Height="4" Fill="#FFFFFF" Opacity="0"
-                                                     Canvas.Left="72" Canvas.Top="18" />
-                                            <Ellipse x:Name="Star3" Width="5" Height="5" Fill="#FFFFFF" Opacity="0"
-                                                     Canvas.Left="48" Canvas.Top="52" />
-                                            <Ellipse x:Name="Star4" Width="3" Height="3" Fill="#FFFFFF" Opacity="0"
-                                                     Canvas.Left="8" Canvas.Top="38" />
-                                            <Ellipse x:Name="Star5" Width="6" Height="6" Fill="#FFFFFF" Opacity="0"
-                                                     Canvas.Left="32" Canvas.Top="2" />
-
-                                            <!-- Clapboard as the central static image -->
-                                            <Image x:Name="HeroClapboard"
-                                                   Source="ms-appx:///assets/icons/clapperboard.png"
-                                                   Width="64"
-                                                   Height="36"
-                                                   Canvas.Left="24"
-                                                   Canvas.Top="14"
-                                                   Stretch="Uniform" />
-
-                                            <!-- Monitor outline behind the clapboard -->
-                                            <Path Data="M8 5 L40 5 A3 3 0 0 1 43 8 L43 20 A3 3 0 0 1 40 23 L8 23 A3 3 0 0 1 5 20 L5 8 A3 3 0 0 1 8 5 Z M24 23 L24 27 M15 25.5 L33 25.5"
-                                                  Stroke="#D9FFFFFF"
-                                                  StrokeThickness="2"
-                                                  StrokeLineJoin="Round"
-                                                  StrokeStartLineCap="Round"
-                                                  StrokeEndLineCap="Round"
-                                                  Canvas.Left="12"
-                                                  Canvas.Top="4" />
-                                        </Canvas>
+                                        <Viewbox x:Name="HeroIcon"
+                                                 Width="200"
+                                                 Height="160"
+                                                 Stretch="Uniform">
+                                            <Canvas Width="120" Height="96">
+                                                <Rectangle Width="104"
+                                                           Height="70"
+                                                           Canvas.Left="8"
+                                                           Canvas.Top="3"
+                                                           RadiusX="9"
+                                                           RadiusY="9"
+                                                           StrokeThickness="5"
+                                                           Stroke="{ThemeResource TextPrimaryBrush}"
+                                                           Opacity="0.78" />
+                                                <Rectangle Width="14"
+                                                           Height="11"
+                                                           Canvas.Left="53"
+                                                           Canvas.Top="76"
+                                                           Fill="{ThemeResource TextPrimaryBrush}"
+                                                           Opacity="0.78" />
+                                                <Rectangle Width="58"
+                                                           Height="7"
+                                                           Canvas.Left="31"
+                                                           Canvas.Top="87"
+                                                           RadiusX="3.5"
+                                                           RadiusY="3.5"
+                                                           Fill="{ThemeResource TextPrimaryBrush}"
+                                                           Opacity="0.78" />
+                                                <Path Stroke="{ThemeResource AccentBrush}"
+                                                      StrokeThickness="6"
+                                                      StrokeStartLineCap="Round"
+                                                      StrokeEndLineCap="Round"
+                                                      Data="M 45.3,31.5 A 17,17 0 1 1 43.7,45" />
+                                                <Polygon Fill="{ThemeResource AccentBrush}"
+                                                         Points="36.5,45 50.5,45 43.5,34" />
+                                                <Ellipse Width="6"
+                                                         Height="6"
+                                                         Canvas.Left="95"
+                                                         Canvas.Top="58"
+                                                         Fill="{ThemeResource AccentBrush}" />
+                                            </Canvas>
+                                        </Viewbox>
                                     </Grid>
 
-                                    <Grid Grid.Column="1" RowSpacing="16">
-                                        <Grid.RowDefinitions>
-                                            <RowDefinition Height="Auto" />
-                                            <RowDefinition Height="Auto" />
-                                            <RowDefinition Height="Auto" />
-                                        </Grid.RowDefinitions>
+                                    <Rectangle Grid.Column="1"
+                                               Width="1"
+                                               Margin="8,20"
+                                               VerticalAlignment="Stretch"
+                                               Fill="{ThemeResource StatCardBorderBrush}" />
 
-
-                                    <TextBlock x:Name="HeroTitle"
-                                               Grid.Row="0"
-                                               FontSize="36"
-                                               FontWeight="SemiBold"
-                                               LineHeight="40"
-                                               TextWrapping="Wrap"
-                                               Foreground="#FFFFFF">
-                                        <Run Text="NEVER MISS" /><LineBreak /><Run Text="THE " /><Run x:Name="HeroMomentWord"
-                                                                                                             Text="MOMENT"
-                                                                                                             Foreground="{ThemeResource AccentBrush}" />
-                                    </TextBlock>
-
-                                    <TextBlock x:Name="HeroSubtitle"
-                                               Grid.Row="1"
-                                               FontSize="14"
-                                               LineHeight="21"
-                                               TextWrapping="Wrap"
-                                               MaxWidth="560"
-                                               HorizontalAlignment="Left"
-                                               Foreground="#CCFFFFFF"
-                                               Text="Instant Replay keeps the last seconds of your screen ready. Hit your hotkey right after a great play and the moment is saved." />
-
-                                    <StackPanel x:Name="HeroActions"
-                                                Grid.Row="2"
-                                                Orientation="Horizontal"
-                                                Spacing="12"
-                                                Margin="0,4,0,0">
-                                        <Button x:Name="SaveReplayButton"
-                                                Style="{StaticResource HomeAccentButtonStyle}"
-                                                Height="44"
-                                                MinWidth="168"
-                                                Padding="18,0"
-                                                CornerRadius="9"
-                                                IsEnabled="False"
-                                                Click="SaveReplayButton_Click">
-                                            <StackPanel Orientation="Horizontal"
-                                                        Spacing="8">
-                                                <FontIcon Glyph="&#xE74E;"
-                                                          FontFamily="{ThemeResource SymbolThemeFontFamily}"
-                                                          FontSize="15"
-                                                          Foreground="{Binding Foreground, ElementName=SaveReplayButton}" />
-                                                <TextBlock Text="SAVE REPLAY"
-                                                           FontSize="13"
-                                                           FontWeight="SemiBold"
-                                                           VerticalAlignment="Center"
-                                                           Foreground="{Binding Foreground, ElementName=SaveReplayButton}" />
-                                            </StackPanel>
-                                        </Button>
-                                        <Button x:Name="StartStopButton"
-                                                ElementSoundMode="Off"
-                                                Style="{StaticResource HomeNeutralButtonStyle}"
-                                                Height="44"
-                                                MinWidth="150"
-                                                Padding="18,0"
-                                                CornerRadius="9"
-                                                Click="StartStopButton_Click">
-                                            <StackPanel Orientation="Horizontal"
-                                                        Spacing="8">
-                                                <FontIcon x:Name="StartStopIcon"
-                                                          Glyph="&#xE768;"
-                                                          FontFamily="{ThemeResource SymbolThemeFontFamily}"
-                                                          FontSize="15"
-                                                          Foreground="{Binding Foreground, ElementName=StartStopButton}" />
-                                                <TextBlock x:Name="StartStopText"
-                                                           Text="START REPLAY"
-                                                           FontSize="13"
-                                                           FontWeight="SemiBold"
-                                                           VerticalAlignment="Center"
-                                                           Foreground="{Binding Foreground, ElementName=StartStopButton}" />
-                                            </StackPanel>
-                                        </Button>
+                                    <StackPanel Grid.Column="2"
+                                                Margin="36,0,0,0"
+                                                VerticalAlignment="Center">
+                                        <TextBlock x:Name="HeroTitle"
+                                                   Text="Instant Replay"
+                                                   FontSize="42"
+                                                   FontWeight="SemiBold"
+                                                   TextWrapping="Wrap"
+                                                   Foreground="{ThemeResource TextPrimaryBrush}" />
+                                        <StackPanel x:Name="HeroSubtitle"
+                                                    Spacing="12"
+                                                    Margin="0,6,0,0">
+                                            <TextBlock Text="Record your last moments, instantly."
+                                                       FontSize="19"
+                                                       TextWrapping="Wrap"
+                                                       Foreground="{ThemeResource StatHintBrush}" />
+                                            <TextBlock Text="Press the hotkey to save the last seconds of your screen."
+                                                       FontSize="14"
+                                                       TextWrapping="Wrap"
+                                                       MaxWidth="360"
+                                                       HorizontalAlignment="Left"
+                                                       Foreground="{ThemeResource StatLabelBrush}" />
                                         </StackPanel>
-                                    </Grid>
+                                        <StackPanel x:Name="HeroActions"
+                                                    Orientation="Horizontal"
+                                                    Spacing="12"
+                                                    Margin="0,26,0,0">
+                                            <Button x:Name="SaveReplayButton"
+                                                    Style="{StaticResource HomeAccentButtonStyle}"
+                                                    Height="46"
+                                                    MinWidth="160"
+                                                    Padding="18,0"
+                                                    CornerRadius="9"
+                                                    IsEnabled="False"
+                                                    Click="SaveReplayButton_Click">
+                                                <StackPanel Orientation="Horizontal"
+                                                            Spacing="8">
+                                                    <FontIcon Glyph="&#xE74E;"
+                                                              FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                                                              FontSize="15"
+                                                              Foreground="{Binding Foreground, ElementName=SaveReplayButton}" />
+                                                    <TextBlock Text="Save Replay"
+                                                               FontSize="14"
+                                                               FontWeight="SemiBold"
+                                                               VerticalAlignment="Center"
+                                                               Foreground="{Binding Foreground, ElementName=SaveReplayButton}" />
+                                                </StackPanel>
+                                            </Button>
+                                            <Button x:Name="StartStopButton"
+                                                    ElementSoundMode="Off"
+                                                    Style="{StaticResource HomeNeutralButtonStyle}"
+                                                    Height="46"
+                                                    MinWidth="140"
+                                                    Padding="18,0"
+                                                    CornerRadius="9"
+                                                    Click="StartStopButton_Click">
+                                                <StackPanel Orientation="Horizontal"
+                                                            Spacing="8">
+                                                    <FontIcon x:Name="StartStopIcon"
+                                                              Glyph="&#xE768;"
+                                                              FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                                                              FontSize="15"
+                                                              Foreground="{Binding Foreground, ElementName=StartStopButton}" />
+                                                    <TextBlock x:Name="StartStopText"
+                                                               Text="Start Replay"
+                                                               FontSize="14"
+                                                               FontWeight="SemiBold"
+                                                               VerticalAlignment="Center"
+                                                               Foreground="{Binding Foreground, ElementName=StartStopButton}" />
+                                                </StackPanel>
+                                            </Button>
+                                        </StackPanel>
+                                    </StackPanel>
                                 </Grid>
                             </Grid>
                         </Border>
 
+                        <!-- ===== CPU / RAM cards ===== -->
                         <Grid x:Name="StatsRow"
                               Grid.Row="1"
-                              Margin="0,20,0,0"
+                              Margin="0,16,0,0"
                               ColumnSpacing="16">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*" />
                                 <ColumnDefinition Width="*" />
                             </Grid.ColumnDefinitions>
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto" />
-                                <RowDefinition Height="Auto" />
-                            </Grid.RowDefinitions>
 
                             <Border x:Name="CpuCard"
-                                    Grid.Row="0"
                                     Grid.Column="0"
                                     Style="{StaticResource StatCard}"
-                                    MinHeight="112"
+                                    MinHeight="0"
+                                    Padding="20,14"
                                     VerticalAlignment="Stretch">
-                                <Grid ColumnSpacing="14" RowSpacing="12">
+                                <Grid ColumnSpacing="16">
                                     <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
                                         <ColumnDefinition Width="Auto" />
                                         <ColumnDefinition Width="*" />
                                     </Grid.ColumnDefinitions>
-                                    <Grid.RowDefinitions>
-                                        <RowDefinition Height="Auto" />
-                                        <RowDefinition Height="Auto" />
-                                    </Grid.RowDefinitions>
-
                                     <Border x:Name="CpuIconBg"
-                                            Grid.RowSpan="2"
-                                            Width="44"
-                                            Height="44"
+                                            Width="48"
+                                            Height="48"
                                             CornerRadius="12"
                                             BorderThickness="1"
                                             BorderBrush="#26FFFFFF"
                                             VerticalAlignment="Center">
-                                        <Viewbox Width="22"
-                                                 Height="22"
-                                                 HorizontalAlignment="Center"
-                                                 VerticalAlignment="Center">
-                                            <Path x:Name="CpuIconPath"
-                                                  Width="24"
-                                                  Height="24"
-                                                  Stretch="Uniform"
-                                                  Fill="Transparent"
-                                                  Stroke="{ThemeResource AccentBrush}"
-                                                  StrokeThickness="1.4"
-                                                  StrokeLineJoin="Round"
-                                                  StrokeStartLineCap="Round"
-                                                  StrokeEndLineCap="Round"
-                                                  Data="M8 1 L8 4 M12 1 L12 4 M16 1 L16 4 M8 20 L8 23 M12 20 L12 23 M16 20 L16 23 M1 8 L4 8 M1 12 L4 12 M1 16 L4 16 M20 8 L23 8 M20 12 L23 12 M20 16 L23 16 M4 4 L20 4 L20 20 L4 20 Z M8 8 L16 8 L16 16 L8 16 Z" />
-                                        </Viewbox>
+                                        <FontIcon x:Name="CpuIconGlyph"
+                                                  Glyph="&#xE950;"
+                                                  FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                                                  FontSize="24"
+                                                  Foreground="{ThemeResource AccentBrush}"
+                                                  HorizontalAlignment="Center"
+                                                  VerticalAlignment="Center" />
                                     </Border>
-
                                     <StackPanel Grid.Column="1"
-                                                Grid.Row="0"
                                                 Spacing="2"
                                                 VerticalAlignment="Center">
-                                        <TextBlock Text="SYSTEM CPU"
-                                                   FontSize="10"
-                                                   FontWeight="SemiBold"
-                                                   CharacterSpacing="80"
+                                        <TextBlock Text="CPU Usage"
+                                                   FontSize="13"
                                                    Foreground="{ThemeResource StatLabelBrush}" />
-                                        <StackPanel Orientation="Horizontal"
-                                                    Spacing="8">
-                                            <TextBlock x:Name="CpuValueText"
-                                                       Text="&#x2014;"
-                                                       FontSize="26"
-                                                       FontWeight="SemiBold"
-                                                       Foreground="{ThemeResource TextPrimaryBrush}" />
-                                            <TextBlock x:Name="CpuHintText"
-                                                       Text="overall usage"
-                                                       FontSize="12"
-                                                       Margin="0,0,0,3"
-                                                       VerticalAlignment="Bottom"
-                                                       Foreground="{ThemeResource StatHintBrush}" />
-                                        </StackPanel>
+                                        <TextBlock x:Name="CpuValueText"
+                                                   Text="&#x2014;"
+                                                   FontSize="30"
+                                                   FontWeight="SemiBold"
+                                                   Foreground="{ThemeResource TextPrimaryBrush}" />
+                                        <TextBlock x:Name="CpuHintText"
+                                                   Text="overall usage"
+                                                   FontSize="12"
+                                                   Foreground="{ThemeResource StatHintBrush}" />
                                     </StackPanel>
-
-                                    <Grid Grid.Row="1"
-                                          Grid.Column="1"
-                                          Height="6"
-                                          Margin="0,2,0,0"
-                                          VerticalAlignment="Center">
-                                        <Border Background="{ThemeResource HomeBarTrackBrush}"
-                                                CornerRadius="3" />
-                                        <Border x:Name="CpuBarFill"
-                                                Background="{ThemeResource AccentBrush}"
-                                                CornerRadius="3"
-                                                RenderTransformOrigin="0,0.5">
-                                            <Border.RenderTransform>
-                                                <ScaleTransform x:Name="CpuBarScale"
-                                                                ScaleX="0" />
-                                            </Border.RenderTransform>
-                                        </Border>
+                                    <Grid x:Name="CpuSparkHost"
+                                          Grid.Column="2"
+                                          HorizontalAlignment="Stretch"
+                                          VerticalAlignment="Stretch"
+                                          SizeChanged="SparkHost_SizeChanged">
+                                        <Polygon x:Name="CpuSparkArea"
+                                                 Opacity="0.18"
+                                                 Fill="{ThemeResource AccentBrush}"
+                                                 HorizontalAlignment="Left"
+                                                 VerticalAlignment="Top" />
+                                        <Polyline x:Name="CpuSparkLine"
+                                                  Stroke="{ThemeResource AccentBrush}"
+                                                  StrokeThickness="2"
+                                                  StrokeLineJoin="Round"
+                                                  HorizontalAlignment="Left"
+                                                  VerticalAlignment="Top" />
                                     </Grid>
                                 </Grid>
                             </Border>
 
                             <Border x:Name="RamCard"
-                                    Grid.Row="1"
-                                    Grid.Column="0"
-                                    Margin="0,16,0,0"
+                                    Grid.Column="1"
                                     Style="{StaticResource StatCard}"
-                                    MinHeight="112"
+                                    MinHeight="0"
+                                    Padding="20,14"
                                     VerticalAlignment="Stretch">
-                                <Grid ColumnSpacing="14" RowSpacing="12">
+                                <Grid ColumnSpacing="16">
                                     <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
                                         <ColumnDefinition Width="Auto" />
                                         <ColumnDefinition Width="*" />
                                     </Grid.ColumnDefinitions>
-                                    <Grid.RowDefinitions>
-                                        <RowDefinition Height="Auto" />
-                                        <RowDefinition Height="Auto" />
-                                    </Grid.RowDefinitions>
-
                                     <Border x:Name="RamIconBg"
-                                            Grid.RowSpan="2"
-                                            Width="44"
-                                            Height="44"
+                                            Width="48"
+                                            Height="48"
                                             CornerRadius="12"
                                             BorderThickness="1"
                                             BorderBrush="#26FFFFFF"
                                             VerticalAlignment="Center">
-                                        <Viewbox Width="24"
-                                                 Height="22"
-                                                 HorizontalAlignment="Center"
-                                                 VerticalAlignment="Center">
-                                            <Path x:Name="RamIconPath"
-                                                  Width="24"
-                                                  Height="22"
-                                                  Stretch="Uniform"
-                                                  Fill="Transparent"
-                                                  Stroke="{ThemeResource AccentBrush}"
-                                                  StrokeThickness="1.4"
-                                                  StrokeLineJoin="Round"
-                                                  StrokeStartLineCap="Round"
-                                                  StrokeEndLineCap="Round"
-                                                  Data="M2 6 L22 6 L22 15 L2 15 Z M5 9 L8 9 L8 12 L5 12 Z M10 9 L13 9 L13 12 L10 12 Z M15 9 L18 9 L18 12 L15 12 Z M6 15 L6 19 M9 15 L9 19 M12 15 L12 19 M15 15 L15 19 M18 15 L18 19" />
-                                        </Viewbox>
+                                        <FontIcon x:Name="RamIconGlyph"
+                                                  Glyph="&#xEEA0;"
+                                                  FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                                                  FontSize="24"
+                                                  Foreground="{ThemeResource AccentBrush}"
+                                                  HorizontalAlignment="Center"
+                                                  VerticalAlignment="Center" />
                                     </Border>
-
                                     <StackPanel Grid.Column="1"
-                                                Grid.Row="0"
                                                 Spacing="2"
                                                 VerticalAlignment="Center">
-                                        <TextBlock Text="SYSTEM MEMORY"
-                                                   FontSize="10"
-                                                   FontWeight="SemiBold"
-                                                   CharacterSpacing="80"
+                                        <TextBlock Text="Memory Usage"
+                                                   FontSize="13"
                                                    Foreground="{ThemeResource StatLabelBrush}" />
-                                        <StackPanel Orientation="Horizontal"
-                                                    Spacing="8">
-                                            <TextBlock x:Name="RamValueText"
-                                                       Text="&#x2014;"
-                                                       FontSize="26"
-                                                       FontWeight="SemiBold"
-                                                       Foreground="{ThemeResource TextPrimaryBrush}" />
-                                            <TextBlock x:Name="RamHintText"
-                                                       Text="memory in use"
-                                                       FontSize="12"
-                                                       Margin="0,0,0,3"
-                                                       VerticalAlignment="Bottom"
-                                                       Foreground="{ThemeResource StatHintBrush}" />
-                                        </StackPanel>
+                                        <TextBlock x:Name="RamValueText"
+                                                   Text="&#x2014;"
+                                                   FontSize="30"
+                                                   FontWeight="SemiBold"
+                                                   Foreground="{ThemeResource TextPrimaryBrush}" />
+                                        <TextBlock x:Name="RamHintText"
+                                                   Text="memory in use"
+                                                   FontSize="12"
+                                                   Foreground="{ThemeResource StatHintBrush}" />
                                     </StackPanel>
-
-                                    <Grid Grid.Row="1"
-                                          Grid.Column="1"
-                                          Height="6"
-                                          Margin="0,2,0,0"
-                                          VerticalAlignment="Center">
-                                        <Border Background="{ThemeResource HomeBarTrackBrush}"
-                                                CornerRadius="3" />
-                                        <Border x:Name="RamBarFill"
-                                                Background="{ThemeResource AccentBrush}"
-                                                CornerRadius="3"
-                                                RenderTransformOrigin="0,0.5">
-                                            <Border.RenderTransform>
-                                                <ScaleTransform x:Name="RamBarScale"
-                                                                ScaleX="0" />
-                                            </Border.RenderTransform>
-                                        </Border>
+                                    <Grid x:Name="RamSparkHost"
+                                          Grid.Column="2"
+                                          HorizontalAlignment="Stretch"
+                                          VerticalAlignment="Stretch"
+                                          SizeChanged="SparkHost_SizeChanged">
+                                        <Polygon x:Name="RamSparkArea"
+                                                 Opacity="0.18"
+                                                 Fill="{ThemeResource AccentBrush}"
+                                                 HorizontalAlignment="Left"
+                                                 VerticalAlignment="Top" />
+                                        <Polyline x:Name="RamSparkLine"
+                                                  Stroke="{ThemeResource AccentBrush}"
+                                                  StrokeThickness="2"
+                                                  StrokeLineJoin="Round"
+                                                  HorizontalAlignment="Left"
+                                                  VerticalAlignment="Top" />
                                     </Grid>
                                 </Grid>
                             </Border>

@@ -1,4 +1,4 @@
-﻿# Instant Replay 1.5
+﻿# Instant Replay 1.6
 
 [![Stars](https://img.shields.io/github/stars/ghostneverdies/InstantReplay?style=flat-square)](https://github.com/ghostneverdies/InstantReplay/stargazers)
 [![Forks](https://img.shields.io/github/forks/ghostneverdies/InstantReplay?style=flat-square)](https://github.com/ghostneverdies/InstantReplay/forks)
@@ -22,10 +22,11 @@
 - Maximum frame rate: 30, 60 or 120 FPS
 - Quality presets: Low, Balanced, High
 - Two replay targets: Whole Desktop and Game Capture, with offline game detection and custom executable rules
-- Capture method: in-process Direct3D 9/11/12 and OpenGL hooks for supported games, native Windows Graphics Capture, or DXGI Desktop Duplication for whole-desktop capture
-- The clip card is drawn inside supported OpenGL games (fullscreen and windowed); protected anti-cheat games are never injected and always use WGC
+- Capture method: Windows Graphics Capture for games and windows, or DXGI Desktop Duplication for whole-desktop and exclusive-fullscreen capture
+- The clip card is drawn inside supported Direct3D 9/11/12 and OpenGL games (fullscreen and windowed); protected anti-cheat games are never injected and use the external popup
 - Video encoder (FFmpeg): Auto, NVIDIA NVENC, AMD AMF, Intel Quick Sync, x264 (CPU) or Media Foundation, with CBR/VBR rate control, a speed/quality preset and MP4, MOV, MKV, MPEG-TS or FLV output (AAC audio)
 - Gallery with thumbnails, inline playback, optional fullscreen, seeking, volume and "show in folder"
+- Home page with a status/hotkey hero card, Save Replay / Start Replay actions, and live CPU and memory cards with sparkline history
 - System tray icon, animated clip popup, warning notifications, close-to-tray, single instance
 - Optional start with Windows (launches minimized to tray)
 - Updates page with manual checks, automatic checks every 24 hours, and verified full-installer downloads from GitHub Releases
@@ -40,7 +41,24 @@
 
 ## Install
 
-Run `InstantReplaySetup.exe`. It installs to `Program Files\Instant Replay`, creates Start Menu and optional desktop shortcuts, and registers start with Windows. The installer does not download prerequisites. Installing over an existing copy replaces app files without opening the uninstaller; settings and saved replays are retained.
+Run `InstantReplaySetup.exe`. The installer puts the whole app payload in `Program Files\Instant Replay\ship` and adds an `InstantReplay.lnk` launcher next to it, so the install folder holds only the launcher and the `ship` folder. Start Menu and optional desktop shortcuts launch the executable inside `ship\`. It registers start with Windows and does not download prerequisites. Installing over an existing copy replaces app files without opening the uninstaller; settings and saved replays are retained.
+
+```
+Program Files\Instant Replay\
+├─ InstantReplay.lnk          (launcher for ship\InstantReplay.exe)
+└─ ship\                      (entire publish output)
+   ├─ InstantReplay.exe
+   ├─ Uninstall.exe
+   ├─ engine\bin\engine.dll
+   ├─ engine\encoder\*.dll
+   ├─ engine\hooks\bin\*.dll
+   ├─ assets\  mediaplayer\
+   └─ WinUI runtime, locales, meta\, symbols\
+```
+
+The uninstall entry in Settings > Apps points at `ship\Uninstall.exe`; it removes the launcher, the `ship` folder and the registry entries, and can optionally delete recordings.
+
+Updating an older flat install (app files directly in the install folder) migrates it into `ship\` once and removes the old files from the root.
 
 ## Build
 
@@ -49,16 +67,18 @@ Requires a compatible .NET SDK, the x64 MSVC Rust toolchain, Visual Studio C++ B
 ```
 cd engine\engine_core
 cargo build --release
-copy target\release\engine.dll ..\engine.dll
+copy target\release\engine.dll ..\bin\engine.dll
 cd ..\..
 dotnet build -c Release -p:Platform=x64
 ```
+
+The project also runs `cargo build --release` for `engine\engine_core` and `engine\hooks\build.ps1` for the hook DLLs before compiling (`BuildNativeEngine` and `BuildHook` targets), so a normal `dotnet build` rebuilds them when their sources change. The manual cargo step above is only needed when you want to inspect the native output first.
 
 Encoding, audio compression and file writing use FFmpeg 8.1 shared libraries, loaded at runtime (not linked) from `engine\encoder\`. Download the pinned `ffmpeg-n8.1.3-29-gad3b795b72-win64-gpl-shared-8.1.zip` asset from [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds/releases/tag/autobuild-2026-11-01-12-49) and copy `avcodec-62.dll`, `avformat-62.dll`, `avutil-60.dll` and `swresample-6.dll` from its `bin\` folder into `engine\encoder\` before the .NET build, which bundles the whole folder with the app as `engine\encoder\*.dll`. Without them the app reports an error and does not record. The pinned tag is immutable; the CI workflow verifies the archive's SHA-256 before using it.
 
 `engine\encoder\gen-bindings.ps1` regenerates `engine\engine_core\src\ffmpeg_sys.rs` from that build's headers (requires `cargo install bindgen-cli` and `python -m pip install libclang`), and `engine\engine_core\src\ffmpeg.rs` resolves every function from the DLLs by name at runtime rather than linking against them.
 
-The engine must be copied to `engine\engine.dll` before the .NET build, which bundles it with the app. If `CARGO_TARGET_DIR` is set, copy `release\engine.dll` from that directory instead of the local `target` directory. To package the app locally, install NSIS, publish into the directory used by the installer, and pass the version (the defaults are `1.6` / `1.6.0.0`):
+The engine must be copied to `engine\bin\engine.dll` before the .NET build, which bundles it with the app. If `CARGO_TARGET_DIR` is set, copy `release\engine.dll` from that directory instead of the local `target` directory. To package the app locally, install NSIS, publish into the directory used by the installer, and pass the version (the defaults are `1.6` / `1.6.0.0`):
 
 ```powershell
 dotnet publish -c Release -p:Platform=x64 -p:Version=1.6 -o bin\publish\win-x64
@@ -74,10 +94,25 @@ InstantReplay.dll, *.json, resources.pri, WinUI/WinAppSDK DLLs   (must sit next 
 <locale>\*.mui                                                   (must stay here, see below)
 engine\bin\engine.dll
 engine\encoder\avcodec-62.dll ...
+engine\hooks\bin\capture_hook.dll, overlay_hook.dll
 assets\  mediaplayer\  meta\*.winmd  symbols\*.pdb
 ```
 
 The WinUI and Windows App SDK DLLs, `resources.pri`, the `.deps.json`/`.runtimeconfig.json` files and the `<locale>` folders cannot move: Windows resolves the DLLs and the `.mui` resources from the executable's own directory before any app code runs, and relocating the locale folders makes `Microsoft.UI.Xaml.dll` fail at startup. Everything that is safe to group is grouped, and the engine finds its FFmpeg DLLs one level up in `engine\encoder\`.
+
+This is the publish layout. The installer keeps it intact but nests it under `ship\` in the install root, which is why the app still finds every file relative to its own executable. The portable ZIP keeps the flat layout.
+
+The source tree is grouped by responsibility, and small related types share one file (each file keeps a single namespace):
+
+| Folder | Contents |
+|---|---|
+| `InstantReplay.GUI` | WinUI pages, shell (`TrayIcon`, `TaskbarBadge`, `ToastCenter`), controls and helpers (`TitleBarButtons` + `Chrome`) |
+| `InstantReplay.Core` | Replay engine front end, capture target management and `GameDetector` |
+| `InstantReplay.Models` | Settings and shared records/enums: `CaptureModels.cs`, `UpdateModels.cs`, `VideoSettings.cs`, `SaveReplayResult.cs`, `GameRule.cs` |
+| `InstantReplay.Services` | Windows integration (`WindowsTheme` + `StartupManager`), updates, update install, audio device watching, window detection and hook injection |
+| `InstantReplay.Native` | Engine P/Invoke and audio endpoint COM interop (`IrNative.cs`) |
+| `engine` | Rust engine, capture/overlay hook sources, FFmpeg shared libraries |
+| `installer` | NSIS script, license terms and installer assets |
 
 This creates `installer\InstantReplaySetup.exe`. The installer does not install .NET or WebView2 automatically.
 
@@ -92,7 +127,7 @@ git push origin v1.6
 
 Without the CLI, publish a release from the GitHub web UI (**Releases → Draft a new release**), create the tag `v1.6` there, and publish it. The workflow also runs on `release: published`, so the web flow produces the same result even though UI-created tags do not reliably emit a tag push event.
 
-The workflow downloads and checksums the pinned FFmpeg build, runs `cargo build --release`, stages `engine\engine.dll`, runs `dotnet publish` with `-p:Version=<tag>`, and attaches two assets to the GitHub Release:
+The workflow downloads and checksums the pinned FFmpeg build, runs `cargo build --release`, stages `engine\bin\engine.dll`, runs `dotnet publish` with `-p:Version=<tag>`, and attaches two assets to the GitHub Release:
 
 - `InstantReplay-<version>-win64-portable.zip` — the publish output, including `engine\encoder\*.dll`
 - `InstantReplaySetup.exe` — the installer, stamped with the tag version (the in-app updater looks for exactly this asset name on the latest release)
@@ -121,11 +156,11 @@ Quality changes bitrate only. All encoder choices use the same maximum output bo
 
 | FPS | Low | Balanced | High |
 |---|---|---|---|
-| 30 | 2 Mbps | 3 Mbps | 4.5 Mbps |
-| 60 | 4 Mbps | 6 Mbps | 9 Mbps |
-| 120 | 8 Mbps | 12 Mbps | 18 Mbps |
+| 30 | 6 Mbps | 10 Mbps | 15 Mbps |
+| 60 | 12 Mbps | 20 Mbps | 30 Mbps |
+| 120 | 24 Mbps | 40 Mbps | 60 Mbps |
 
-These are bitrate targets, not fixed output file sizes; static scenes can use less data. Existing `Fast` and `Quality` settings remain compatible with Low and High. Quality does not change the selected encoder or frame-pacing behavior.
+These are bitrate targets, not fixed output file sizes; static scenes can use less data. The AVC/H.264 path internally requests more bits per second than the HEVC tiers shown here (about 18 / 28 / 40 Mbps at 60 fps for Low / Balanced / High) so quality stays comparable. Existing `Fast` and `Quality` settings remain compatible with Low and High. Quality does not change the selected encoder or frame-pacing behavior.
 
 **Whole Desktop** captures the selected monitor and system audio. It bypasses all game detection, focus switching and automatic pausing.
 
@@ -148,17 +183,17 @@ Games on the anti-cheat list in `assets/games/anticheat_games.json` are never in
 
 Minecraft Java runs inside `java.exe` or `javaw.exe`; its launcher executable is not the capture target. Built-in title rules cover vanilla Minecraft, Fast Client, Silent Client, Lunar Client, Badlion Client, Feather Client, TLauncher and Legacy Launcher, including compact client names where applicable. Built-in Minecraft Java rules also require an `LWJGL`, `GLFW30` or `SDL_app` game-window class so Java launcher/control windows are not selected. Games launched through TLauncher or Legacy Launcher that retain the ordinary Minecraft title use the vanilla rule. The recognized game must still be foreground to start or resume capture, and app audio follows the game process rather than its launcher. Explicit custom rules remain available for other Java applications.
 
-Capture follows the game window in real time. Windowed and borderless-fullscreen games are recorded with Windows Graphics Capture on the game window; exclusive fullscreen is recorded with DXGI desktop duplication of the display the game is running on (the display is detected, so multi-monitor setups work). Both sources feed one encoder through a fixed canvas at the highest resolution the game can show, and smaller sources are centred with black bars, so switching modes mid-game produces one seamless video. `engine\hooks\capture_hook.dll` is no longer used to capture video: it is no longer injected. In exclusive fullscreen only `overlay_hook.dll` is loaded; it hooks the game's present calls itself (D3D9/11/12/OpenGL), never reads frames, and shows the in-game clip notification. Both DLLs are loaded with the same anti-cheat compatibility scheme as OBS (a `WH_GETMESSAGE` hook on the game's window thread, no remote threads), and never into games on the anti-cheat list; there the regular popup notification is used.
+Capture follows the game window in real time. Windowed and borderless-fullscreen games are recorded with Windows Graphics Capture on the game window; exclusive fullscreen is recorded with DXGI desktop duplication of the display the game is running on (the display is detected, so multi-monitor setups work). Both sources feed one encoder through a fixed canvas at the highest resolution the game can show, and smaller sources are centred with black bars, so switching modes mid-game produces one seamless video. `engine\hooks\bin\capture_hook.dll` is no longer used to capture video: it is no longer injected. `engine\hooks\bin\overlay_hook.dll` is loaded when an in-game card can be drawn; it hooks the game's present calls itself (D3D9/11/12/OpenGL), never reads frames, and shows the in-game clip notification. The overlay is loaded with the same anti-cheat compatibility scheme as OBS (a `WH_GETMESSAGE` hook on the game's window thread, no remote threads), and never into games on the anti-cheat list; there the regular popup notification is used.
 
-Direct3D 9, Direct3D 11, Direct3D 12 and OpenGL additionally use `engine\hooks\overlay_hook.dll` to draw the clip card after capture and before the real present, so the card is not recorded. The D3D12 overlay submits its own fenced command list on the tracked direct queue. Vulkan retains the external WinUI notification while its synchronized in-process renderer is unfinished. Both hook DLLs append `[DEBUG]` lines to the app's debug log when debug logging is enabled.
+Direct3D 9, Direct3D 11, Direct3D 12 and OpenGL additionally use `engine\hooks\bin\overlay_hook.dll` to draw the clip card after capture and before the real present, so the card is not recorded. The D3D12 overlay submits its own fenced command list on the tracked direct queue. Vulkan retains the external WinUI notification while its synchronized in-process renderer is unfinished. The overlay hook appends `[DEBUG]` lines to the app's debug log when debug logging is enabled.
 
-Game Capture uses an in-process hook when available and otherwise WGC. Both request square window corners regardless of the stored rounded-corner preference; the previous Windows corner preference is restored when capture stops. Selecting Game Capture with DXGI configured displays a WinUI compatibility dialog and switches to WGC; DXGI remains available for Whole Desktop. Auto encoding tries hardware and falls back to Microsoft's Media Foundation software H.264 encoder. Process audio requires Windows build 20348 or later (Windows 11 supported); a process-audio failure is reported rather than falling back to system audio.
+Game Capture uses Windows Graphics Capture and, for supported Direct3D 9/11/12 and OpenGL games, loads the overlay into the game process to draw the clip card. Both request square window corners regardless of the stored rounded-corner preference; the previous Windows corner preference is restored when capture stops. Selecting Game Capture with DXGI configured displays a WinUI compatibility dialog and switches to WGC; DXGI remains available for Whole Desktop and exclusive fullscreen. Auto encoding tries NVIDIA NVENC, AMD AMF and Intel Quick Sync, then x264, then Microsoft's Media Foundation H.264 encoder. Process audio requires Windows build 20348 or later (Windows 11 supported); a process-audio failure is reported rather than falling back to system audio.
 
 In hook mode, client-size, window-style, monitor and display-size changes rebuild only API-local readback and overlay resources. The shared frame ring, encoder, audio timeline and replay buffer stay alive, and each frame carries its current dimensions for scaling to the fixed output size. OpenGL context replacement is handled the same way, so games such as Minecraft can switch between windowed and fullscreen without restarting or discarding the buffer. The WGC path detects those changes, pauses while they settle for 600 ms, then recreates the window session and discards the previous buffer. WGC skips stale resize frames before rebuilding its frame pool and processes the newest available frame from its bounded pool after capture stalls, rather than encoding a backlog. Capture startup verifies that frames arrive and retries failed window sessions with a cooldown. Whole Desktop does not switch capture targets or add special recovery for individual games.
 
-**Fullscreen capture limitation:** When an in-process readback is unavailable or injection is blocked—including Vulkan—Game Capture uses WGC, which may be unable to capture exclusive fullscreen content. Video may appear black or frozen while audio continues. Try **Whole Desktop** or use borderless/windowed mode. Protected content may remain unavailable.
+**Fullscreen capture limitation:** Windowed and borderless games are captured with Windows Graphics Capture; exclusive fullscreen is captured with DXGI Desktop Duplication. WGC may be unable to capture exclusive fullscreen content when the game owns the display. Video may appear black or frozen while audio continues. Try **Whole Desktop** or use borderless/windowed mode. Protected content may remain unavailable.
 
-Capture follows fresh compositor/desktop timestamps, skips superseded frames and rejects duplicate or out-of-order timestamps. It does not create filler frames on a timer. During a stationary scene, MP4 sample duration holds the last valid image. The FPS setting is a maximum, so static scenes produce fewer encoded frames. Hardware encoding uses tracked Media Foundation samples so GPU buffers are recycled only after the encoder releases them; Software selects synchronous Media Foundation H.264 encoding, as in wcap.
+Capture follows fresh compositor/desktop timestamps, skips superseded frames and rejects duplicate or out-of-order timestamps. It does not create filler frames on a timer. During a stationary scene, the container holds the last valid image. The FPS setting is a maximum, so static scenes produce fewer encoded frames. Encoders come from FFmpeg, and GPU sample buffers are recycled only after the encoder releases them.
 
 Replay saves show a compact card at the top left with the app icon. Successful saves show **Clipped Last N Seconds**, using the saved duration; failed saves show **Failed To Clip** and **See debug log for more details**, with the reason recorded in the log. When a Direct3D 9, Direct3D 11, Direct3D 12 or OpenGL hook is active the card is drawn inside the game with the same colors, icon, live encode percentage and morph/slide transitions as the WinUI popup; otherwise the popup is a WinUI window over the foreground display. The card slides in from the left, remains visible for four seconds, then slides out without activating or stealing game focus. The WinUI popup requests capture exclusion and is raised above borderless/fullscreen windows on a best-effort basis; legacy exclusive fullscreen can prevent it from appearing, and a popup failure never invalidates the saved clip. Other warnings retain their existing notification path.
 
@@ -184,7 +219,7 @@ When preparing a release, keep the app version in `InstantReplay.csproj`, the in
 | `%APPDATA%\InstantReplay\updates.json` | Last update check, last reminder time and cached release metadata |
 | `%APPDATA%\InstantReplay\update-result.json` | Installer result, consumed after reopening |
 | `%TEMP%\InstantReplay-Updates\<unique folder>` | Verified installer and temporary local update helper |
-| `Pictures\Instant Replay` (default) or your chosen folder | Saved replay folders and MP4 files |
+| `Pictures\Instant Replay` (default) or your chosen folder | Saved replay folders and video files (MP4, MOV, MKV, MPEG-TS or FLV) |
 | `%TEMP%\thumbnails` | Cached replay preview images |
 | `%TEMP%\debug_<timestamp>.txt` | Log file |
 | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` | Start with Windows entry |

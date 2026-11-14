@@ -3,6 +3,34 @@
 All notable changes to Instant Replay are documented in this file.
 Newest entries go on top.
 
+## Unreleased
+
+### New
+
+- **Reworked home page.** A single hero card now carries the status pill, the hotkey pill, the monitor/refresh artwork and the **Save Replay** / **Start Replay** actions. Live CPU and memory cards underneath adopt the system accent colour and keep a short sparkline history; the sparklines switch to the alert colour at 90% or above.
+
+### Fixed
+
+- **Settings page could crash while scrolling.** Every visit to Settings re-applied a staggered entrance animation that put a `CompositeTransform` on each card. That animating layer clashed with mouse-wheel scrolling inside the page's `ScrollViewer` and could take the process down with a stowed exception in `Microsoft.UI.Xaml.dll`. Settings now uses only the page-level fade.
+
+### Changed
+
+- **Installer keeps the install folder clean.** The whole publish payload now lives in `<install dir>\ship`, and the install root holds only an `InstantReplay.lnk` launcher and that folder; the uninstaller moved to `ship\Uninstall.exe`. Start Menu and desktop shortcuts launch `ship\InstantReplay.exe`, start with Windows and `.ir` associations use the same path, and updates keep the layout. The hook DLLs now ship and load from `engine\hooks\bin\`. Updating an older flat install migrates it into `ship` once and removes the old root files.
+- **Source layout.** Small related files were consolidated into cohesive files, each still using a single namespace:
+  - `InstantReplay.Models/CaptureModels.cs` — `CaptureMethod`, `CaptureSource`, `WindowMode`, `CaptureSurface`, `CaptureWindow`, `WindowSnapshot`
+  - `InstantReplay.Models/UpdateModels.cs` — `UpdateRelease`, `UpdateCheck`, `UpdateInstallResult`
+  - `InstantReplay.Models/VideoSettings.cs` — `EncoderPreference`, `VideoQualityProfile`
+  - `InstantReplay.Models/SaveReplayResult.cs` — now also contains `SaveReplayOutcome`
+  - `InstantReplay.GUI/Shell/TaskbarBadge.cs` — now also contains `BadgeKind`
+  - `InstantReplay.GUI/Helpers/TitleBarButtons.cs` — now also contains `Chrome`
+  - `InstantReplay.Native/IrNative.cs` — now also contains the audio endpoint COM interop (`MMDeviceEnumeratorComObject`, `IMMDeviceEnumerator`, `PropertyKey`, `IMMNotificationClient`)
+  - `InstantReplay.Services/WindowsIntegration.cs` — `WindowsTheme` and `StartupManager`
+- Temporary first-chance and `AppDomain` crash-diagnostic hooks were removed from `App.xaml.cs`.
+
+### Notes
+
+- No settings-format or saved-file changes; existing `settings.json` files and replays are compatible.
+
 ## 1.6 - 2026-11-04
 
 ### New

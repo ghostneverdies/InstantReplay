@@ -1,5 +1,17 @@
-﻿namespace InstantReplay.Models;
+namespace InstantReplay.Models;
 
+/// <summary>Hardware or software encoder the user wants the engine to prefer.</summary>
+public enum EncoderPreference
+{
+    Auto = 0,
+    Nvenc = 1,
+    Amf = 2,
+    Qsv = 3,
+    X264 = 4,
+    MediaFoundation = 5,
+}
+
+/// <summary>Bitrate and canvas derived from the quality preset and frame rate.</summary>
 public readonly record struct VideoQualityProfile(string Name, int BitrateKbps, int MaxWidth, int MaxHeight)
 {
     public static VideoQualityProfile FromPreset(string preset, int fps)

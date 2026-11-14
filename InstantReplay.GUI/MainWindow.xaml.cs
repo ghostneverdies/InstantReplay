@@ -259,12 +259,11 @@ public partial class MainWindow : Window
     // accent colour instead of a hardcoded palette. The usage bars are animated from the last
     // target value; the timer runs far slower than the transition, so they never fight.
     private SolidColorBrush _accentPlateBrush = new(Color.FromArgb(0x30, 0x8B, 0x5F, 0xBF));
-    private SolidColorBrush _normalBarBrush = new(Colors.Transparent);
-    private double _cpuBarShown;
-    private double _ramBarShown;
-    private Storyboard? _cpuBarStoryboard;
-    private Storyboard? _ramBarStoryboard;
-    private Storyboard? _starStoryboard;
+    private SolidColorBrush _normalBarBrush = new(Color.FromArgb(0xFF, 0x60, 0xA5, 0xFA));
+    private const int SparkSamples = 40;
+    private const double SparkAlertPct = 90;
+    private readonly List<double> _cpuHistory = new();
+    private readonly List<double> _ramHistory = new();
     private bool _animationsEnabled = true;
 
     private bool _capturingHotkey;
@@ -333,9 +332,6 @@ public partial class MainWindow : Window
         _engine = new RecorderEngine(_settings);
 
         _currentPage = HomePage;
-
-        RootGrid.SizeChanged += (_, e) => ApplyHomeLayout(e.NewSize.Width);
-        HomePage.Loaded += (_, _) => ApplyHomeLayout(RootGrid.ActualWidth);
 
         RootGrid.Loaded += (_, _) => InitAudioToggles();
 
@@ -408,7 +404,7 @@ public partial class MainWindow : Window
         _bufferHealthTimer.Tick += (_, _) => CheckBufferHealth();
         _bufferHealthTimer.Start();
 
-        _statsTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
+        _statsTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
         _statsTimer.Tick += (_, _) => UpdateSystemStats();
         _statsTimer.Start();
         UpdateSystemStats();
@@ -976,7 +972,7 @@ public partial class MainWindow : Window
         if (ReferenceEquals(page, HomePage))
             return new FrameworkElement[] { HeroArt, HeroTitle, HeroSubtitle, HeroActions };
         if (ReferenceEquals(page, SettingsPage))
-            return SettingsContent.Children.OfType<FrameworkElement>().ToList();
+            return Array.Empty<FrameworkElement>();
         if (ReferenceEquals(page, GalleryPage))
             // The grid itself is not translated: moving a full virtualized GridView forces it
             // onto its own layer. The page-level fade is enough for the body.
@@ -1091,28 +1087,6 @@ public partial class MainWindow : Window
     }
 
 
-    private bool? _homeWide;
-
-    /// <summary>Wide windows keep the two stat cards side by side; narrow ones stack them.</summary>
-    private void ApplyHomeLayout(double width)
-    {
-        bool wide = width >= 920;
-        if (_homeWide == wide) return;
-        _homeWide = wide;
-
-        HeroCard.Padding = new Thickness(wide ? 32 : 24);
-        HeroContent.ColumnSpacing = wide ? 28 : 24;
-        HeroArt.Width = wide ? 112 : 96;
-        HeroArt.Height = wide ? 64 : 56;
-        HeroTitle.FontSize = wide ? 44 : 36;
-        HeroTitle.LineHeight = wide ? 48 : 40;
-        HeroSubtitle.FontSize = wide ? 15 : 14;
-
-        Grid.SetRow(RamCard, wide ? 0 : 1);
-        Grid.SetColumn(RamCard, wide ? 1 : 0);
-        RamCard.Margin = wide ? new Thickness(0) : new Thickness(0, 16, 0, 0);
-    }
-
     private void ApplyHomeAccent()
     {
         if (HeroCard is null) return;
@@ -1120,84 +1094,19 @@ public partial class MainWindow : Window
         Color accent = GetSystemAccent();
         bool dark = _settings.DarkMode;
 
-        // The hero is a deep accent shade, so the white copy stays legible for every accent
-        // while the Mica material still shows through the surrounding window.
-        Color hero = Darken(accent, dark ? 0.56f : 0.63f);
-        HeroCard.Background = new SolidColorBrush(Color.FromArgb(248, hero.R, hero.G, hero.B));
-
-        Color onHero = Lighten(accent, 0.58f);
-        HeroMomentWord.Foreground = new SolidColorBrush(onHero);
-
         Color plate = dark ? Lighten(accent, 0.16f) : accent;
         _accentPlateBrush = new SolidColorBrush(Color.FromArgb(0x32, plate.R, plate.G, plate.B));
         CpuIconBg.Background = _accentPlateBrush;
         RamIconBg.Background = _accentPlateBrush;
 
         var iconBrush = new SolidColorBrush(dark ? Lighten(accent, 0.34f) : Darken(accent, 0.06f));
-        CpuIconPath.Stroke = iconBrush;
-        RamIconPath.Stroke = iconBrush;
+        CpuIconGlyph.Foreground = iconBrush;
+        RamIconGlyph.Foreground = iconBrush;
 
-        var barBrush = new SolidColorBrush(dark ? Lighten(accent, 0.12f) : accent);
-        _normalBarBrush = barBrush;
-        CpuBarFill.Background = barBrush;
-        RamBarFill.Background = barBrush;
+        _normalBarBrush = new SolidColorBrush(dark ? Lighten(accent, 0.12f) : accent);
 
         SaveReplayButton.Background = new SolidColorBrush(accent);
         SaveReplayButton.Foreground = new SolidColorBrush(ContrastForeground(accent));
-
-        StartStarAnimations();
-    }
-
-    /// <summary>Makes the stars around the hero clapboard twinkle and drift subtly.</summary>
-    private void StartStarAnimations()
-    {
-        if (!_animationsEnabled) return;
-
-        _starStoryboard?.Stop();
-
-        var sb = new Storyboard();
-
-        void AnimateStar(FrameworkElement star, double durationMs, double fromOpacity, double toOpacity, double cxFrom, double cxTo, double cyFrom, double cyTo)
-        {
-            if (star == null) return;
-
-            var opacity = new DoubleAnimationUsingKeyFrames();
-            opacity.KeyFrames.Add(new DiscreteDoubleKeyFrame { KeyTime = TimeSpan.FromMilliseconds(0), Value = fromOpacity });
-            opacity.KeyFrames.Add(new LinearDoubleKeyFrame { KeyTime = TimeSpan.FromMilliseconds(durationMs / 3), Value = toOpacity });
-            opacity.KeyFrames.Add(new LinearDoubleKeyFrame { KeyTime = TimeSpan.FromMilliseconds(durationMs * 2 / 3), Value = fromOpacity });
-            opacity.KeyFrames.Add(new DiscreteDoubleKeyFrame { KeyTime = TimeSpan.FromMilliseconds(durationMs), Value = toOpacity });
-            Storyboard.SetTarget(opacity, star);
-            Storyboard.SetTargetProperty(opacity, "Opacity");
-            sb.Children.Add(opacity);
-
-            var slideX = new DoubleAnimation
-            {
-                From = cxFrom, To = cxTo, Duration = TimeSpan.FromMilliseconds(durationMs),
-                AutoReverse = true, RepeatBehavior = RepeatBehavior.Forever,
-            };
-            Storyboard.SetTarget(slideX, star);
-            Storyboard.SetTargetProperty(slideX, "(Canvas.Left)");
-            sb.Children.Add(slideX);
-
-            var slideY = new DoubleAnimation
-            {
-                From = cyFrom, To = cyTo, Duration = TimeSpan.FromMilliseconds(durationMs),
-                AutoReverse = true, RepeatBehavior = RepeatBehavior.Forever,
-            };
-            Storyboard.SetTarget(slideY, star);
-            Storyboard.SetTargetProperty(slideY, "(Canvas.Top)");
-            sb.Children.Add(slideY);
-        }
-
-        AnimateStar(Star1, 2200, 0.3, 1.0, 20, 26, 4, 0);
-        AnimateStar(Star2, 1800, 0.2, 0.9, 72, 66, 18, 24);
-        AnimateStar(Star3, 2500, 0.4, 1.0, 48, 52, 52, 48);
-        AnimateStar(Star4, 1600, 0.1, 0.8, 8, 2, 38, 34);
-        AnimateStar(Star5, 2000, 0.5, 1.0, 32, 38, 2, 8);
-
-        sb.RepeatBehavior = RepeatBehavior.Forever;
-        _starStoryboard = sb;
-        sb.Begin();
     }
 
     private static Color Darken(Color c, float amount) => Color.FromArgb(255,
@@ -1249,12 +1158,12 @@ public partial class MainWindow : Window
         if (running)
         {
             StartStopButton.Style = (Style)Application.Current.Resources["HomeDangerButtonStyle"];
-            SetStartStopLabel("STOP", "\uE71A");
+            SetStartStopLabel("Stop", "\uE71A");
         }
         else
         {
             StartStopButton.Style = (Style)Application.Current.Resources["HomeNeutralButtonStyle"];
-            SetStartStopLabel("START REPLAY", "\uE768");
+            SetStartStopLabel("Start Replay", "\uE768");
         }
     }
 
@@ -2297,13 +2206,13 @@ public partial class MainWindow : Window
         StartStopButton.IsEnabled = false;
         if (_engine.IsRunning)
         {
-            SetStartStopLabel("STOPPING…");
+            SetStartStopLabel("Stopping…");
             await Task.Run(() => _engine.Stop());
             SetRunningVisual(false);
         }
         else
         {
-            SetStartStopLabel("STARTING…");
+            SetStartStopLabel("Starting…");
             bool ok = await Task.Run(StartCaptureCore);
             SetRunningVisual(ok);
             if (!ok) ShowStartFailure();
@@ -3215,8 +3124,7 @@ public partial class MainWindow : Window
         if (cpuPct is { } pct)
         {
             CpuValueText.Text = $"{pct:0}%";
-            AnimateStatBar(CpuBarScale, ref _cpuBarShown, ref _cpuBarStoryboard, pct);
-            ApplyStatAlert(CpuCard, CpuIconBg, CpuBarFill, CpuValueText, CpuHintText, pct >= 85);
+            UpdateSpark(_cpuHistory, pct, CpuSparkHost, CpuSparkLine, CpuSparkArea);
         }
         else
         {
@@ -3232,50 +3140,63 @@ public partial class MainWindow : Window
                 double usedGb = (m.ullTotalPhys - m.ullAvailPhys) / (1024.0 * 1024 * 1024);
                 RamValueText.Text = $"{usedGb:0.0} / {totalGb:0} GB";
                 RamHintText.Text = $"{m.dwMemoryLoad}% used";
-                AnimateStatBar(RamBarScale, ref _ramBarShown, ref _ramBarStoryboard, m.dwMemoryLoad);
-                ApplyStatAlert(RamCard, RamIconBg, RamBarFill, RamValueText, RamHintText, m.dwMemoryLoad >= 85);
+                UpdateSpark(_ramHistory, m.dwMemoryLoad, RamSparkHost, RamSparkLine, RamSparkArea);
             }
         }
         catch (Exception ex) { Logger.Warn($"Memory stats failed: {ex.Message}"); }
     }
 
-    private void AnimateStatBar(ScaleTransform scale, ref double shown, ref Storyboard? storyboard, double percent)
+    /// <summary>Adds a sample to a usage graph and recolours it while usage is at or above 90%.</summary>
+    private void UpdateSpark(List<double> history, double pct, FrameworkElement host,
+        Microsoft.UI.Xaml.Shapes.Polyline line, Microsoft.UI.Xaml.Shapes.Polygon area)
     {
-        double target = Math.Clamp(percent, 0, 100) / 100.0;
-        storyboard?.Stop();
+        history.Add(Math.Clamp(pct, 0, 100));
+        if (history.Count > SparkSamples) history.RemoveAt(0);
 
-        if (!_animationsEnabled || Math.Abs(target - shown) < 0.001)
+        Brush b = pct >= SparkAlertPct ? AlertBrush : _normalBarBrush;
+        line.Stroke = b;
+        area.Fill = b;
+
+        RenderSpark(history, host, line, area);
+    }
+
+    private static void RenderSpark(List<double> history, FrameworkElement host,
+        Microsoft.UI.Xaml.Shapes.Polyline line, Microsoft.UI.Xaml.Shapes.Polygon area)
+    {
+        double w = host.ActualWidth, h = host.ActualHeight;
+        if (w <= 0 || h <= 0 || history.Count < 2)
         {
-            scale.ScaleX = target;
-            shown = target;
-            storyboard = null;
+            line.Points = new PointCollection();
+            area.Points = new PointCollection();
             return;
         }
 
-        var animation = new DoubleAnimation
+        const double pad = 3;
+        var pts = new PointCollection();
+        double firstX = 0, lastX = 0;
+        for (int i = 0; i < history.Count; i++)
         {
-            From = shown,
-            To = target,
-            Duration = TimeSpan.FromMilliseconds(220),
-            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
-        };
-        Storyboard.SetTarget(animation, scale);
-        Storyboard.SetTargetProperty(animation, "ScaleX");
+            double x = w * (SparkSamples - history.Count + i) / (SparkSamples - 1);
+            double y = h - pad - history[i] / 100.0 * (h - 2 * pad);
+            if (i == 0) firstX = x;
+            lastX = x;
+            pts.Add(new Windows.Foundation.Point(x, y));
+        }
+        line.Points = pts;
 
-        var next = new Storyboard();
-        next.Children.Add(animation);
-        storyboard = next;
-        next.Begin();
-        shown = target;
+        var fill = new PointCollection();
+        foreach (var p in pts) fill.Add(p);
+        fill.Add(new Windows.Foundation.Point(lastX, h));
+        fill.Add(new Windows.Foundation.Point(firstX, h));
+        area.Points = fill;
     }
 
-    private void ApplyStatAlert(Border card, Border icon, Border barFill, TextBlock value, TextBlock hint, bool alert)
+    private void SparkHost_SizeChanged(object sender, SizeChangedEventArgs e)
     {
-        card.BorderBrush = alert ? AlertBrush : GetThemedBrush("StatCardBorderBrush");
-        icon.Background = alert ? AlertBrush : _accentPlateBrush;
-        barFill.Background = alert ? AlertBrush : _normalBarBrush;
-        value.Foreground = alert ? AlertBrush : GetThemedBrush("TextPrimaryBrush");
-        hint.Foreground = alert ? AlertBrush : GetThemedBrush("StatHintBrush");
+        if (ReferenceEquals(sender, CpuSparkHost))
+            RenderSpark(_cpuHistory, CpuSparkHost, CpuSparkLine, CpuSparkArea);
+        else if (ReferenceEquals(sender, RamSparkHost))
+            RenderSpark(_ramHistory, RamSparkHost, RamSparkLine, RamSparkArea);
     }
 
     private void ExitApplicationAsync()

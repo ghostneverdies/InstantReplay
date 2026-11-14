@@ -27,10 +27,10 @@ internal static class HookInjector
     private const uint Th32CsSnapshotModule32 = 0x00000010;
 
     public static string CaptureDllPath =>
-        Path.Combine(AppContext.BaseDirectory, "engine", "hooks", CaptureDll);
+        Path.Combine(AppContext.BaseDirectory, "engine", "hooks", "bin", CaptureDll);
 
     public static string OverlayDllPath =>
-        Path.Combine(AppContext.BaseDirectory, "engine", "hooks", OverlayDll);
+        Path.Combine(AppContext.BaseDirectory, "engine", "hooks", "bin", OverlayDll);
 
     public static bool HasModule(uint processId, string moduleName) =>
         IsModuleLoaded(processId, moduleName);

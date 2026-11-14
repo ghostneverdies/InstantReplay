@@ -145,8 +145,9 @@ jobs:
             "engine/encoder/avutil-60.dll",
             "engine/encoder/swresample-6.dll",
             "engine/encoder/FFMPEG-LICENSE.txt",
-            "engine/hooks/capture_hook.dll",
-            "engine/hooks/overlay_hook.dll",
+            "engine/hooks/bin/capture_hook.dll",
+            "engine/hooks/bin/overlay_hook.dll",
+            "assets/games/games.json",
             "assets/games/anticheat_games.json"
           )
           $missing = $required | Where-Object { -not (Test-Path (Join-Path $dir $_)) }
