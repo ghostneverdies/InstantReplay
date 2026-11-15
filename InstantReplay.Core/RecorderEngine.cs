@@ -215,7 +215,7 @@ public sealed class RecorderEngine : IDisposable
     private bool StartEngine(IntPtr window, WindowSnapshot? snap, bool forceDxgi)
     {
         var quality = VideoQualityProfile.FromPreset(_captureSettings.QualityPreset, _captureSettings.FrameRate);
-        int bitrateKbps = _captureSettings.BitrateKbps > 0
+        int bitrateKbps = _captureSettings.RateControl != "Vbr" && _captureSettings.BitrateKbps > 0
             ? _captureSettings.BitrateKbps
             : quality.BitrateKbps;
         CaptureMethod method = snap != null && snap.Source == CaptureSource.Wgc && !forceDxgi

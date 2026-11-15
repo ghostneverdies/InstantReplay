@@ -176,9 +176,9 @@ public partial class MainWindow : Window
     private static readonly TimeSpan SaveCooldown = TimeSpan.FromSeconds(10);
     private DateTime _lastSaveAcceptedUtc = DateTime.MinValue;
 
-    private const long LeakGrowthMb = 256;
-    private const int LeakConsecutiveSamplesRequired = 3;
-    private static readonly TimeSpan LeakReminderInterval = TimeSpan.FromSeconds(20);
+    private const long LeakGrowthMb = 1024;
+    private const int LeakConsecutiveSamplesRequired = 6;
+    private static readonly TimeSpan LeakReminderInterval = TimeSpan.FromMinutes(10);
 
     private readonly Settings _settings;
     private readonly RecorderEngine _engine;
@@ -2355,7 +2355,7 @@ public partial class MainWindow : Window
 
     private void BitrateBox_ValueChanged(NumberBox sender, NumberBoxValueChangedEventArgs args)
     {
-        if (_initializing || double.IsNaN(args.NewValue)) return;
+        if (_initializing || _syncingBitrateBox || double.IsNaN(args.NewValue)) return;
         _settings.BitrateKbps = Math.Clamp((int)Math.Round(args.NewValue), 1000, 100000);
         CheckDirty();
     }
@@ -2369,7 +2369,26 @@ public partial class MainWindow : Window
 
         if (_settings.BitrateKbps <= 0)
             _settings.BitrateKbps = VideoQualityProfile.FromPreset(_settings.QualityPreset, _settings.FrameRate).BitrateKbps;
-        if (BitrateBox.Value != _settings.BitrateKbps) BitrateBox.Value = _settings.BitrateKbps;
+        UpdateBitrateBoxState();
+    }
+
+    private bool _syncingBitrateBox;
+
+    private void UpdateBitrateBoxState()
+    {
+        bool vbr = _settings.RateControl == "Vbr";
+        BitrateBox.IsEnabled = !vbr;
+        BitrateBox.Opacity = vbr ? 0.45 : 1.0;
+
+        int shown = vbr
+            ? VideoQualityProfile.FromPreset(_settings.QualityPreset, _settings.FrameRate).BitrateKbps
+            : _settings.BitrateKbps;
+        if (shown > 0 && BitrateBox.Value != shown)
+        {
+            _syncingBitrateBox = true;
+            try { BitrateBox.Value = shown; }
+            finally { _syncingBitrateBox = false; }
+        }
     }
 
     private void QualityCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -2378,7 +2397,7 @@ public partial class MainWindow : Window
         string preset = QualityCombo.SelectedIndex switch { 1 => "Balanced", 2 => "Quality", _ => "Fast" };
         _settings.QualityPreset = preset;
         _settings.BitrateKbps = VideoQualityProfile.FromPreset(preset, _settings.FrameRate).BitrateKbps;
-        BitrateBox.Value = _settings.BitrateKbps;
+        UpdateBitrateBoxState();
         CheckDirty();
     }
 
@@ -2402,6 +2421,7 @@ public partial class MainWindow : Window
             _ => 0,
         };
         RateControlCombo.SelectedIndex = _settings.RateControl == "Vbr" ? 1 : 0;
+        UpdateBitrateBoxState();
         CodecCombo.SelectedIndex = _settings.VideoCodec switch { "Hevc" => 1, "H264" => 2, _ => 0 };
         EncoderPresetCombo.SelectedIndex = _settings.EncoderPreset switch { "Speed" => 0, "Quality" => 2, _ => 1 };
         ContainerCombo.SelectedIndex = _settings.Container switch
@@ -2434,6 +2454,7 @@ public partial class MainWindow : Window
     {
         if (_initializing) return;
         _settings.RateControl = RateControlCombo.SelectedIndex == 1 ? "Vbr" : "Cbr";
+        UpdateBitrateBoxState();
         CheckDirty();
     }
 
