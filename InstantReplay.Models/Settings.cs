@@ -32,7 +32,7 @@ public sealed class Settings
 
     public string EncoderChoice { get; set; } = "Auto";
 
-    public string VideoCodec { get; set; } = "Auto";
+    public string VideoCodec { get; set; } = "H264";
 
     public string RateControl { get; set; } = "Cbr";
 

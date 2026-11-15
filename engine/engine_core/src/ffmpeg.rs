@@ -340,27 +340,18 @@ impl VideoOptions {
 
 fn candidates(enc: Enc, codec: Codec) -> &'static [&'static str] {
     match (enc, codec) {
-        (Enc::Auto, Codec::Auto) => &[
-            "hevc_nvenc",
-            "hevc_amf",
-            "hevc_qsv",
-            "h264_nvenc",
-            "h264_amf",
-            "h264_qsv",
-            "libx264",
-        ],
         (Enc::Auto, Codec::Hevc) => &["hevc_nvenc", "hevc_amf", "hevc_qsv"],
-        (Enc::Auto, Codec::H264) => &["h264_nvenc", "h264_amf", "h264_qsv", "libx264"],
-        (Enc::Nvenc, Codec::H264) => &["h264_nvenc"],
-        (Enc::Nvenc, _) => &["hevc_nvenc"],
-        (Enc::Amf, Codec::H264) => &["h264_amf"],
-        (Enc::Amf, _) => &["hevc_amf"],
-        (Enc::Qsv, Codec::H264) => &["h264_qsv"],
-        (Enc::Qsv, _) => &["hevc_qsv"],
+        (Enc::Auto, _) => &["h264_nvenc", "h264_amf", "h264_qsv", "libx264"],
+        (Enc::Nvenc, Codec::Hevc) => &["hevc_nvenc"],
+        (Enc::Nvenc, _) => &["h264_nvenc"],
+        (Enc::Amf, Codec::Hevc) => &["hevc_amf"],
+        (Enc::Amf, _) => &["h264_amf"],
+        (Enc::Qsv, Codec::Hevc) => &["hevc_qsv"],
+        (Enc::Qsv, _) => &["h264_qsv"],
         (Enc::X264, Codec::Hevc) => &[],
         (Enc::X264, _) => &["libx264"],
-        (Enc::Mf, Codec::H264) => &["h264_mf"],
-        (Enc::Mf, _) => &["hevc_mf"],
+        (Enc::Mf, Codec::Hevc) => &["hevc_mf"],
+        (Enc::Mf, _) => &["h264_mf"],
     }
 }
 
@@ -1621,21 +1612,17 @@ mod tests {
         assert_eq!(b.preset, Preset::Balanced);
         assert_eq!(
             candidates(Enc::Auto, Codec::Auto),
-            &[
-                "hevc_nvenc",
-                "hevc_amf",
-                "hevc_qsv",
-                "h264_nvenc",
-                "h264_amf",
-                "h264_qsv",
-                "libx264",
-            ]
+            &["h264_nvenc", "h264_amf", "h264_qsv", "libx264"]
         );
-        assert_eq!(candidates(Enc::Nvenc, Codec::Auto), &["hevc_nvenc"]);
-        assert_eq!(candidates(Enc::Amf, Codec::Auto), &["hevc_amf"]);
-        assert_eq!(candidates(Enc::Qsv, Codec::Auto), &["hevc_qsv"]);
+        assert_eq!(candidates(Enc::Nvenc, Codec::Auto), &["h264_nvenc"]);
+        assert_eq!(candidates(Enc::Amf, Codec::Auto), &["h264_amf"]);
+        assert_eq!(candidates(Enc::Qsv, Codec::Auto), &["h264_qsv"]);
         assert_eq!(candidates(Enc::X264, Codec::Auto), &["libx264"]);
-        assert_eq!(candidates(Enc::Mf, Codec::Auto), &["hevc_mf"]);
+        assert_eq!(candidates(Enc::Mf, Codec::Auto), &["h264_mf"]);
+        assert_eq!(
+            candidates(Enc::Auto, Codec::Hevc),
+            &["hevc_nvenc", "hevc_amf", "hevc_qsv"]
+        );
         assert_eq!(
             candidates(Enc::Auto, Codec::H264),
             &["h264_nvenc", "h264_amf", "h264_qsv", "libx264"]

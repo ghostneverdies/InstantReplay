@@ -1210,7 +1210,7 @@
                                         <ComboBox x:Name="CodecCombo"
                                                   HorizontalAlignment="Stretch"
                                                   SelectionChanged="CodecCombo_SelectionChanged">
-                                            <ComboBoxItem Content="Auto (HEVC preferred)"/>
+                                            <ComboBoxItem Content="Auto (H.264)"/>
                                             <ComboBoxItem Content="HEVC / H.265"/>
                                             <ComboBoxItem Content="AVC / H.264"/>
                                         </ComboBox>
