@@ -1,33 +1,3 @@
-FFmpeg license and acknowledgment
-=================================
-
-Instant Replay uses FFmpeg (https://ffmpeg.org/) to encode video (H.264) and audio (AAC)
-and to write the saved MP4 / MKV files.
-
-The FFmpeg shared libraries in this folder (avcodec, avformat, avutil, swresample) are
-built with GPL components enabled (--enable-gpl, including libx264) and are therefore
-licensed under the GNU General Public License, version 3 (the full text follows below).
-They are separate DLLs that the app loads at runtime. They are NOT part of the
-GNU GPL v3-licensed Instant Replay source code in this repository.
-
-FFmpeg is a trademark of Fabrice Bellard, originator of the FFmpeg project.
-FFmpeg is Copyright (c) the FFmpeg developers. libx264 is Copyright (c) VideoLAN and
-its contributors.
-
-Source code
------------
-* FFmpeg source code:             https://ffmpeg.org/download.html
-                                  https://git.ffmpeg.org/ffmpeg.git
-* Exact build scripts and the build configuration used for the DLLs:
-                                  https://github.com/BtbN/FFmpeg-Builds
-* x264 source code:               https://code.videolan.org/videolan/x264
-
-The DLLs are unmodified builds of FFmpeg 8.1 (libavcodec 62, libavformat 62,
-libavutil 60, libswresample 6). To replace them, drop a compatible FFmpeg 8.x
-shared build into this folder.
-
-Full license text
------------------
                     GNU GENERAL PUBLIC LICENSE
                        Version 3, 29 June 2007
 

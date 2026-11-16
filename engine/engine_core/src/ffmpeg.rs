@@ -9,10 +9,10 @@ use std::path::{Path, PathBuf};
 use std::ptr::{null, null_mut};
 use std::sync::{Arc, Mutex};
 
-const AVUTIL_MAJOR: u32 = 60;
-const SWRESAMPLE_MAJOR: u32 = 6;
-const AVCODEC_MAJOR: u32 = 62;
-const AVFORMAT_MAJOR: u32 = 62;
+const AVUTIL_MAJOR: u32 = 57;
+const SWRESAMPLE_MAJOR: u32 = 4;
+const AVCODEC_MAJOR: u32 = 59;
+const AVFORMAT_MAJOR: u32 = 59;
 
 const AVERROR_EAGAIN: c_int = -11;
 const AVERROR_EOF: c_int = -541_478_725;
@@ -201,7 +201,7 @@ fn load_from(dir: &Path) -> Result<Ff, String> {
         .collect();
     if !missing.is_empty() {
         return Err(format!(
-            "FFmpeg libraries not found in '{}': missing {}. Copy the FFmpeg 8.1 shared build DLLs into that folder.",
+            "FFmpeg libraries not found in '{}': missing {}. Copy the FFmpeg 5.1.2 shared build DLLs into that folder.",
             dir.display(),
             missing.join(", ")
         ));
@@ -224,7 +224,7 @@ fn load_from(dir: &Path) -> Result<Ff, String> {
     if util != AVUTIL_MAJOR || codec != AVCODEC_MAJOR || format != AVFORMAT_MAJOR {
         return Err(format!(
             "Unsupported FFmpeg build in '{}': found avutil {util} / avcodec {codec} / avformat {format}, \
-             need {AVUTIL_MAJOR} / {AVCODEC_MAJOR} / {AVFORMAT_MAJOR} (FFmpeg 8.x).",
+             need {AVUTIL_MAJOR} / {AVCODEC_MAJOR} / {AVFORMAT_MAJOR} (FFmpeg 5.1.x).",
             dir.display()
         ));
     }
@@ -265,7 +265,6 @@ pub enum Enc {
     Amf,
     Qsv,
     X264,
-    Mf,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -298,6 +297,8 @@ pub struct VideoOptions {
     pub h: i32,
     pub fps: i32,
     pub bps: u32,
+    /// Encoder availability bits probed by the front end (0 = unknown).
+    pub avail: u32,
 }
 
 impl VideoOptions {
@@ -307,7 +308,6 @@ impl VideoOptions {
             2 => Enc::Amf,
             3 => Enc::Qsv,
             4 => Enc::X264,
-            5 => Enc::Mf,
             _ => Enc::Auto,
         };
         let rate = if (pref >> 8) & 1 == 1 {
@@ -334,6 +334,7 @@ impl VideoOptions {
             h: h & !1,
             fps: fps.max(1),
             bps,
+            avail: ((pref as u32) >> 16) & crate::encoder::ENC_ALL,
         }
     }
 }
@@ -348,11 +349,163 @@ fn candidates(enc: Enc, codec: Codec) -> &'static [&'static str] {
         (Enc::Amf, _) => &["h264_amf"],
         (Enc::Qsv, Codec::Hevc) => &["hevc_qsv"],
         (Enc::Qsv, _) => &["h264_qsv"],
-        (Enc::X264, Codec::Hevc) => &[],
+        (Enc::X264, Codec::Hevc) => &["libx265"],
         (Enc::X264, _) => &["libx264"],
-        (Enc::Mf, Codec::Hevc) => &["hevc_mf"],
-        (Enc::Mf, _) => &["h264_mf"],
     }
+}
+
+fn availability_bit(name: &str) -> u32 {
+    use crate::encoder::*;
+    match name {
+        "h264_nvenc" => ENC_H264_NVENC,
+        "hevc_nvenc" => ENC_HEVC_NVENC,
+        "h264_amf" => ENC_H264_AMF,
+        "hevc_amf" => ENC_HEVC_AMF,
+        "h264_qsv" => ENC_H264_QSV,
+        "hevc_qsv" => ENC_HEVC_QSV,
+        "libx264" => ENC_H264_X264,
+        "libx265" => ENC_HEVC_X265,
+        _ => u32::MAX,
+    }
+}
+
+fn encoder_label(name: &str) -> &'static str {
+    match name {
+        "h264_nvenc" | "hevc_nvenc" => "NVIDIA NVENC",
+        "h264_amf" | "hevc_amf" => "AMD AMF",
+        "h264_qsv" | "hevc_qsv" => "Intel Quick Sync",
+        "libx264" => "x264 (software)",
+        "libx265" => "x265 (software)",
+        _ => "video encoder",
+    }
+}
+
+/// The result of choosing the best available video encoder.
+pub enum VideoSelection {
+    Ffmpeg(FfVideo),
+    MediaFoundation(crate::encoder::MfCodec),
+}
+
+/// Picks and opens an encoder according to the user's preference and the
+/// availability mask produced by `probe_encoders`.
+///
+/// Explicit choices never fall back: if the chosen encoder is unavailable or
+/// cannot be opened, a descriptive error is returned. Auto tries hardware in
+/// order (NVENC, AMF, Quick Sync), then the manual Media Foundation MFT path,
+/// and only then software.
+pub fn select_video(opts: &VideoOptions, allow_mf: bool) -> Result<VideoSelection, String> {
+    let ff = load()?;
+    let known = opts.avail != 0;
+    let hevc = matches!(opts.codec, Codec::Hevc);
+    let codec_name = if hevc { "HEVC" } else { "H.264" };
+    let auto = opts.enc == Enc::Auto;
+    let names = candidates(opts.enc, opts.codec);
+    let mut failures: Vec<String> = Vec::new();
+
+    let mf = |failures: &mut Vec<String>| -> Option<VideoSelection> {
+        if !auto || !allow_mf {
+            return None;
+        }
+        let bit = if hevc {
+            crate::encoder::ENC_HEVC_MF
+        } else {
+            crate::encoder::ENC_H264_MF
+        };
+        if known && opts.avail & bit == 0 {
+            failures.push("Media Foundation (manual MFT) is not available".into());
+            return None;
+        }
+        Some(VideoSelection::MediaFoundation(if hevc {
+            crate::encoder::MfCodec::Hevc
+        } else {
+            crate::encoder::MfCodec::H264
+        }))
+    };
+
+    let mut mf_tried = false;
+    for name in names {
+        // Media Foundation sits between the hardware encoders and software.
+        if auto && name.starts_with("libx") && !mf_tried {
+            mf_tried = true;
+            if let Some(selection) = mf(&mut failures) {
+                return Ok(selection);
+            }
+        }
+        let bit = availability_bit(name);
+        if bit != u32::MAX && known && opts.avail & bit == 0 {
+            failures.push(format!("{} is not available", encoder_label(name)));
+            continue;
+        }
+        match unsafe { FfVideo::try_open(&ff, name, opts) } {
+            Ok(video) => return Ok(VideoSelection::Ffmpeg(video)),
+            Err(e) => failures.push(format!("{}: {e}", encoder_label(name))),
+        }
+    }
+    if auto && !mf_tried {
+        if let Some(selection) = mf(&mut failures) {
+            return Ok(selection);
+        }
+    }
+
+    let detail = failures.join("; ");
+    if auto {
+        Err(format!(
+            "No working {codec_name} encoder was found. {detail} \
+             Run Detect encoders under Advanced settings, then try again."
+        ))
+    } else {
+        Err(format!(
+            "{} was selected for {codec_name}, but it is not available or could not be started. {detail} \
+             Choose Auto or re-run Detect encoders under Advanced settings.",
+            encoder_label(names.first().copied().unwrap_or("The encoder"))
+        ))
+    }
+}
+
+/// Opens a specific FFmpeg encoder and pushes real frames through it. This is
+/// the probe used by encoder detection so encoders that open but cannot encode
+/// are reported as unavailable.
+pub fn probe_named(name: &'static str, w: i32, h: i32, fps: i32, bps: u32) -> bool {
+    let Ok(ff) = load() else {
+        return false;
+    };
+    let hevc = name.starts_with("hevc_") || name == "libx265";
+    let opts = VideoOptions {
+        enc: Enc::Auto,
+        codec: if hevc { Codec::Hevc } else { Codec::H264 },
+        rate: Rate::Cbr,
+        preset: Preset::Balanced,
+        w: w & !1,
+        h: h & !1,
+        fps: fps.max(1),
+        bps,
+        avail: crate::encoder::ENC_ALL,
+    };
+    let mut video = match unsafe { FfVideo::try_open(&ff, name, &opts) } {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    let w = opts.w as usize;
+    let h = opts.h as usize;
+    let y = vec![16u8; w * h];
+    let uv = vec![128u8; w * h / 2];
+    let frame_dur = SECOND_100NS / opts.fps as i64;
+    let mut out = Vec::new();
+    for i in 0..5 {
+        if video
+            .encode_nv12(&y, w, &uv, w, i as i64 * frame_dur, false, &mut out)
+            .is_err()
+        {
+            return false;
+        }
+        if out.iter().any(|f| !f.data.is_empty()) {
+            return true;
+        }
+    }
+    if video.flush(&mut out).is_err() {
+        return false;
+    }
+    out.iter().any(|f| !f.data.is_empty())
 }
 
 fn nvenc_preset(p: Preset) -> &'static str {
@@ -403,29 +556,6 @@ fn qsv_preset(p: Preset) -> &'static str {
 
 fn x264_preset(_p: Preset) -> &'static str {
     "veryfast"
-}
-
-fn mf_quality(p: Preset) -> &'static str {
-    match p {
-        Preset::Speed => "40",
-        Preset::Balanced => "60",
-        Preset::Quality => "85",
-    }
-}
-
-fn mf_rc(r: Rate) -> &'static str {
-    match r {
-        Rate::Cbr => "cbr",
-        Rate::Vbr => "pc_vbr",
-    }
-}
-
-fn mf_scenario(p: Preset) -> &'static str {
-    match p {
-        Preset::Speed => "display_remoting",
-        Preset::Balanced => "camera_record",
-        Preset::Quality => "archive",
-    }
 }
 
 fn codec_options(name: &str, o: &VideoOptions) -> Vec<(&'static str, &'static str)> {
@@ -497,11 +627,7 @@ fn codec_options(name: &str, o: &VideoOptions) -> Vec<(&'static str, &'static st
             }
             v
         }
-        "hevc_mf" => vec![
-            ("rate_control", mf_rc(o.rate)),
-            ("scenario", mf_scenario(o.preset)),
-            ("quality", mf_quality(o.preset)),
-        ],
+        "hevc_mf" => vec![],
         "h264_nvenc" => vec![
             ("preset", nvenc_preset(o.preset)),
             ("tune", "hq"),
@@ -557,11 +683,7 @@ fn codec_options(name: &str, o: &VideoOptions) -> Vec<(&'static str, &'static st
             ("profile", "high"),
             ("forced-idr", "1"),
         ],
-        "h264_mf" => vec![
-            ("rate_control", mf_rc(o.rate)),
-            ("scenario", mf_scenario(o.preset)),
-            ("quality", mf_quality(o.preset)),
-        ],
+        "h264_mf" => vec![],
         _ => Vec::new(),
     }
 }
@@ -783,7 +905,7 @@ impl FfVideo {
             return Err("out of memory".into());
         }
         let c = &mut *ctx;
-        let hevc = name.starts_with("hevc_");
+        let hevc = name.starts_with("hevc_") || name == "libx265";
         let h264 = name.starts_with("h264_") || name == "libx264";
         let bps = if h264 {
             match o.preset {
@@ -1618,7 +1740,7 @@ mod tests {
         assert_eq!(candidates(Enc::Amf, Codec::Auto), &["h264_amf"]);
         assert_eq!(candidates(Enc::Qsv, Codec::Auto), &["h264_qsv"]);
         assert_eq!(candidates(Enc::X264, Codec::Auto), &["libx264"]);
-        assert_eq!(candidates(Enc::Mf, Codec::Auto), &["h264_mf"]);
+        assert_eq!(candidates(Enc::X264, Codec::Hevc), &["libx265"]);
         assert_eq!(
             candidates(Enc::Auto, Codec::Hevc),
             &["hevc_nvenc", "hevc_amf", "hevc_qsv"]
@@ -1640,6 +1762,7 @@ mod tests {
             h: 1080,
             fps: 60,
             bps: 9_000_000,
+            avail: crate::encoder::ENC_ALL,
         };
 
         let amf = codec_options("hevc_amf", &o);
@@ -1668,8 +1791,7 @@ mod tests {
         assert_eq!(amf_preset(Preset::Quality), "quality");
 
         let mf = codec_options("hevc_mf", &o);
-        assert!(mf.contains(&("quality", "85")));
-        assert!(mf.contains(&("scenario", "archive")));
+        assert!(mf.is_empty());
 
         let vbr = VideoOptions {
             rate: Rate::Vbr,
@@ -1716,6 +1838,7 @@ mod tests {
             h: 360,
             fps: 30,
             bps: 2_000_000,
+            avail: crate::encoder::ENC_ALL,
         };
         let video = unsafe { FfVideo::try_open(&ff, "libx264", &o) }
             .expect("libx264 should open from the bundled FFmpeg build");
@@ -1740,6 +1863,7 @@ mod tests {
             h: h as i32,
             fps,
             bps: 1_000_000,
+            avail: crate::encoder::ENC_ALL,
         };
         let mut enc = unsafe { FfVideo::try_open(&ff, "libx264", &o) }.expect("libx264");
         let frame_dur = SECOND_100NS / fps as i64;

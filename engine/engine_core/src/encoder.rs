@@ -42,9 +42,77 @@ pub enum EncoderKind {
 const HW_FAIL_LIMIT: u32 = 8;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum MfFlavour {
+pub(crate) enum MfFlavour {
     Hardware,
     Software,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MfCodec {
+    H264,
+    Hevc,
+}
+
+impl MfCodec {
+    fn is_hevc(self) -> bool {
+        matches!(self, MfCodec::Hevc)
+    }
+}
+
+// Availability bits shared with the managed front end. Keep these in sync
+// with InstantReplay.Native.EncoderAvailabilityBits.
+pub const ENC_H264_NVENC: u32 = 1 << 0;
+pub const ENC_HEVC_NVENC: u32 = 1 << 1;
+pub const ENC_H264_AMF: u32 = 1 << 2;
+pub const ENC_HEVC_AMF: u32 = 1 << 3;
+pub const ENC_H264_QSV: u32 = 1 << 4;
+pub const ENC_HEVC_QSV: u32 = 1 << 5;
+pub const ENC_H264_X264: u32 = 1 << 6;
+pub const ENC_HEVC_X265: u32 = 1 << 7;
+pub const ENC_H264_MF: u32 = 1 << 8;
+pub const ENC_HEVC_MF: u32 = 1 << 9;
+pub const ENC_ALL: u32 = (1 << 10) - 1;
+
+/// Probes every encoder this build can use by sending real frames through it.
+/// Media Foundation encoders are probed through the manual MFT path.
+pub fn probe_encoders() -> u32 {
+    const W: i32 = 640;
+    const H: i32 = 360;
+    const FPS: i32 = 30;
+    const BPS: u32 = 2_000_000;
+
+    let mut mask = 0u32;
+    if crate::ffmpeg::probe_named("h264_nvenc", W, H, FPS, BPS) {
+        mask |= ENC_H264_NVENC;
+    }
+    if crate::ffmpeg::probe_named("hevc_nvenc", W, H, FPS, BPS) {
+        mask |= ENC_HEVC_NVENC;
+    }
+    if crate::ffmpeg::probe_named("h264_amf", W, H, FPS, BPS) {
+        mask |= ENC_H264_AMF;
+    }
+    if crate::ffmpeg::probe_named("hevc_amf", W, H, FPS, BPS) {
+        mask |= ENC_HEVC_AMF;
+    }
+    if crate::ffmpeg::probe_named("h264_qsv", W, H, FPS, BPS) {
+        mask |= ENC_H264_QSV;
+    }
+    if crate::ffmpeg::probe_named("hevc_qsv", W, H, FPS, BPS) {
+        mask |= ENC_HEVC_QSV;
+    }
+    if crate::ffmpeg::probe_named("libx264", W, H, FPS, BPS) {
+        mask |= ENC_H264_X264;
+    }
+    if crate::ffmpeg::probe_named("libx265", W, H, FPS, BPS) {
+        mask |= ENC_HEVC_X265;
+    }
+    if mf::MfEncoder::probe(MfCodec::H264, W as u32, H as u32, FPS as u32, BPS) {
+        mask |= ENC_H264_MF;
+    }
+    if mf::MfEncoder::probe(MfCodec::Hevc, W as u32, H as u32, FPS as u32, BPS) {
+        mask |= ENC_HEVC_MF;
+    }
+    mask
 }
 
 enum Inner {
@@ -260,8 +328,8 @@ impl VideoEncoder {
     }
 }
 
-mod mf {
-    use super::{bgra_to_nv12, EncodedFrame};
+pub(crate) mod mf {
+    use super::{bgra_to_nv12, EncodedFrame, MfCodec};
     use std::mem::ManuallyDrop;
     use std::time::{Duration, Instant};
     use windows::core::{Interface, GUID};
@@ -348,6 +416,7 @@ mod mf {
         transform: IMFTransform,
         events: Option<IMFMediaEventGenerator>,
         codec: Option<ICodecAPI>,
+        codec_kind: MfCodec,
         flavour: super::MfFlavour,
         provides_samples: bool,
         out_buf_size: u32,
@@ -357,6 +426,7 @@ mod mf {
         frame_dur: i64,
         tmp_i420: Vec<u8>,
         seq_header: Vec<u8>,
+        wrote_header: bool,
         pub convert_ns: i64,
         submitted: u64,
         received: u64,
@@ -369,35 +439,59 @@ mod mf {
         let _ = c.SetValue(key, &var);
     }
 
-    fn scan_nals(d: &[u8]) -> (bool, bool) {
-        let (mut sps, mut idr) = (false, false);
+    fn scan_nals(d: &[u8], codec: MfCodec) -> (bool, bool) {
+        let (mut params, mut key) = (false, false);
         let mut i = 0;
         while i + 3 < d.len() {
             if d[i] == 0 && d[i + 1] == 0 && d[i + 2] == 1 {
-                match d[i + 3] & 0x1F {
-                    7 => sps = true,
-                    5 => idr = true,
-                    _ => {}
+                if codec.is_hevc() {
+                    let ty = (d[i + 3] >> 1) & 0x3F;
+                    match ty {
+                        32..=34 => params = true,
+                        16..=21 => key = true,
+                        _ => {}
+                    }
+                } else {
+                    match d[i + 3] & 0x1F {
+                        7 => params = true,
+                        5 => key = true,
+                        _ => {}
+                    }
                 }
                 i += 3;
             } else {
                 i += 1;
             }
         }
-        (sps, idr)
+        (params, key)
     }
 
     impl MfEncoder {
         pub fn create(w: u32, h: u32, fps: u32, bps: u32) -> R<Self> {
-            Self::create_inner(w, h, fps, bps, None, true)
+            Self::create_codec(MfCodec::H264, w, h, fps, bps)
+        }
+
+        pub fn create_codec(codec: MfCodec, w: u32, h: u32, fps: u32, bps: u32) -> R<Self> {
+            Self::create_inner(w, h, fps, bps, None, true, codec, true)
         }
 
         pub fn create_software(w: u32, h: u32, fps: u32, bps: u32) -> R<Self> {
-            Self::create_inner(w, h, fps, bps, None, false)
+            Self::create_inner(w, h, fps, bps, None, false, MfCodec::H264, false)
         }
 
-        pub fn create_gpu(device: &ID3D11Device, w: u32, h: u32, fps: u32, bps: u32) -> R<Self> {
-            Self::create_inner(w, h, fps, bps, Some(device), true)
+        pub fn create_gpu_codec(
+            device: &ID3D11Device,
+            codec: MfCodec,
+            w: u32,
+            h: u32,
+            fps: u32,
+            bps: u32,
+        ) -> R<Self> {
+            Self::create_inner(w, h, fps, bps, Some(device), true, codec, true)
+        }
+
+        pub fn probe(codec: MfCodec, w: u32, h: u32, fps: u32, bps: u32) -> bool {
+            Self::create_inner(w, h, fps, bps, None, true, codec, true).is_ok()
         }
 
         fn create_inner(
@@ -407,6 +501,8 @@ mod mf {
             bps: u32,
             device: Option<&ID3D11Device>,
             want_hardware: bool,
+            codec: MfCodec,
+            validate: bool,
         ) -> R<Self> {
             let w = w & !1;
             let h = h & !1;
@@ -418,7 +514,11 @@ mod mf {
                 };
                 let out_info = MFT_REGISTER_TYPE_INFO {
                     guidMajorType: MFMediaType_Video,
-                    guidSubtype: MFVideoFormat_H264,
+                    guidSubtype: if codec.is_hevc() {
+                        MFVideoFormat_HEVC
+                    } else {
+                        MFVideoFormat_H264
+                    },
                 };
                 let mut acts: *mut Option<IMFActivate> = std::ptr::null_mut();
                 let mut count = 0u32;
@@ -488,8 +588,12 @@ mod mf {
 
                 let mut last_err = -101;
                 for act in &candidates {
-                    match Self::open(act, w, h, fps, bps, mgr.as_ref(), flavour) {
+                    match Self::open(act, w, h, fps, bps, mgr.as_ref(), flavour, codec) {
                         Ok(mut enc) => {
+                            if validate && !enc.self_check() {
+                                last_err = -103;
+                                continue;
+                            }
                             enc._rt = rt;
                             enc._mgr = mgr;
                             return Ok(enc);
@@ -509,6 +613,7 @@ mod mf {
             bps: u32,
             mgr: Option<&IMFDXGIDeviceManager>,
             flavour: super::MfFlavour,
+            kind: MfCodec,
         ) -> R<Self> {
             let transform: IMFTransform = act.ActivateObject().map_err(e)?;
 
@@ -541,7 +646,11 @@ mod mf {
                 .SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)
                 .map_err(e)?;
             out_t
-                .SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_H264)
+                .SetGUID(&MF_MT_SUBTYPE, if kind.is_hevc() {
+                    &MFVideoFormat_HEVC
+                } else {
+                    &MFVideoFormat_H264
+                })
                 .map_err(e)?;
             out_t.SetUINT32(&MF_MT_AVG_BITRATE, bps).map_err(e)?;
             out_t.SetUINT64(&MF_MT_FRAME_SIZE, pack(w, h)).map_err(e)?;
@@ -554,7 +663,7 @@ mod mf {
             out_t
                 .SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32)
                 .map_err(e)?;
-            let _ = out_t.SetUINT32(&MF_MT_MPEG2_PROFILE, 77);
+            let _ = out_t.SetUINT32(&MF_MT_MPEG2_PROFILE, if kind.is_hevc() { 1 } else { 77 });
             let _ = out_t.SetUINT32(&MF_MT_MAX_KEYFRAME_SPACING, fps.max(1));
             let hd = w >= 1280 || h > 576;
             let _ = out_t.SetUINT32(&MF_MT_VIDEO_CHROMA_SITING, 5);
@@ -605,6 +714,7 @@ mod mf {
                 transform,
                 events,
                 codec,
+                codec_kind: kind,
                 flavour,
                 provides_samples,
                 out_buf_size,
@@ -614,6 +724,7 @@ mod mf {
                 frame_dur: 10_000_000 / fps.max(1) as i64,
                 tmp_i420: Vec::new(),
                 seq_header,
+                wrote_header: false,
                 convert_ns: 0,
                 submitted: 0,
                 received: 0,
@@ -674,6 +785,113 @@ mod mf {
 
         pub fn flavour(&self) -> super::MfFlavour {
             self.flavour
+        }
+
+        pub fn codec_kind(&self) -> MfCodec {
+            self.codec_kind
+        }
+
+        pub fn encode_nv12(
+            &mut self,
+            y: &[u8],
+            y_stride: usize,
+            uv: &[u8],
+            uv_stride: usize,
+            pts100ns: i64,
+            out: &mut Vec<EncodedFrame>,
+        ) -> R<()> {
+            unsafe {
+                self.pump(out)?;
+                let sync = self.events.is_none();
+                if !sync {
+                    let t0 = Instant::now();
+                    while self.pending_inputs == 0 {
+                        if t0.elapsed() > Duration::from_millis(200) {
+                            return Err(-102);
+                        }
+                        std::thread::sleep(Duration::from_micros(500));
+                        self.pump(out)?;
+                    }
+                }
+
+                let w = self.width as usize;
+                let h = self.height as usize;
+                if y_stride < w
+                    || uv_stride < w
+                    || y.len() < y_stride * (h - 1) + w
+                    || uv.len() < uv_stride * (h / 2 - 1) + w
+                {
+                    return Err(-3);
+                }
+                let len = w * h * 3 / 2;
+                let mb = MFCreateMemoryBuffer(len as u32).map_err(e)?;
+                let mut p: *mut u8 = std::ptr::null_mut();
+                mb.Lock(&mut p, None, None).map_err(e)?;
+                {
+                    let dst = std::slice::from_raw_parts_mut(p, len);
+                    let uvd = dst.as_mut_ptr().add(w * h);
+                    for row in 0..h {
+                        std::ptr::copy_nonoverlapping(
+                            y.as_ptr().add(row * y_stride),
+                            dst.as_mut_ptr().add(row * w),
+                            w,
+                        );
+                    }
+                    for row in 0..h / 2 {
+                        std::ptr::copy_nonoverlapping(
+                            uv.as_ptr().add(row * uv_stride),
+                            uvd.add(row * w),
+                            w,
+                        );
+                    }
+                }
+                let _ = mb.Unlock();
+                mb.SetCurrentLength(len as u32).map_err(e)?;
+
+                let sample = MFCreateSample().map_err(e)?;
+                sample.AddBuffer(&mb).map_err(e)?;
+                sample.SetSampleTime(pts100ns).map_err(e)?;
+                sample.SetSampleDuration(self.frame_dur).map_err(e)?;
+                self.transform.ProcessInput(0, &sample, 0).map_err(e)?;
+                if !sync {
+                    self.pending_inputs -= 1;
+                }
+                self.submitted += 1;
+                if sync {
+                    self.drain_sync(out)
+                } else {
+                    self.pump(out)
+                }
+            }
+        }
+
+        /// Sends a few neutral frames through the transform and requires real
+        /// output. Used by encoder detection so a MFT that opens but cannot
+        /// encode is not reported as working.
+        pub fn self_check(&mut self) -> bool {
+            let w = self.width as usize;
+            let h = self.height as usize;
+            if w < 2 || h < 2 {
+                return false;
+            }
+            let luma = w * h;
+            let mut frame = vec![16u8; luma];
+            frame.resize(luma + luma / 2, 128);
+            let (y, uv) = frame.split_at(luma);
+            let mut out = Vec::new();
+            for i in 0..4 {
+                let pts = i as i64 * self.frame_dur;
+                if self.encode_nv12(y, w, uv, w, pts, &mut out).is_err() {
+                    return false;
+                }
+                if out.iter().any(|f| !f.data.is_empty()) {
+                    return true;
+                }
+            }
+            if self.finish(&mut out).is_err() {
+                return false;
+            }
+            out.iter().any(|f| !f.data.is_empty())
         }
 
         pub fn encode(
@@ -864,18 +1082,21 @@ mod mf {
             }
 
             let pts = sample.GetSampleTime().unwrap_or(0);
-            let (has_sps, has_idr) = scan_nals(&data);
-            let key = has_idr || sample.GetUINT32(&MFSampleExtension_CleanPoint).unwrap_or(0) != 0;
+            let (has_params, has_key) = scan_nals(&data, self.codec_kind);
+            let key = has_key || sample.GetUINT32(&MFSampleExtension_CleanPoint).unwrap_or(0) != 0;
 
-            if key && !has_sps {
+            if !has_params {
                 if self.seq_header.is_empty() {
                     self.seq_header = Self::read_seq_header(&self.transform);
                 }
-                if !self.seq_header.is_empty() {
+                if !self.seq_header.is_empty() && (key || !self.wrote_header) {
                     let mut with = self.seq_header.clone();
                     with.extend_from_slice(&data);
                     data = with;
                 }
+            }
+            if key || has_params {
+                self.wrote_header = true;
             }
 
             self.received += 1;
@@ -1078,6 +1299,7 @@ impl GpuEncoder {
         bps: u32,
         improved: bool,
         ffmpeg: Option<crate::ffmpeg::FfVideo>,
+        mf_codec: Option<MfCodec>,
     ) -> Result<Self, i32> {
         let (w, h) = ((out_w as u32) & !1, (out_h as u32) & !1);
         let fps = fps.max(1);
@@ -1097,7 +1319,7 @@ impl GpuEncoder {
             });
         }
         let mut nvenc_hr = 0;
-        if is_nvidia(&input.device) {
+        if mf_codec.is_none() && is_nvidia(&input.device) {
             let textures: Vec<_> = conv.outputs().iter().map(|o| o.tex.clone()).collect();
             match nvenc::NvEncoder::create(
                 &input.device,
@@ -1129,7 +1351,8 @@ impl GpuEncoder {
                 }
             }
         }
-        let mf = mf::MfEncoder::create_gpu(&input.device, w, h, fps as u32, bps)?;
+        let codec = mf_codec.unwrap_or(MfCodec::H264);
+        let mf = mf::MfEncoder::create_gpu_codec(&input.device, codec, w, h, fps as u32, bps)?;
         let mut samples = Vec::with_capacity(GPU_RING);
         for o in conv.outputs() {
             samples.push(mf::surface_sample(&o.tex)?);
@@ -1161,6 +1384,10 @@ impl GpuEncoder {
     pub fn kind_code(&self) -> i32 {
         match &self.backend {
             Backend::Ff(ff) => ff.video.kind_code(),
+            Backend::Mf(m) => match m.codec_kind() {
+                MfCodec::Hevc => 20,
+                MfCodec::H264 => 30,
+            },
             _ => self.kind() as i32,
         }
     }

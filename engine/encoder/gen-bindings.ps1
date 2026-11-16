@@ -1,11 +1,11 @@
-﻿# Regenerates engine/engine_core/src/ffmpeg_sys.rs from the FFmpeg headers that ship
-# with the pinned BtbN gpl-shared build (the headers are identical in the lgpl build).
+﻿# Regenerates engine/engine_core/src/ffmpeg_sys.rs from the FFmpeg 5.1.2 headers
+# that ship with the pinned gyan.dev full_build_shared archive.
 #
 # Requires: bindgen-cli (cargo install bindgen-cli) and libclang.
 #   python -m pip install libclang
 #
 # Usage:
-#   ./gen-bindings.ps1 -FfmpegDir C:\path\to\ffmpeg-n8.1-latest-win64-gpl-shared-8.1
+#   ./gen-bindings.ps1 -FfmpegDir C:\path\to\ffmpeg-5.1.2-full_build-shared
 param(
     [Parameter(Mandatory = $true)][string]$FfmpegDir
 )
@@ -23,8 +23,8 @@ if (-not $env:LIBCLANG_PATH) {
 $bindgen = Join-Path $env:USERPROFILE '.cargo\bin\bindgen.exe'
 if (-not (Test-Path $bindgen)) { throw 'bindgen.exe not found; run: cargo install bindgen-cli' }
 
-$wrapper = Join-Path $PSScriptRoot '..\core\ffmpeg-bindings\wrapper.h'
-$srcDir = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\core\src')).Path
+$wrapper = Join-Path $PSScriptRoot '..\engine_core\ffmpeg-bindings\wrapper.h'
+$srcDir = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\engine_core\src')).Path
 $out = Join-Path $srcDir 'ffmpeg_sys.rs'
 # bindgen writes straight to the target path; going through a temp file keeps an open editor or
 # rust-analyzer from turning the rebuild into "Access is denied" (the move is atomic-ish on NTFS).

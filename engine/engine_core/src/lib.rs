@@ -604,6 +604,7 @@ fn trim_audio_ring(ring: &mut Vec<RingAudio>, bytes: &AtomicI64, ring_seconds: i
 struct EncoderConfig {
     ff_opts: Option<ffmpeg::VideoOptions>,
     ff_video: Option<ffmpeg::FfVideo>,
+    mf_codec: Option<encoder::MfCodec>,
     pref: encoder::EncoderPref,
     w: i32,
     h: i32,
@@ -718,6 +719,7 @@ fn encoder_thread(
                     cfg.bps,
                     improved,
                     cfg.ff_video.take(),
+                    cfg.mf_codec,
                 ) {
                     Ok(g) => {
                         shared.hw_init_hr.store(g.nvenc_hr(), Ordering::Relaxed);
@@ -788,9 +790,17 @@ fn encoder_thread(
                 GpuExit::Stop => return,
                 GpuExit::Rebuild(input) => {
                     drop(gpu_enc.take());
+                    let mut rebuild_mf = cfg.mf_codec;
                     let video = match ffmpeg_opts {
-                        Some(opts) => match ffmpeg::FfVideo::open(&opts) {
-                            Ok(v) => Some(v),
+                        Some(opts) => match ffmpeg::select_video(&opts, !cfg.external) {
+                            Ok(ffmpeg::VideoSelection::Ffmpeg(v)) => {
+                                rebuild_mf = None;
+                                Some(v)
+                            }
+                            Ok(ffmpeg::VideoSelection::MediaFoundation(kind)) => {
+                                rebuild_mf = Some(kind);
+                                None
+                            }
                             Err(message) => {
                                 ffmpeg::set_last_error(message);
                                 ffmpeg_fatal(&shared, IR_FFMPEG_UNAVAILABLE);
@@ -800,7 +810,14 @@ fn encoder_thread(
                         None => None,
                     };
                     match encoder::GpuEncoder::create(
-                        input, cfg.w, cfg.h, cfg.fps, cfg.bps, improved, video,
+                        input,
+                        cfg.w,
+                        cfg.h,
+                        cfg.fps,
+                        cfg.bps,
+                        improved,
+                        video,
+                        rebuild_mf,
                     ) {
                         Ok(n) => {
                             shared
@@ -1266,19 +1283,27 @@ impl Engine {
         let bps = (bitrate_kbps.max(1) as i32).max(1) as u32 * 1000;
 
         let ffmpeg_on = ffmpeg_enabled();
-        let (ff_opts, ff_video) = if ffmpeg_on {
+        let mut ff_opts = None;
+        let mut ff_video = None;
+        let mut mf_codec = None;
+        if ffmpeg_on {
             let opts = ffmpeg::VideoOptions::from_pref(encoder_pref, res_w, res_h, fps, bps);
-            match ffmpeg::FfVideo::open(&opts) {
-                Ok(video) => (Some(opts), Some(video)),
+            match ffmpeg::select_video(&opts, !external) {
+                Ok(ffmpeg::VideoSelection::Ffmpeg(video)) => {
+                    ff_opts = Some(opts);
+                    ff_video = Some(video);
+                }
+                Ok(ffmpeg::VideoSelection::MediaFoundation(kind)) => {
+                    ff_opts = Some(opts);
+                    mf_codec = Some(kind);
+                }
                 Err(message) => {
                     ffmpeg::set_last_error(message);
                     self.note_fail(STAGE_FFMPEG, IR_FFMPEG_UNAVAILABLE as i64);
                     return IR_FFMPEG_UNAVAILABLE;
                 }
             }
-        } else {
-            (None, None)
-        };
+        }
         let gpu_path = gpu_path || (!external && ffmpeg_on);
 
         let start_qpc = qpc100ns();
@@ -1308,6 +1333,7 @@ impl Engine {
             let cfg = EncoderConfig {
                 ff_opts,
                 ff_video,
+                mf_codec,
                 pref,
                 gpu: gpu_path,
                 external,
@@ -1850,6 +1876,14 @@ pub unsafe extern "C" fn IR_Start(
         }
         rc
     })
+}
+
+/// Probes every encoder this build can use, sending real frames through each,
+/// and returns a bitmask of the ones that actually work. Used by the managed
+/// front end to populate the encoder list and Auto fallback chain.
+#[no_mangle]
+pub extern "C" fn IR_ProbeEncoders() -> u32 {
+    catch_unwind(AssertUnwindSafe(encoder::probe_encoders)).unwrap_or(0)
 }
 
 #[no_mangle]
