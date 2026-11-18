@@ -131,14 +131,14 @@ public sealed class RecorderEngine : IDisposable
         "Amf" => EncoderPreference.Amf,
         "Qsv" => EncoderPreference.Qsv,
         "X265" or "X264" or "Software" => EncoderPreference.X264,
-        "MediaFoundation" => EncoderPreference.MediaFoundation,
         _ => EncoderPreference.Auto,
     };
 
     private static int ResolveEncoderOptions(Settings s) =>
         (s.RateControl == "Vbr" ? 1 << 8 : 0)
         | ((s.EncoderPreset switch { "Speed" => 0, "Quality" => 2, _ => 1 }) << 10)
-        | ((s.VideoCodec switch { "Hevc" => 1, "H264" => 2, _ => 0 }) << 12);
+        | ((s.VideoCodec switch { "Hevc" => 1, "H264" => 2, _ => 0 }) << 12)
+        | ((int)EncoderAvailabilityMap.FromDictionary(s.DetectedEncoders) << 16);
 
 
     public bool Start(string tempDir, bool wipeSegments = true)

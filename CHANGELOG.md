@@ -7,6 +7,12 @@ Newest entries go on top.
 
 ### New
 
+- **C++ engine.** `engine_core` is rewritten from scratch in C++17 and built with MSVC through `engine\engine_core\build.bat` (no CMake, no Rust toolchain for the engine). The `IR_*` ABI is unchanged apart from stricter pre-start semantics for `IR_SetCaptureTarget` and `IR_SetCanvasHint`. FFmpeg is linked through its own headers and import libraries and delay-loaded, so there are no generated bindings.
+- **OBS video pipeline.** Scaling and NV12 conversion now use shaders hand-translated from OBS Studio's `.effect` files (bicubic scale, `NV12_Y` and `NV12_UV`), rendered through a canvas, a scale pass and a staging ring read back one frame late. Output is limited-range BT.709 (BT.601 below 720p) like OBS, and the stream is tagged to match. The Media Foundation fallback now takes frames from the same pipeline through system memory rather than GPU textures.
+- **Encoder detection.** The first launch (and any launch where `settings.json` has no encoder data) probes every encoder by pushing real frames through it, while a blurred "Detecting Encoders" overlay covers the window and blocks input. The result is stored in `settings.json` under `encoders` as true/false per encoder (`h264_nvenc`, `hevc_nvenc`, `h264_amf`, `hevc_amf`, `h264_qsv`, `hevc_qsv`, `libx264`, `libx265`, `h264_mf`, `hevc_mf`). **Advanced > Refresh encoders** runs it again, and encoders that failed detection are greyed out in the encoder list.
+- **Auto fallback chain.** Auto uses only encoders that passed detection, in this order: NVIDIA NVENC, AMD AMF, Intel Quick Sync, the hardware Media Foundation encoder (needed for 13th-gen and later Intel graphics and Arc, which FFmpeg 5.1's Quick Sync cannot drive), then x264. An explicitly chosen encoder never falls back and is attempted regardless of the stored detection result.
+- **Media Foundation is no longer a choice.** It is driven directly through the Media Foundation API (not FFmpeg) and is used only as an Auto fallback. A saved `MediaFoundation` choice migrates to Auto.
+
 - **Reworked home page.** A single hero card now carries the status pill, the hotkey pill, the monitor/refresh artwork and the **Save Replay** / **Start Replay** actions. Live CPU and memory cards underneath adopt the system accent colour and keep a short sparkline history; the sparklines switch to the alert colour at 90% or above.
 
 ### Fixed
@@ -15,6 +21,7 @@ Newest entries go on top.
 
 ### Changed
 
+- **FFmpeg 5.1.2.** The engine now loads `avcodec-59`, `avformat-59`, `avutil-57` and `swresample-4` from the pinned gyan.dev 5.1.2 shared build (libmfx Quick Sync works on 4th- through 12th-gen Intel CPUs). `engine\encoder\fetch-ffmpeg.ps1` replaces old binaries with it, `ffmpeg_sys.rs` is generated from its headers, and the release workflow downloads and verifies it.
 - **Installer keeps the install folder clean.** The whole publish payload now lives in `<install dir>\ship`, and the install root holds only an `InstantReplay.lnk` launcher and that folder; the uninstaller moved to `ship\Uninstall.exe`. Start Menu and desktop shortcuts launch `ship\InstantReplay.exe`, start with Windows and `.ir` associations use the same path, and updates keep the layout. The hook DLLs now ship and load from `engine\hooks\bin\`. Updating an older flat install migrates it into `ship` once and removes the old root files.
 - **Source layout.** Small related files were consolidated into cohesive files, each still using a single namespace:
   - `InstantReplay.Models/CaptureModels.cs` — `CaptureMethod`, `CaptureSource`, `WindowMode`, `CaptureSurface`, `CaptureWindow`, `WindowSnapshot`

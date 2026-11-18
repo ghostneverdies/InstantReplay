@@ -96,21 +96,18 @@
   </ItemGroup>
 
   <ItemGroup>
-    <_NativeEngineSource Include="engine\engine_core\src\**\*.rs" />
-    <_NativeEngineSource Include="engine\engine_core\Cargo.toml;engine\engine_core\Cargo.lock" />
-    <_RequiredFfmpegDll Include="engine\encoder\avcodec-62.dll" />
-    <_RequiredFfmpegDll Include="engine\encoder\avformat-62.dll" />
-    <_RequiredFfmpegDll Include="engine\encoder\avutil-60.dll" />
-    <_RequiredFfmpegDll Include="engine\encoder\swresample-6.dll" />
+    <_NativeEngineSource Include="engine\engine_core\src\**\*.cpp;engine\engine_core\src\**\*.h" />
+    <_NativeEngineSource Include="engine\engine_core\shaders\*.hlsl;engine\engine_core\build.bat" />
+    <_RequiredFfmpegDll Include="engine\encoder\avcodec-59.dll" />
+    <_RequiredFfmpegDll Include="engine\encoder\avformat-59.dll" />
+    <_RequiredFfmpegDll Include="engine\encoder\avutil-57.dll" />
+    <_RequiredFfmpegDll Include="engine\encoder\swresample-4.dll" />
   </ItemGroup>
 
   <Target Name="BuildNativeEngine" BeforeTargets="PrepareForBuild" Inputs="@(_NativeEngineSource)"
     Outputs="engine\bin\engine.dll">
     <MakeDir Directories="engine\bin" />
-    <Exec
-      Command="cargo build --release --manifest-path &quot;$(MSBuildProjectDirectory)\engine\engine_core\Cargo.toml&quot;" />
-    <Copy SourceFiles="engine\engine_core\target\release\engine.dll"
-      DestinationFiles="engine\bin\engine.dll" />
+    <Exec Command="call &quot;$(MSBuildProjectDirectory)\engine\engine_core\build.bat&quot;" />
   </Target>
 
   <Target Name="ValidateNativePayload" BeforeTargets="PrepareForBuild"

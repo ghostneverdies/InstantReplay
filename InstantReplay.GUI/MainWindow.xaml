@@ -1202,8 +1202,28 @@
                                             <ComboBoxItem Content="AMD AMF"/>
                                             <ComboBoxItem Content="Intel Quick Sync"/>
                                             <ComboBoxItem Content="x264 / H.264 (CPU)"/>
-                                            <ComboBoxItem Content="Media Foundation"/>
                                         </ComboBox>
+                                    </controls:SettingRow>
+                                    <controls:SettingRow Label="Detected encoders"
+                                                         Margin="0,0,0,8">
+                                        <StackPanel Spacing="8">
+                                            <TextBlock x:Name="DetectedEncodersText"
+                                                       TextWrapping="Wrap"
+                                                       FontSize="12"
+                                                       Opacity="0.75"/>
+                                            <Button x:Name="RefreshEncodersButton"
+                                                    HorizontalAlignment="Left"
+                                                    Click="RefreshEncodersButton_Click"
+                                                    ToolTipService.ToolTip="Test every video encoder again by encoding real frames">
+                                                <StackPanel Orientation="Horizontal">
+                                                    <FontIcon Glyph="&#xE72C;"
+                                                              FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                                                              FontSize="14"
+                                                              Margin="0,0,6,0"/>
+                                                    <TextBlock Text="Refresh encoders"/>
+                                                </StackPanel>
+                                            </Button>
+                                        </StackPanel>
                                     </controls:SettingRow>
                                     <controls:SettingRow Label="Video codec"
                                                          Margin="0,0,0,8">
@@ -1365,5 +1385,39 @@
                 </Border>
             </Grid>
         </NavigationView>
+
+        <Grid x:Name="EncoderDetectOverlay"
+              Grid.RowSpan="3"
+              Canvas.ZIndex="100"
+              Visibility="Collapsed"
+              Opacity="0">
+            <Image x:Name="EncoderDetectBlurImage"
+                   Stretch="Fill"
+                   IsHitTestVisible="False"/>
+            <Border x:Name="EncoderDetectScrim">
+                <Border.Background>
+                    <AcrylicBrush x:Name="EncoderDetectAcrylic"
+                                  TintColor="#202020"
+                                  TintOpacity="0.55"
+                                  FallbackColor="#CC202020"/>
+                </Border.Background>
+            </Border>
+            <StackPanel HorizontalAlignment="Center"
+                        VerticalAlignment="Center"
+                        Spacing="18"
+                        IsHitTestVisible="False">
+                <ProgressRing IsActive="True"
+                              IsIndeterminate="True"
+                              Width="56"
+                              Height="56"
+                              HorizontalAlignment="Center"/>
+                <TextBlock Text="Detecting Encoders"
+                           FontFamily="Segoe UI Variable"
+                           FontSize="20"
+                           FontWeight="SemiBold"
+                           HorizontalAlignment="Center"
+                           Foreground="{ThemeResource TextPrimaryBrush}"/>
+            </StackPanel>
+        </Grid>
     </Grid>
 </Window>

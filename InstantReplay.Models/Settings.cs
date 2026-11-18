@@ -32,6 +32,14 @@ public sealed class Settings
 
     public string EncoderChoice { get; set; } = "Auto";
 
+    /// <summary>
+    /// Result of the last encoder probe (frames were actually pushed through each encoder), keyed
+    /// by FFmpeg encoder name, e.g. "h264_nvenc": true. Null or incomplete means detection has not
+    /// run yet and the app runs it before recording starts.
+    /// </summary>
+    [JsonPropertyName("encoders")]
+    public Dictionary<string, bool>? DetectedEncoders { get; set; }
+
     public string VideoCodec { get; set; } = "H264";
 
     public string RateControl { get; set; } = "Cbr";
@@ -87,6 +95,8 @@ public sealed class Settings
                 {
                     if (loaded.CaptureTarget is "Window" or "ActiveWindow") loaded.CaptureTarget = "SpecificWindows";
                     loaded.SpecificWindows ??= [];
+                    if (loaded.EncoderChoice is not ("Auto" or "Nvenc" or "Amf" or "Qsv" or "X264" or "X265" or "Software"))
+                        loaded.EncoderChoice = "Auto";
                     if (loaded.FrameRate is not (30 or 60 or 120)) loaded.FrameRate = 60;
                     return loaded;
                 }

@@ -6,7 +6,7 @@
 [![Latest release](https://img.shields.io/github/v/release/ghostneverdies/InstantReplay?style=flat-square)](https://github.com/ghostneverdies/InstantReplay/releases/latest)
 
 
-[![Rust 48.32%](https://img.shields.io/static/v1?label=Rust&message=48.32%25&color=dea584&style=flat-square)](https://api.github.com/repos/ghostneverdies/InstantReplay/languages)
+[![C++17](https://img.shields.io/static/v1?label=Engine&message=C%2B%2B17&color=00599c&style=flat-square)](engine/engine_core)
 [![C# 47.58%](https://img.shields.io/static/v1?label=C%23&message=47.58%25&color=178600&style=flat-square)](https://api.github.com/repos/ghostneverdies/InstantReplay/languages)
 [![JavaScript 1.84%](https://img.shields.io/static/v1?label=JavaScript&message=1.84%25&color=f1e05a&style=flat-square)](https://api.github.com/repos/ghostneverdies/InstantReplay/languages)
 [![NSIS 0.99%](https://img.shields.io/static/v1?label=NSIS&message=0.99%25&color=8b5cf6&style=flat-square)](https://api.github.com/repos/ghostneverdies/InstantReplay/languages)
@@ -24,7 +24,7 @@
 - Two replay targets: Whole Desktop and Game Capture, with offline game detection and custom executable rules
 - Capture method: Windows Graphics Capture for games and windows, or DXGI Desktop Duplication for whole-desktop and exclusive-fullscreen capture
 - The clip card is drawn inside supported Direct3D 9/11/12 and OpenGL games (fullscreen and windowed); protected anti-cheat games are never injected and use the external popup
-- Video encoder (FFmpeg): Auto, NVIDIA NVENC, AMD AMF, Intel Quick Sync, x264 (CPU) or Media Foundation, with CBR/VBR rate control, a speed/quality preset and MP4, MOV, MKV, MPEG-TS or FLV output (AAC audio)
+- Video encoder (FFmpeg 5.1.2): Auto, NVIDIA NVENC, AMD AMF, Intel Quick Sync or x264 (CPU), with encoders detected by encoding real test frames at first launch (re-runnable under Advanced) and a Media Foundation hardware fallback used only by Auto, with CBR/VBR rate control, a speed/quality preset and MP4, MOV, MKV, MPEG-TS or FLV output (AAC audio)
 - Gallery with thumbnails, inline playback, optional fullscreen, seeking, volume and "show in folder"
 - Home page with a status/hotkey hero card, Save Replay / Start Replay actions, and live CPU and memory cards with sparkline history
 - System tray icon, animated clip popup, warning notifications, close-to-tray, single instance
@@ -62,23 +62,19 @@ Updating an older flat install (app files directly in the install folder) migrat
 
 ## Build
 
-Requires a compatible .NET SDK, the x64 MSVC Rust toolchain, Visual Studio C++ Build Tools and the Windows SDK. Cargo must be on PATH.
+Requires a compatible .NET SDK and Visual Studio (or Build Tools) with the **Desktop development with C++** workload and the Windows 10/11 SDK in their default install location. There is no CMake: the engine is one batch file.
 
 ```
-cd engine\engine_core
-cargo build --release
-copy target\release\engine.dll ..\bin\engine.dll
-cd ..\..
+powershell -File engine\encoder\fetch-ffmpeg.ps1
+engine\engine_core\build.bat
 dotnet build -c Release -p:Platform=x64
 ```
 
-The project also runs `cargo build --release` for `engine\engine_core` and `engine\hooks\build.ps1` for the hook DLLs before compiling (`BuildNativeEngine` and `BuildHook` targets), so a normal `dotnet build` rebuilds them when their sources change. The manual cargo step above is only needed when you want to inspect the native output first.
+`engine\engine_core\build.bat` finds MSVC under `Program Files\Microsoft Visual Studio` (or uses the `cl.exe` already on PATH), compiles the shaders in `engine\engine_core\shaders` with the SDK's `fxc.exe` into byte arrays, builds the C++17 sources in `engine\engine_core\src` into `engine\bin\engine.dll`, and links the FFmpeg import libraries with delay loading. `build.bat debug` and `build.bat clean` are also available. The project runs it (and `engine\hooks\build.ps1` for the hook DLLs) as the `BuildNativeEngine` and `BuildHook` targets, so a normal `dotnet build` rebuilds them when their sources change.
 
-Encoding, audio compression and file writing use FFmpeg 8.1 shared libraries, loaded at runtime (not linked) from `engine\encoder\`. Download the pinned `ffmpeg-n8.1.3-29-gad3b795b72-win64-gpl-shared-8.1.zip` asset from [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds/releases/tag/autobuild-2026-11-01-12-49) and copy `avcodec-62.dll`, `avformat-62.dll`, `avutil-60.dll` and `swresample-6.dll` from its `bin\` folder into `engine\encoder\` before the .NET build, which bundles the whole folder with the app as `engine\encoder\*.dll`. Without them the app reports an error and does not record. The pinned tag is immutable; the CI workflow verifies the archive's SHA-256 before using it.
+Encoding, audio compression and file writing use FFmpeg 5.1.2 shared libraries, loaded at runtime from `engine\encoder\` (the engine links only the import libraries and delay-loads the DLLs, so a missing library produces an error message instead of a failed launch). FFmpeg 5.1.x is pinned on purpose: its libmfx-based Quick Sync encoder covers 4th-gen Core through 12th-gen. `engine\encoder\fetch-ffmpeg.ps1` deletes any old binaries in that folder, downloads the pinned `ffmpeg-5.1.2-full_build-shared.zip` from [GyanD/codexffmpeg](https://github.com/GyanD/codexffmpeg/releases/tag/5.1.2), verifies its SHA-256, copies `avcodec-59.dll`, `avformat-59.dll`, `avutil-57.dll` and `swresample-4.dll` into `engine\encoder\` and installs the headers and import libraries into `engine\encoder\sdk` for `build.bat`. The .NET build bundles the DLLs with the app as `engine\encoder\*.dll`. Without them the app reports an error and does not record. The CI workflow verifies the same SHA-256. The engine includes FFmpeg's own headers, so there are no generated bindings to maintain.
 
-`engine\encoder\gen-bindings.ps1` regenerates `engine\engine_core\src\ffmpeg_sys.rs` from that build's headers (requires `cargo install bindgen-cli` and `python -m pip install libclang`), and `engine\engine_core\src\ffmpeg.rs` resolves every function from the DLLs by name at runtime rather than linking against them.
-
-The engine must be copied to `engine\bin\engine.dll` before the .NET build, which bundles it with the app. If `CARGO_TARGET_DIR` is set, copy `release\engine.dll` from that directory instead of the local `target` directory. To package the app locally, install NSIS, publish into the directory used by the installer, and pass the version (the defaults are `1.6` / `1.6.0.0`):
+To package the app locally, install NSIS, publish into the directory used by the installer, and pass the version (the defaults are `1.6` / `1.6.0.0`):
 
 ```powershell
 dotnet publish -c Release -p:Platform=x64 -p:Version=1.6 -o bin\publish\win-x64
@@ -93,7 +89,7 @@ InstantReplay.exe
 InstantReplay.dll, *.json, resources.pri, WinUI/WinAppSDK DLLs   (must sit next to the exe)
 <locale>\*.mui                                                   (must stay here, see below)
 engine\bin\engine.dll
-engine\encoder\avcodec-62.dll ...
+engine\encoder\avcodec-59.dll ...
 engine\hooks\bin\capture_hook.dll, overlay_hook.dll
 assets\  mediaplayer\  meta\*.winmd  symbols\*.pdb
 ```
@@ -111,7 +107,7 @@ The source tree is grouped by responsibility, and small related types share one 
 | `InstantReplay.Models` | Settings and shared records/enums: `CaptureModels.cs`, `UpdateModels.cs`, `VideoSettings.cs`, `SaveReplayResult.cs`, `GameRule.cs` |
 | `InstantReplay.Services` | Windows integration (`WindowsTheme` + `StartupManager`), updates, update install, audio device watching, window detection and hook injection |
 | `InstantReplay.Native` | Engine P/Invoke and audio endpoint COM interop (`IrNative.cs`) |
-| `engine` | Rust engine, capture/overlay hook sources, FFmpeg shared libraries |
+| `engine` | C++17 engine (`engine_core`), capture/overlay hook sources, FFmpeg shared libraries |
 | `installer` | NSIS script, license terms and installer assets |
 
 This creates `installer\InstantReplaySetup.exe`. The installer does not install .NET or WebView2 automatically.
@@ -126,7 +122,7 @@ gh workflow run release.yml -f version=1.6.0
 
 Run it from the default branch, because the workflow creates the release tag `v<version>` at the commit it was dispatched on. Nothing runs automatically: tag pushes and published releases do not trigger the workflow.
 
-The workflow downloads and checksums the pinned FFmpeg build, runs `cargo build --release`, stages `engine\bin\engine.dll`, runs `dotnet publish` with `-p:Version=<version>`, builds the installer with the same version, and attaches two assets to the GitHub Release:
+The workflow downloads and checksums the pinned FFmpeg build, runs `engine\engine_core\build.bat`, runs `dotnet publish` with `-p:Version=<version>`, builds the installer with the same version, and attaches two assets to the GitHub Release:
 
 - `InstantReplay-<version>-win64-portable.zip` — the publish output, including `engine\encoder\*.dll`
 - `InstantReplaySetup.exe` — the installer, stamped with the same version (the in-app updater looks for exactly this asset name on the latest release)
@@ -163,9 +159,9 @@ These are bitrate targets, not fixed output file sizes; static scenes can use le
 
 **Whole Desktop** captures the selected monitor and system audio. It bypasses all game detection, focus switching and automatic pausing.
 
-**Show mouse cursor** enables or hides the recorded pointer for both WGC and DXGI. Apply changes to restart the buffer with the selected visibility. DXGI retains the last desktop image for cursor-only updates and composites the current pointer separately. GPU encoding uses a separate Direct3D device/context so desktop readback cannot hold the encoder's context lock; captured frames are released before encoding. DXGI pacing allows up to 2 ms of timestamp jitter, bounded by the frame interval, while rejecting duplicate and stale frames. The GPU encoder checks for pending frames before waiting so a missed wake-up does not add an unnecessary delay.
+**Show mouse cursor** enables or hides the recorded pointer for both WGC and DXGI. Apply changes to restart the buffer with the selected visibility. DXGI retains the last desktop image for cursor-only updates and composites the current pointer separately. The pointer is drawn with GDI onto the retained desktop image, which preserves color, masked-color and monochrome cursors. Frames are scaled and converted on the GPU with shaders translated from OBS Studio (see below) and read back through a staging ring one frame late, so mapping a frame never stalls the GPU.
 
-WGC requests a 1 ms minimum update interval when Windows supports it, matching original wcap. Older Windows versions retain their default capture interval. WGC and DXGI allow up to 2 ms of timestamp jitter, bounded to one eighth of the selected frame interval, while rejecting duplicate and out-of-order timestamps. After a stall, pacing resumes from fresh source frames instead of generating catch-up frames. The FPS setting remains a ceiling: source rendering, system load, and encoder throughput determine actual delivery. Static or paused scenes are not padded with artificial duplicate frames.
+WGC polls its frame pool at 1 ms resolution and uses the frames' own system-relative timestamps; DXGI uses the duplication present time. Frames with duplicate or out-of-order timestamps are dropped, and after a stall capture resumes from fresh source frames instead of generating catch-up frames. The FPS setting remains a ceiling: source rendering, system load, and encoder throughput determine actual delivery. Static or paused scenes are not padded with artificial duplicate frames.
 
 **Game Capture** captures recognized games and apps added on the **Games** navigation page, which appears when this target is selected. Add an executable filename or browse to an `.exe`, give it a name, and optionally require a title keyword. Browsing stores the filename; the app never launches that executable. Built-in games are included automatically.
 
@@ -231,23 +227,23 @@ When preparing a release, keep the committed fallback versions in `InstantReplay
 
 ## Third-party code
 
-The capture/encoding approach and embedded, compressed shader bytecode are adapted from [mmozeiko/wcap](https://github.com/mmozeiko/wcap), released into the public domain under the Unlicense. `engine/engine_core/shaders/wcap_shaders.hlsl` is retained as reference source. Runtime code decompresses embedded bytecode with `D3DDecompressShaders`; it does not compile HLSL at runtime. The engine depends on the Windows Rust bindings and `libloading` (to load FFmpeg at runtime) and does not use `windows-capture` or a WASAPI wrapper crate.
+The engine is written from scratch in C++17. Its video path follows OBS Studio's design: a fixed-aspect canvas, an optional scale pass (bicubic by default, bilinear selectable with `IR_SCALER=bilinear`), two render-target passes that convert to NV12 (a full-resolution luma pass and a half-resolution, left-sited chroma pass) and a staging ring read back one frame late. The shaders in `engine/engine_core/shaders` are hand-translated from OBS's `format_conversion.effect` (NV12), `bicubic_scale.effect` and `default.effect` into plain HLSL; libobs and OBS's effect parser are not used. They are compiled at build time with `fxc`, never at runtime. The colour matrices are the standard limited-range BT.709 (HD) and BT.601 values OBS uses, and the stream is tagged accordingly. OBS Studio is copyright its contributors and distributed under the GNU General Public License, version 2 or later; those files keep their copyright notices and are distributed here under the GPL-3.0-or-later terms of this project. The engine depends only on the Windows SDK, FFmpeg's public headers and the FFmpeg shared libraries (loaded at runtime).
 
-The Rust DLL keeps the existing `IR_*` ABI and provides `IR_SetCaptureTarget`, `IR_SetPaused`, `IR_GetWindowCount` and `IR_GetWindowInfo`. Set the target before `IR_Start`: HWND 0 means monitor capture. Capture options are 1=client area, 2=cursor, 4=border, 8=keep rounded corners, 16=secondary windows, 32=legacy automatic active-window selection for existing DLL callers, and 64=process audio for the supplied HWND. The frontend uses explicit HWND targets and never sets bit 32. `IR_SetPaused` gates video and app audio; enabled microphone capture continues independently. Window-only options require the corresponding Windows capture APIs; unsupported optional flags are ignored.
+The DLL keeps the existing `IR_*` ABI. `IR_SetCaptureTarget` and `IR_SetCanvasHint` apply to the next `IR_Start` (HWND 0 means monitor capture) and fail while the engine runs; `IR_SetCaptureSource` switches the source live. Capture options are 1=client area, 2=cursor, 4=border, 8=keep rounded corners, 16=secondary windows, 32=reserved, 64=process audio for the supplied HWND, and 128=live switch. `IR_SetPaused` gates video and app audio; an enabled microphone keeps recording through a pause. `IR_ProbeEncoders` pushes real frames through every encoder and returns the availability bits stored in `settings.json`. Window-only options require the corresponding Windows capture APIs; unsupported optional flags are ignored.
 
 ### FFmpeg
 
-Instant Replay uses [FFmpeg](https://ffmpeg.org/) for video/audio encoding and container writing. Release builds bundle the four required shared libraries (`avcodec`, `avformat`, `avutil` and `swresample`) under `engine\encoder\`; the Rust engine loads them by name at runtime. They come from the pinned BtbN GPL shared build described in [Build](#build), which includes libx264. The portable archive and installer therefore work offline and do not download FFmpeg on first run. The FFmpeg license and source/build links are retained in [engine/encoder/FFMPEG-LICENSE.txt](engine/encoder/FFMPEG-LICENSE.txt).
+Instant Replay uses [FFmpeg](https://ffmpeg.org/) for video/audio encoding and container writing. Release builds bundle the four required shared libraries (`avcodec`, `avformat`, `avutil` and `swresample`) under `engine\encoder\`; the engine loads them at runtime. They come from the pinned gyan.dev 5.1.2 GPL shared build described in [Build](#build), which includes libx264 and libx265. The portable archive and installer therefore work offline and do not download FFmpeg on first run. The FFmpeg license and source/build links are retained in [engine/encoder/FFMPEG-LICENSE.txt](engine/encoder/FFMPEG-LICENSE.txt).
 
 - FFmpeg source code: <https://ffmpeg.org/download.html>
-- Build scripts and configuration of the distributed DLLs: <https://github.com/BtbN/FFmpeg-Builds>
+- Build scripts and configuration of the distributed DLLs: <https://www.gyan.dev/ffmpeg/builds/> (mirrored at <https://github.com/GyanD/codexffmpeg>)
 - x264 source code: <https://code.videolan.org/videolan/x264>
 
 ### OBS Studio reference
 
-The in-process graphics interception design was independently implemented for Instant Replay after studying [OBS Studio's Windows graphics-hook sources](https://github.com/obsproject/obs-studio/tree/master/plugins/win-capture/graphics-hook). The Rust `cdylib` implementation is kept in `engine/hooks/capture_hook/src/capture_hook.rs`, uses Instant Replay's own shared-texture, fallback-ring and frame-pacing contracts, and is modified for this recorder rather than copied verbatim. Direct3D 11 and OpenGL use named D3D11 textures with keyed synchronization; OpenGL bridges through `WGL_NV_DX_interop2`. Direct3D 9 and Direct3D 12 retain guarded CPU fallback paths. Vulkan currently has present interception only and remains routed to WGC until its synchronized image/queue path is complete. OBS Studio is copyright its contributors and distributed under the GNU General Public License; see its repository for the authoritative notices and source.
+The in-process graphics interception design was independently implemented for Instant Replay after studying [OBS Studio's Windows graphics-hook sources](https://github.com/obsproject/obs-studio/tree/master/plugins/win-capture/graphics-hook). The Rust `cdylib` implementation of the hook is kept in `engine/hooks/capture_hook/src/capture_hook.rs`, uses Instant Replay's own shared-texture, fallback-ring and frame-pacing contracts, and is modified for this recorder rather than copied verbatim. Direct3D 11 and OpenGL use named D3D11 textures with keyed synchronization; OpenGL bridges through `WGL_NV_DX_interop2`. Direct3D 9 and Direct3D 12 retain guarded CPU fallback paths. Vulkan currently has present interception only and remains routed to WGC until its synchronized image/queue path is complete. OBS Studio is copyright its contributors and distributed under the GNU General Public License; see its repository for the authoritative notices and source.
 
-The DXGI cursor compositor in `engine/engine_core/src/capture_dxgi.rs` likewise follows the OBS monitor-capture strategy of retaining the desktop texture and compositing separately cached pointer state. Instant Replay limits CPU readback/upload to the pointer rectangle and preserves DXGI color, masked-color and monochrome semantics.
+The DXGI path composites the pointer with GDI onto the retained desktop image, following the OBS monitor-capture strategy of keeping the desktop texture and drawing the current pointer separately.
 
 ## License
 

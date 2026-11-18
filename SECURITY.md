@@ -43,11 +43,11 @@ A locally generated, temporary PowerShell helper runs without a visible console,
 
 ## Capture implementation
 
-The native Rust DLL uses Windows Graphics Capture, DXGI, D3D11, WASAPI and FFmpeg (shared libraries loaded at runtime from `engine\encoder\`) directly. Shaders come from wcap as embedded compressed bytecode; source shaders are not compiled at runtime. Only fresh source frames are encoded, and idle presentation time is represented in the file timeline. GPU sample buffers are tracked until the encoder releases them.
+The native C++ DLL uses Windows Graphics Capture, DXGI, D3D11, Media Foundation (hardware encoders only), WASAPI and FFmpeg (shared libraries loaded at runtime from `engine\encoder\`) directly. Shaders are hand-translated from OBS Studio's effect files and compiled at build time; no shader source is compiled at runtime. Only fresh source frames are encoded, and idle presentation time is represented in the file timeline. GPU sample buffers are tracked until the encoder releases them.
 
 For supported Direct3D 9/11/12 and OpenGL games, `engine\hooks\bin\overlay_hook.dll` draws the clip card after the frame has been captured and before the game presents it. It hooks the game's present calls (D3D9/11/12 and OpenGL), draws with its own resources and does not read video frames or change game input. Loading uses the same `WH_GETMESSAGE` compatibility hook as OBS, and the library is never loaded into games on the anti-cheat list or games where a known anti-cheat module is detected. There is no kernel driver, service or persistent injection.
 
-WGC requests the same 1 ms update interval as original wcap where the Windows API supports it. Unsupported Windows versions retain their capture default. Both capture methods allow bounded timestamp jitter while rejecting duplicate and stale timestamps. Capture stalls do not trigger artificial catch-up frames. Capture does not require elevation, bypass protected content, or guarantee a particular frame rate.
+Both capture methods reject duplicate and out-of-order timestamps. Capture stalls do not trigger artificial catch-up frames. Capture does not require elevation, bypass protected content, or guarantee a particular frame rate.
 
 Gallery previews are generated locally through Windows thumbnail services or direct extraction of a video frame. Unreadable cached previews are regenerated. Thumbnail generation does not upload video or preview images.
 

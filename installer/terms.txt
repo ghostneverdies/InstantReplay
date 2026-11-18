@@ -17,17 +17,17 @@ https://github.com/ghostneverdies/InstantReplay
 THIRD-PARTY COMPONENTS
 ----------------------
 
-The application bundles FFmpeg shared libraries from the pinned BtbN GPL
-build. They are stored in the application's engine\encoder folder and loaded
+The application bundles FFmpeg shared libraries from the pinned gyan.dev GPL
+5.1.2 build. They are stored in the application's engine\encoder folder and loaded
 locally by the recording engine. The installer does not download FFmpeg.
 FFmpeg source, build configuration, and license information:
 
 https://ffmpeg.org/download.html
-https://github.com/BtbN/FFmpeg-Builds
+https://www.gyan.dev/ffmpeg/builds/
 https://code.videolan.org/videolan/x264
 
 The application also uses the Windows App SDK / WinUI runtime, .NET,
-WebView2, MinHook, and techniques adapted from the public-domain wcap project.
+WebView2, MinHook, and video conversion shaders translated from OBS Studio (GPL-2.0-or-later).
 Each component remains subject to its own upstream license and notices.
 
 INSTALLATION AND PRIVACY

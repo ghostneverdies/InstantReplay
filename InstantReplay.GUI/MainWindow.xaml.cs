@@ -10,6 +10,7 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Animation;
+using Microsoft.UI.Xaml.Media.Imaging;
 using Windows.Graphics;
 using Windows.System;
 using Windows.UI;
@@ -331,6 +332,7 @@ public partial class MainWindow : Window
         InitFpsSegments();
         InitQualitySegments();
         InitEncoderSegments();
+        UpdateEncoderAvailabilityUi();
         InitCaptureSegments();
         InitCaptureTargets();
         UpdateHotkeyButtonDisplay();
@@ -1910,6 +1912,9 @@ public partial class MainWindow : Window
 
     private async Task InitialStartAsync()
     {
+        if (!EncoderDetector.HasResult(_settings))
+            await RunEncoderDetectionAsync();
+
         bool ok = await Task.Run(StartCaptureCore);
         SetRunningVisual(ok);
 
@@ -2417,7 +2422,6 @@ public partial class MainWindow : Window
             "Amf" => 2,
             "Qsv" => 3,
             "X265" or "X264" or "Software" => 4,
-            "MediaFoundation" => 5,
             _ => 0,
         };
         RateControlCombo.SelectedIndex = _settings.RateControl == "Vbr" ? 1 : 0;
@@ -2443,7 +2447,6 @@ public partial class MainWindow : Window
             2 => "Amf",
             3 => "Qsv",
             4 => "X264",
-            5 => "MediaFoundation",
             _ => "Auto",
         };
         _settings.EncoderChoice = choice;
@@ -2807,6 +2810,197 @@ public partial class MainWindow : Window
         _syncingStartupToggle = true;
         StartupToggle.IsOn = actuallyEnabled;
         _syncingStartupToggle = false;
+    }
+
+    private bool _detectingEncoders;
+    private TaskCompletionSource? _rootLoaded;
+
+    /// <summary>
+    /// Probes all encoders (real frames), stores the true/false result in settings.json and refreshes
+    /// the encoder UI. While it runs a blurred overlay covers the whole window and blocks input.
+    /// Returns false if a detection was already running or the probe could not run.
+    /// </summary>
+    private async Task<bool> RunEncoderDetectionAsync()
+    {
+        if (_detectingEncoders) return false;
+        _detectingEncoders = true;
+        // Block the UI from the first await onwards; fade the scrim in once the blur snapshot is ready.
+        EncoderDetectOverlay.Opacity = 0;
+        EncoderDetectOverlay.Visibility = Visibility.Visible;
+        bool wasEnabled = NavView.IsEnabled;
+        try
+        {
+            await WaitForRootLoadedAsync();
+            ImageSource? snapshot = await CaptureBlurSnapshotAsync();
+            await ShowEncoderOverlayAsync(snapshot);
+            NavView.IsEnabled = false;
+            RefreshEncodersButton.IsEnabled = false;
+
+            var map = await EncoderDetector.DetectAsync();
+            if (map is null)
+            {
+                Logger.Warn("Encoder detection could not run; keeping the previous result.");
+                return false;
+            }
+
+            _settings.DetectedEncoders = map;
+            _settings.SaveFields(nameof(Settings.DetectedEncoders));
+
+            // A saved preference can be unavailable on this machine (or an unknown string from an
+            // older build); fall back to Auto now that a complete detection map is known.
+            if (EncoderAvailabilityMap.IsComplete(map) && _settings.EncoderChoice != "Auto")
+            {
+                EncoderPreference? preference = _settings.EncoderChoice switch
+                {
+                    "Nvenc" => EncoderPreference.Nvenc,
+                    "Amf" => EncoderPreference.Amf,
+                    "Qsv" => EncoderPreference.Qsv,
+                    "X264" or "X265" or "Software" => EncoderPreference.X264,
+                    _ => null,
+                };
+                if (preference is null || !EncoderDetector.IsSelectable(preference.Value, map))
+                {
+                    _settings.EncoderChoice = "Auto";
+                    EncoderCombo.SelectedIndex = 0; // the selection handler writes "Auto" back
+                    _settings.SaveFields(nameof(Settings.EncoderChoice));
+                    Logger.Info("[Encoders] Saved encoder choice was unavailable; reset to Auto.");
+                }
+            }
+
+            UpdateEncoderAvailabilityUi();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("RunEncoderDetectionAsync failed", ex);
+            return false;
+        }
+        finally
+        {
+            NavView.IsEnabled = wasEnabled;
+            RefreshEncodersButton.IsEnabled = true;
+            await HideEncoderOverlayAsync();
+            _detectingEncoders = false;
+        }
+    }
+
+    private async Task WaitForRootLoadedAsync()
+    {
+        if (RootGrid.IsLoaded) return;
+        _rootLoaded ??= new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var tcs = _rootLoaded;
+        RootGrid.Loaded += OnLoaded;
+        void OnLoaded(object s, RoutedEventArgs e) { RootGrid.Loaded -= OnLoaded; tcs.TrySetResult(); }
+        if (RootGrid.IsLoaded) tcs.TrySetResult();
+        await Task.WhenAny(tcs.Task, Task.Delay(2000));
+        RootGrid.Loaded -= OnLoaded;
+        await Task.Delay(60);
+    }
+
+    // The window has no in-app blur primitive without extra packages, so the page is rendered at
+    // 1/14 size and stretched back up (bilinear), which looks like a heavy blur. Failure just means
+    // the acrylic scrim is shown on its own.
+    private async Task<ImageSource?> CaptureBlurSnapshotAsync()
+    {
+        try
+        {
+            double w = RootGrid.ActualWidth, h = RootGrid.ActualHeight;
+            if (w < 2 || h < 2) return null;
+            var bitmap = new RenderTargetBitmap();
+            await bitmap.RenderAsync(RootGrid, Math.Max(1, (int)(w / 14)), Math.Max(1, (int)(h / 14)));
+            return bitmap;
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"Encoder overlay snapshot skipped: {ex.Message}");
+            return null;
+        }
+    }
+
+    private async Task ShowEncoderOverlayAsync(ImageSource? snapshot)
+    {
+        bool dark = _settings.DarkMode;
+        EncoderDetectAcrylic.TintColor = dark ? Color.FromArgb(255, 32, 32, 32) : Color.FromArgb(255, 243, 243, 243);
+        EncoderDetectAcrylic.FallbackColor = dark ? Color.FromArgb(204, 32, 32, 32) : Color.FromArgb(204, 243, 243, 243);
+        EncoderDetectBlurImage.Source = snapshot;
+        EncoderDetectOverlay.Visibility = Visibility.Visible;
+        await FadeOverlayAsync(1);
+    }
+
+    private async Task HideEncoderOverlayAsync()
+    {
+        await FadeOverlayAsync(0);
+        EncoderDetectOverlay.Visibility = Visibility.Collapsed;
+        EncoderDetectBlurImage.Source = null;
+    }
+
+    private async Task FadeOverlayAsync(double to)
+    {
+        if (!_animationsEnabled)
+        {
+            EncoderDetectOverlay.Opacity = to;
+            return;
+        }
+        var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var animation = new DoubleAnimation
+        {
+            To = to,
+            Duration = new Duration(TimeSpan.FromMilliseconds(180)),
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
+        };
+        Storyboard.SetTarget(animation, EncoderDetectOverlay);
+        Storyboard.SetTargetProperty(animation, "Opacity");
+        var storyboard = new Storyboard();
+        storyboard.Children.Add(animation);
+        storyboard.Completed += (_, _) => { EncoderDetectOverlay.Opacity = to; tcs.TrySetResult(); };
+        storyboard.Begin();
+        await Task.WhenAny(tcs.Task, Task.Delay(400));
+        EncoderDetectOverlay.Opacity = to;
+    }
+
+    private async void RefreshEncodersButton_Click(object sender, RoutedEventArgs e)
+    {
+        bool ok = await RunEncoderDetectionAsync();
+        ShowInfoBar(ok ? InfoBarSeverity.Success : InfoBarSeverity.Warning,
+            ok ? "Encoders detected" : "Encoder detection failed",
+            ok ? "The encoder list was refreshed. Changes apply the next time recording starts."
+               : "The encoder probe could not run. The debug log has the details.",
+            null);
+    }
+
+    /// <summary>Greys out encoders that failed detection and summarises the result in Advanced.</summary>
+    private void UpdateEncoderAvailabilityUi()
+    {
+        var detected = _settings.DetectedEncoders;
+        bool known = EncoderAvailabilityMap.IsComplete(detected);
+        EncoderPreference[] order = [EncoderPreference.Auto, EncoderPreference.Nvenc, EncoderPreference.Amf,
+                                     EncoderPreference.Qsv, EncoderPreference.X264];
+        for (int i = 0; i < order.Length && i < EncoderCombo.Items.Count; i++)
+        {
+            if (EncoderCombo.Items[i] is ComboBoxItem item)
+                item.IsEnabled = EncoderDetector.IsSelectable(order[i], detected) || EncoderCombo.SelectedIndex == i;
+        }
+
+        if (!known)
+        {
+            DetectedEncodersText.Text = "Not detected yet.";
+            return;
+        }
+
+        string Names(params (string key, string label)[] pairs)
+        {
+            var on = pairs.Where(p => detected!.TryGetValue(p.key, out bool v) && v).Select(p => p.label).ToList();
+            return on.Count == 0 ? "none" : string.Join(", ", on);
+        }
+        var lines = new List<string>
+        {
+            "NVIDIA NVENC: " + Names(("h264_nvenc", "H.264"), ("hevc_nvenc", "HEVC")),
+            "AMD AMF: " + Names(("h264_amf", "H.264"), ("hevc_amf", "HEVC")),
+            "Intel Quick Sync: " + Names(("h264_qsv", "H.264"), ("hevc_qsv", "HEVC")),
+            "Media Foundation (fallback): " + Names(("h264_mf", "H.264"), ("hevc_mf", "HEVC")),
+            "Software: " + Names(("libx264", "x264"), ("libx265", "x265")),
+        };
+        DetectedEncodersText.Text = string.Join("\n", lines);
     }
 
     private void DebugToggle_Changed(object sender, RoutedEventArgs e)
