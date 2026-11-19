@@ -31,22 +31,8 @@ public sealed class Settings
 
     public string EncoderChoice { get; set; } = "Auto";
 
-    /// <summary>
-    /// Result of the last encoder probe (frames were actually pushed through each encoder), keyed
-    /// by Media Foundation encoder key, e.g. "h264_mf_qsv": true. Null or incomplete means detection
-    /// has not run yet and the app runs it before recording starts.
-    /// </summary>
-    [JsonPropertyName("encoders")]
-    public Dictionary<string, bool>? DetectedEncoders { get; set; }
-
-    /// <summary>
-    /// Bumped whenever the Media Foundation encoder set or the probe logic changes. A stored result
-    /// from an older version is discarded so a stale availability entry can never survive an upgrade.
-    /// </summary>
-    public const int CurrentEncoderProbeVersion = 4;
-
-    [JsonPropertyName("encoders_probe_version")]
-    public int EncoderProbeVersion { get; set; }
+    [JsonPropertyName("buffer_method")]
+    public string BufferMethod { get; set; } = "Continuous";
 
     public string VideoCodec { get; set; } = "H264";
 
@@ -129,11 +115,7 @@ public sealed class Settings
                     if (loaded.FrameRate is not (30 or 60 or 120)) loaded.FrameRate = 60;
                     loaded.RateControl = string.Equals(loaded.RateControl, "Vbr", StringComparison.OrdinalIgnoreCase)
                         ? "Vbr" : "Cbr";
-                    if (loaded.EncoderProbeVersion != CurrentEncoderProbeVersion)
-                    {
-                        loaded.DetectedEncoders = null;
-                        loaded.EncoderProbeVersion = CurrentEncoderProbeVersion;
-                    }
+                    if (loaded.BufferMethod is not ("Continuous" or "Segmented")) loaded.BufferMethod = "Continuous";
                     return loaded;
                 }
             }
