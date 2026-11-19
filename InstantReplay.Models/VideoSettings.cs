@@ -81,5 +81,18 @@ public readonly record struct VideoQualityProfile(string Name, int BitrateKbps, 
         int rate = Math.Clamp(fps, 15, 240);
         return new VideoQualityProfile(name, at60Fps * rate / 60, 3840, 2160);
     }
+    // Bitrate is derived from the quality preset, target FPS and the actual output resolution.
+    // Values are calibrated so 1080p60 matches the documented Low/Balanced/High table; other
+    // resolutions scale with pixel count, clamped so 4K does not demand an unreasonable rate.
+    public static int TargetBitrateKbps(string preset, int fps, int width, int height)
+    {
+        int baseKbps = FromPreset(preset, fps).BitrateKbps;
+        int w = Math.Max(16, width);
+        int h = Math.Max(16, height);
+        double pixels = (double)w * h;
+        double scale = Math.Clamp(pixels / (1920.0 * 1080.0), 0.35, 2.0);
+        return (int)Math.Round(baseKbps * scale / 1000.0) * 1000;
+    }
+
     public string Label => Name;
 }

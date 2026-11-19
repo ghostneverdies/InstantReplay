@@ -1016,15 +1016,12 @@
                                             <ComboBoxItem Content="High"/>
                                         </ComboBox>
                                     </controls:SettingRow>
-                                    <controls:SettingRow Label="Bitrate (Kbps)"
+                                    <controls:SettingRow Label="Bitrate (calculated)"
+                                            ToolTipService.ToolTip="Calculated from quality preset, frame rate and capture resolution. Used as the target for both CBR and VBR."
                                             Margin="0">
-                                        <NumberBox x:Name="BitrateBox"
-                                                   Minimum="1000"
-                                                   Maximum="100000"
-                                                   SmallChange="500"
-                                                   SpinButtonPlacementMode="Compact"
-                                                   IsEnabled="True"
-                                                   ValueChanged="BitrateBox_ValueChanged"/>
+                                        <TextBlock x:Name="BitrateValueText"
+                                                   VerticalAlignment="Center"
+                                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
                                     </controls:SettingRow>
                                 </StackPanel>
                             </Border>

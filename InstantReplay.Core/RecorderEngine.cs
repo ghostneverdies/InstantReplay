@@ -14,8 +14,6 @@ public sealed class RecorderEngine : IDisposable
     private CaptureWindow? _target;
     private IntPtr _candidate;
     private DateTime _candidateSince;
-    private CaptureSurface? _pendingSurface;
-    private DateTime _surfaceSince;
     private DateTime _startedAt;
     private DateTime _retryAt;
     private string _targetState = "STOPPED";
@@ -26,6 +24,8 @@ public sealed class RecorderEngine : IDisposable
     private readonly Settings _settings;
     private Settings _captureSettings = new();
     private readonly ReplayEngine _engine = new();
+    private int _saveInFlight;
+    private long _activeSaveJobId;
 
     private long _lastHealthTicks = -1;
     private int _noProgressPolls;
@@ -33,7 +33,6 @@ public sealed class RecorderEngine : IDisposable
     private bool _overlayReady;
     private DateTime _hookRetryAt;
     private uint _policyPid;
-    private string _policyReason = "";
     private string _activeKey = "";
     private string? _pendingKey;
     private DateTime _pendingKeySince;
@@ -123,6 +122,35 @@ public sealed class RecorderEngine : IDisposable
     {
         return _engine.TryGetMicStatus(out micFrames, out micEvents, out micGotFrames,
             out micFailHr, out sysPeak, out micPeak, out activeName);
+    }
+
+    public void LogDebugDiagnostics()
+    {
+        if (!Logger.DebugMode) return;
+        if (!_engine.TryGetTelemetry(out long captured, out long paced, out long rejected,
+                out long encoded, out long dropped, out int encoder, out long lastPts))
+            return;
+
+        _engine.TryGetTiming(out double mapMs, out double encodeMs, out double renderMs,
+            out double submitMs, out double snapshotMs, out double unmapMs, out long timedFrames);
+        _engine.TryGetAudioDiagnostics(0, out long sysActivate, out long sysInit, out long sysStart,
+            out int sysTag, out int sysRate, out int sysChannels, out int sysBits,
+            out int sysFloat, out int sysConvertFailures, out long sysFail);
+        _engine.TryGetAudioDiagnostics(1, out long micActivate, out long micInit, out long micStart,
+            out int micTag, out int micRate, out int micChannels, out int micBits,
+            out int micFloat, out int micConvertFailures, out long micFail);
+
+        static string Hr(long value) => $"0x{(uint)value:X8}";
+        Logger.Debug($"[Capture] captured={captured} paced={paced} rejected={rejected} " +
+                     $"encoded={encoded} dropped={dropped} encoder={encoder} lastPts={lastPts} " +
+                     $"timing(ms): submit={submitMs:F2} snapshot={snapshotMs:F2} render={renderMs:F2} " +
+                     $"map={mapMs:F2} encode={encodeMs:F2} unmap={unmapMs:F2} n={timedFrames}");
+        Logger.Debug($"[Audio] sys activate={Hr(sysActivate)} init={Hr(sysInit)} start={Hr(sysStart)} " +
+                     $"fmt={sysTag}/{sysRate}Hz/{sysChannels}ch/{sysBits}bit float={sysFloat} " +
+                     $"convFail={sysConvertFailures} last={Hr(sysFail)}; " +
+                     $"mic activate={Hr(micActivate)} init={Hr(micInit)} start={Hr(micStart)} " +
+                     $"fmt={micTag}/{micRate}Hz/{micChannels}ch/{micBits}bit float={micFloat} " +
+                     $"convFail={micConvertFailures} last={Hr(micFail)}");
     }
 
     private static EncoderPreference ResolveEncoder(string choice) => choice switch
@@ -215,14 +243,20 @@ public sealed class RecorderEngine : IDisposable
     private bool StartEngine(IntPtr window, WindowSnapshot? snap, bool forceDxgi)
     {
         var quality = VideoQualityProfile.FromPreset(_captureSettings.QualityPreset, _captureSettings.FrameRate);
-        int bitrateKbps = _captureSettings.RateControl != "Vbr" && _captureSettings.BitrateKbps > 0
-            ? _captureSettings.BitrateKbps
-            : quality.BitrateKbps;
+        int monitor = snap?.MonitorIndex ?? _captureSettings.CaptureMonitorIndex;
+        (int canvasW, int canvasH) = snap?.CanvasSize ?? (0, 0);
+        (int srcW, int srcH) = canvasW > 0 && canvasH > 0
+            ? (canvasW, canvasH)
+            : ReplayEngine.MonitorSize(monitor);
+        // Both CBR and VBR use the same calculated target; there is no manual override.
+        int bitrateKbps = VideoQualityProfile.TargetBitrateKbps(
+            _captureSettings.QualityPreset, _captureSettings.FrameRate, srcW, srcH);
+        Logger.Debug($"[Encoder] Target bitrate {bitrateKbps} kbps " +
+                     $"from {_captureSettings.QualityPreset} preset at {_captureSettings.FrameRate} fps, " +
+                     $"source {srcW}x{srcH} ({(_captureSettings.RateControl == "Vbr" ? "VBR" : "CBR")}).");
         CaptureMethod method = snap != null && snap.Source == CaptureSource.Wgc && !forceDxgi
             ? CaptureMethod.Wgc
             : CaptureMethod.Dxgi;
-        int monitor = snap?.MonitorIndex ?? _captureSettings.CaptureMonitorIndex;
-        (int canvasW, int canvasH) = snap?.CanvasSize ?? (0, 0);
         return _engine.StartBuffering(
             monitorIndex: monitor,
             ringSeconds: Math.Max(_captureSettings.ReplayDurationSeconds, 1),
@@ -255,7 +289,6 @@ public sealed class RecorderEngine : IDisposable
         _engine.Shutdown();
         _target = null;
         _candidate = IntPtr.Zero;
-        _pendingSurface = null;
         _pendingKey = null;
         _activeKey = "";
         _lastMode = null;
@@ -323,7 +356,6 @@ public sealed class RecorderEngine : IDisposable
         if (exclusive && protectedGame && _policyPid != game.ProcessId)
         {
             _policyPid = game.ProcessId;
-            _policyReason = "protected";
             Logger.Info($"Exclusive fullscreen in {game.Executable}: {protectedName} protects against injection. " +
                         "No in-game overlay; the clip notification uses the normal popup.");
         }
@@ -400,7 +432,6 @@ public sealed class RecorderEngine : IDisposable
                     return;
                 }
                 _candidate = IntPtr.Zero;
-                _pendingSurface = null;
                 if (!_paused) _engine.SetPaused(true);
                 _paused = true;
                 _targetState = _target == null ? "WAITING FOR A GAME" : "PAUSED";
@@ -535,7 +566,6 @@ public sealed class RecorderEngine : IDisposable
             _targetTimer = null;
             _target = null;
             _candidate = IntPtr.Zero;
-            _pendingSurface = null;
             _paused = false;
             _retryAt = default;
             _analysisMissSince = default;
@@ -560,75 +590,143 @@ public sealed class RecorderEngine : IDisposable
         }
     }
 
-    public SaveReplayResult SaveReplay(string tempDir, string destDir)
+    private sealed class PendingSaveJob
     {
-        lock (_opLock)
+        public required ulong JobId { get; init; }
+        public required string DestDir { get; init; }
+        public required string SaveFolder { get; init; }
+        public required string VideoPath { get; init; }
+    }
+
+    public SaveReplayResult SaveReplay(string tempDir, string destDir) =>
+        Task.Run(() => SaveReplayAsync(tempDir, destDir)).GetAwaiter().GetResult();
+
+    public async Task<SaveReplayResult> SaveReplayAsync(string tempDir, string destDir)
+    {
+        if (!TryBeginSave(destDir, out PendingSaveJob? job, out SaveReplayResult failure))
+            return failure;
+
+        try
         {
-            return SaveReplayCore(tempDir, destDir);
+            int result = ReplayEngine.SavePending;
+            bool alive = true;
+            while (alive && result == ReplayEngine.SavePending)
+            {
+                await Task.Delay(100).ConfigureAwait(false);
+                alive = _engine.TryPollSave(job!.JobId, out _, out result);
+            }
+            return FinishSave(job!, result);
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("SaveReplay: async save failed", ex);
+            CleanupFailedSaveFolder(job!.SaveFolder);
+            Interlocked.Exchange(ref _activeSaveJobId, 0L);
+            Interlocked.Exchange(ref _saveInFlight, 0);
+            return ProbeWriteBlocked(job.DestDir, ex);
         }
     }
 
-    public int SaveProgress => _engine.SaveProgress;
-
-    private SaveReplayResult SaveReplayCore(string tempDir, string destDir)
+    public int SaveProgress
     {
+        get
+        {
+            long id = Interlocked.Read(ref _activeSaveJobId);
+            if (id != 0 && _engine.TryPollSave((ulong)id, out int progress, out _))
+                return progress;
+            return _engine.SaveProgress;
+        }
+    }
+
+    private bool TryBeginSave(string destDir, out PendingSaveJob? job, out SaveReplayResult failure)
+    {
+        job = null;
+        failure = default;
         lock (_lock)
         {
             if (!IsRunning)
             {
                 Logger.Warn("SaveReplay requested but recorder is not running.");
-                return new SaveReplayResult(SaveReplayOutcome.NotRecording);
+                failure = new SaveReplayResult(SaveReplayOutcome.NotRecording);
+                return false;
             }
+        }
+        if (Interlocked.CompareExchange(ref _saveInFlight, 1, 0) != 0)
+        {
+            Logger.Warn("SaveReplay requested while another save is still in progress.");
+            failure = new SaveReplayResult(SaveReplayOutcome.MergeFailed);
+            return false;
         }
 
         string saveFolder = Path.Combine(destDir, $"replay_{DateTime.Now:yyyyMMdd_HHmmss}");
         try
         {
+            Directory.CreateDirectory(destDir);
             Directory.CreateDirectory(saveFolder);
+            string destVideo = Path.Combine(saveFolder, "replay." + Settings.ContainerExtension(_settings.Container));
+            int rc = _engine.BeginSaveReplay(destVideo, Math.Max(_settings.ReplayDurationSeconds, 1), out ulong jobId);
+            if (rc != ReplayEngine.SaveOk)
+            {
+                Interlocked.Exchange(ref _saveInFlight, 0);
+                CleanupFailedSaveFolder(saveFolder);
+                failure = ClassifySaveStartFailure(rc, destDir);
+                return false;
+            }
+
+            job = new PendingSaveJob
+            {
+                JobId = jobId,
+                DestDir = destDir,
+                SaveFolder = saveFolder,
+                VideoPath = destVideo,
+            };
+            Interlocked.Exchange(ref _activeSaveJobId, (long)jobId);
+            return true;
         }
         catch (Exception ex)
         {
             Logger.Error("SaveReplay: failed creating save folder", ex);
-            return ProbeWriteBlocked(destDir, ex);
-        }
-
-        string destVideo = Path.Combine(saveFolder, "replay." + Settings.ContainerExtension(_settings.Container));
-
-        int rc;
-        try
-        {
-            rc = _engine.SaveReplay(destVideo, Math.Max(_settings.ReplayDurationSeconds, 1));
-        }
-        catch (Exception ex)
-        {
-            Logger.Error("SaveReplay: exception in managed engine", ex);
+            Interlocked.Exchange(ref _saveInFlight, 0);
             CleanupFailedSaveFolder(saveFolder);
-            return ProbeWriteBlocked(destDir, ex);
+            failure = ProbeWriteBlocked(destDir, ex);
+            return false;
         }
+    }
 
-        if (rc == 0 && File.Exists(destVideo))
-        {
-            Logger.Info($"Replay Saved - Path: {destVideo}");
-            return new SaveReplayResult(SaveReplayOutcome.Success, destVideo);
-        }
-
+    private static SaveReplayResult ClassifySaveStartFailure(int rc, string destDir)
+    {
         Logger.Info($"SaveReplay: managed engine returned {rc}.");
-
-        if (rc == -31)
+        if (rc == ReplayEngine.SaveLowMemory)
         {
-            CleanupFailedSaveFolder(saveFolder);
             Logger.Warn("Replay save refused because Windows has insufficient committed-memory headroom. No replay data was duplicated or written.");
             return new SaveReplayResult(SaveReplayOutcome.LowMemory);
         }
-
-        if (rc == -1 || rc == -30)
-        {
-            CleanupFailedSaveFolder(saveFolder);
+        if (rc == ReplayEngine.SaveFailed || rc == ReplayEngine.SaveNotEnoughData)
             return new SaveReplayResult(SaveReplayOutcome.NoSegments);
+        return ProbeWriteBlocked(destDir, null);
+    }
+
+    private SaveReplayResult FinishSave(PendingSaveJob job, int rc)
+    {
+        Interlocked.Exchange(ref _activeSaveJobId, 0L);
+        Interlocked.Exchange(ref _saveInFlight, 0);
+
+        if (rc == ReplayEngine.SaveOk && File.Exists(job.VideoPath))
+        {
+            Logger.Info($"Replay Saved - Path: {job.VideoPath}");
+            return new SaveReplayResult(SaveReplayOutcome.Success, job.VideoPath);
         }
 
-        CleanupFailedSaveFolder(saveFolder);
-        return ProbeWriteBlocked(destDir, null);
+        Logger.Info($"SaveReplay: job {job.JobId} finished with {rc}.");
+        CleanupFailedSaveFolder(job.SaveFolder);
+        if (rc == ReplayEngine.SaveLowMemory)
+        {
+            Logger.Warn("Replay save refused because Windows has insufficient committed-memory headroom. No replay data was duplicated or written.");
+            return new SaveReplayResult(SaveReplayOutcome.LowMemory);
+        }
+        if (rc == ReplayEngine.SaveFailed || rc == ReplayEngine.SaveNotEnoughData)
+            return new SaveReplayResult(SaveReplayOutcome.NoSegments);
+        return ProbeWriteBlocked(job.DestDir, null);
     }
 
     private static void CleanupFailedSaveFolder(string saveFolder)

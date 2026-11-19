@@ -1,678 +1,1001 @@
-// Engine core: clock, ring buffers, capture -> canvas -> OBS-style GPU pipeline -> encoder thread,
-// audio mixing, Save, and the exported C ABI used by InstantReplay.Native.
-#include "audio.h"
-#include "capture.h"
-#include "ffmpeg_rt.h"
-#include "gpu_pipeline.h"
-#include "mf_encoder.h"
+// Instant Replay native engine v4.
+//
+// The video thread is the sole owner of the canvas/snapshot/pipeline/pending
+// slot ring and the capture watcher heartbeat. Capture threads publish only
+// intrusive Ref<VideoFrame> leases into preallocated SPSC queues. Audio threads
+// publish only Ref<AudioBlock> leases into the replay rings. Save work is a
+// control-plane job served by one save thread.
+#include "core.hpp"
 
-#include <cmath>
-#include <limits>
-#include <new>
-#include <utility>
+#include <cwchar>
+#include <objbase.h>
+#include <unordered_map>
 
-namespace ir {
+namespace ir
+{
+    namespace
+    {
+        constexpr uint32_t kAudioAccumFrames = 16384; // amortize WASAPI packets into pooled blocks
 
-namespace {
+        // Global last-error store; the other v4 translation units call these.
+        std::mutex g_error_mutex;
+        std::string g_error;
 
-struct AudioBlock {
-    std::vector<int16_t> pcm; // interleaved (stereo for system, mono for mic)
-    uint32_t frames = 0;
-    int64_t pts = 0;
-};
+        // Save progress / last job cache. IR_SaveProgress must never touch an
+        // evicted SaveJob: the weak reference is the only live-object check.
+        std::mutex g_last_mutex;
+        std::weak_ptr<SaveJob> g_last_job;
+        uint64_t g_last_id = 0;
+        std::atomic<int> g_last_progress{-1};
 
-uint32_t even_up(uint32_t v) { return (v + 1) & ~1u; }
+        void remember_last_job(const std::shared_ptr<SaveJob> &job)
+        {
+            std::lock_guard<std::mutex> lock(g_last_mutex);
+            g_last_job = job;
+            g_last_id = job ? job->id : 0;
+            g_last_progress.store(job ? job->progress.load() : 0, std::memory_order_relaxed);
+        }
 
-// Balance every COM apartment we enter: CoInitializeEx only adds a reference for S_OK/S_FALSE
-// (RPC_E_CHANGED_MODE means the thread is already in another apartment, so leave it alone).
-struct ComGuard {
-    HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-    ~ComGuard() { if (hr == S_OK || hr == S_FALSE) CoUninitialize(); }
-};
+        void clear_last_job(int progress)
+        {
+            std::lock_guard<std::mutex> lock(g_last_mutex);
+            g_last_job.reset();
+            g_last_id = 0;
+            g_last_progress.store(progress, std::memory_order_relaxed);
+        }
 
-// Port of the old engine's fit_resolution(): keep the monitor aspect ratio and round down to even.
-std::pair<uint32_t, uint32_t> fit_resolution(int desk_w, int desk_h, int cap_w, int cap_h) {
-    int w = desk_w, h = desk_h;
-    if (cap_w > 0 && cap_h > 0) {
-        const double scale = std::min((double)cap_w / std::max(1, w), (double)cap_h / std::max(1, h));
-        if (scale < 1.0) { w = (int)(w * scale); h = (int)(h * scale); }
-    } else if (cap_w > 0) {
-        const double scale = (double)cap_w / std::max(1, w);
-        if (scale < 1.0) { h = (int)(h * scale); w = cap_w; }
-    } else if (cap_h > 0) {
-        const double scale = (double)cap_h / std::max(1, h);
-        if (scale < 1.0) { w = (int)(w * scale); h = cap_h; }
+        void publish_last_progress(const std::shared_ptr<SaveJob> &job, int progress)
+        {
+            if (!job)
+                return;
+            job->progress.store(progress, std::memory_order_relaxed);
+            std::lock_guard<std::mutex> lock(g_last_mutex);
+            if (g_last_id == job->id)
+                g_last_progress.store(progress, std::memory_order_relaxed);
+        }
+
+        std::shared_ptr<SaveJob> retain_global_last_job(uint64_t id)
+        {
+            std::lock_guard<std::mutex> lock(g_last_mutex);
+            if (g_last_id != id)
+                return {};
+            return g_last_job.lock();
+        }
+
+        // Balances every COM apartment we enter; RPC_E_CHANGED_MODE is left alone.
+        struct ComGuard
+        {
+            HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+            ~ComGuard()
+            {
+                if (hr == S_OK || hr == S_FALSE)
+                    CoUninitialize();
+            }
+        };
+
+        // Same committed-memory reserve the previous engine used before cloning
+        // the replay ring: keep the 512 MiB reserve plus three copies of audio.
+        bool save_memory_available(uint64_t audio_bytes)
+        {
+            MEMORYSTATUSEX mem = {};
+            mem.dwLength = sizeof(mem);
+            if (!GlobalMemoryStatusEx(&mem))
+                return false;
+            constexpr uint64_t reserve = RING_BUDGET_BYTES;
+            const uint64_t max = std::numeric_limits<uint64_t>::max();
+            const uint64_t workspace = audio_bytes > (max - reserve) / 3 ? max : audio_bytes * 3;
+            return mem.ullAvailPageFile >= reserve + workspace;
+        }
+
+        Scaler scaler_from_env()
+        {
+            wchar_t buf[32];
+            DWORD n = GetEnvironmentVariableW(L"IR_SCALER", buf, 32);
+            if (n > 0 && n < 32 && _wcsicmp(buf, L"bilinear") == 0)
+                return Scaler::Bilinear;
+            return Scaler::Bicubic;
+        }
+
+        // One producer thread owns each accumulator. Stop flushes it only after
+        // the corresponding AudioSource::stop() has joined that producer.
+        struct AudioAccumulator
+        {
+            std::vector<int16_t> pcm;
+            uint32_t frames = 0; // stereo audio frames, or mono samples for mic
+            int64_t pts = -1;
+
+            void clear() noexcept
+            {
+                pcm.clear();
+                frames = 0;
+                pts = -1;
+            }
+        };
+
+        struct VideoInit
+        {
+            uint32_t canvas_w = 2, canvas_h = 2;
+            uint32_t cap_w = 2, cap_h = 2;
+            bool hd = false;
+            Scaler scaler = Scaler::Bicubic;
+            VideoOptions options;
+        };
+
+        struct Pending
+        {
+            uint32_t slot = 0;
+            int64_t pts = 0;
+            Ref<GpuFrame> frame;
+        };
+    } // namespace
+
+    int current_save_progress()
+    {
+        std::lock_guard<std::mutex> lock(g_last_mutex);
+        if (auto job = g_last_job.lock())
+            return job->progress.load(std::memory_order_relaxed);
+        return g_last_progress.load(std::memory_order_relaxed);
     }
-    return { (uint32_t)std::max(2, w / 2 * 2), (uint32_t)std::max(2, h / 2 * 2) };
-}
 
-// Same committed-memory reserve the Rust engine used before cloning the replay ring.
-bool save_memory_available(uint64_t audio_bytes) {
-    MEMORYSTATUSEX mem = {};
-    mem.dwLength = sizeof(mem);
-    if (!GlobalMemoryStatusEx(&mem)) return false;
-    constexpr uint64_t reserve = 512ull * 1024 * 1024;
-    const uint64_t max = std::numeric_limits<uint64_t>::max();
-    const uint64_t workspace = audio_bytes > (max - reserve) / 3 ? max : audio_bytes * 3;
-    return mem.ullAvailPageFile >= reserve + workspace;
-}
+    void clear_save_progress() { clear_last_job(-1); }
 
-Scaler scaler_from_env() {
-    wchar_t buf[32];
-    DWORD n = GetEnvironmentVariableW(L"IR_SCALER", buf, 32);
-    if (n > 0 && n < 32 && _wcsicmp(buf, L"bilinear") == 0) return Scaler::Bilinear;
-    return Scaler::Bicubic;
-}
-
-} // namespace
-
-std::atomic<int> g_save_progress{-1};
-
-class Engine {
-public:
-    Engine() = default;
-    ~Engine() { stop(); }
-
-    int start(int monitor_index, int ring_seconds, int fps, int bitrate_kbps, int cap_w, int cap_h, bool audio,
-              bool mic, const wchar_t* mic_device, int pref, int method, int64_t* start_qpc);
-    void stop();
-    int set_target(HWND window, uint32_t options);
-    int set_source(int method, int monitor_index, HWND window, uint32_t options);
-    int set_canvas_hint(int w, int h);
-    int set_paused(bool paused);
-    int save(const std::string& path, int seconds_back);
-    void status(int* buffering, int* ring_seconds, int64_t* encoded, int64_t* dropped, int* has_error, int64_t* a_frames,
-                int64_t* a_events, int64_t* a_got, int64_t* heartbeat);
-    void mic_status(int64_t* frames, int64_t* events, int64_t* got, int64_t* fail_hr, int* sys_peak, int* mic_peak,
-                    wchar_t* name, int name_cap);
-
-    int active_capture_method() const { return active_method_.load(); }
-    int last_hresult() const { return last_hr_.load(); }
-    int last_fail_stage() const { return fail_stage_.load(); }
-    int last_fail_hr() const { return fail_hr_.load(); }
-    int last_capture_hr() const { return capture_ ? (int)capture_->last_hr() : cap_hr_.load(); }
-    int active_encoder() const { return active_encoder_.load(); }
-    int hw_init_hr() const { return hw_init_hr_.load(); }
-
-private:
-    // ---- clock ----
-    // Video and application audio: dropped while paused (and anything older than the resume instant).
-    int64_t timeline(int64_t qpc) {
-        std::lock_guard<std::mutex> lock(clock_mutex_);
-        if (paused_ || qpc < resume_qpc_) return -1;
-        int64_t t = qpc - start_qpc_ - paused_total_;
-        return t < 0 ? 0 : t;
-    }
-    // Microphone: keeps its own continuous clock, so an enabled mic records straight through a pause.
-    int64_t mic_timeline(int64_t qpc) const {
-        int64_t t = qpc - start_qpc_;
-        return t < 0 ? -1 : t;
+    void set_last_error(const std::string &message)
+    {
+        std::lock_guard<std::mutex> lock(g_error_mutex);
+        g_error = message;
     }
 
-    void fail(int stage, HRESULT hr, const std::string& message) {
-        fail_stage_ = stage;
-        fail_hr_ = (int)hr;
-        last_hr_ = (int)hr;
-        has_error_ = true;
-        if (!message.empty()) set_last_error(message);
+    std::string last_error()
+    {
+        std::lock_guard<std::mutex> lock(g_error_mutex);
+        return g_error;
     }
 
-    HRESULT open_capture(const CaptureTarget& target, CaptureMethod method);
-    void on_frame(const CapturedFrame& f);
-    void video_thread();
-    bool ensure_pipeline();
-    bool encode_slot(int slot, int64_t pts, bool idr);
-    void push_video(EncodedFrame&& f);
-    void push_system(const int16_t* data, uint32_t frames, int64_t qpc);
-    void push_mic(const int16_t* data, uint32_t frames, int64_t qpc);
-    void flush_pending();
-    void watch_target();
-    void restart_system_audio(HWND window);
-
-    std::mutex ctl_mutex_;
-    std::mutex stop_mutex_; // serializes stop() so the video thread can take ctl_mutex_ while we join
-    std::atomic<bool> running_{false};
-    std::atomic<bool> stopping_{false};
-
-    // config
-    std::atomic<int> ring_seconds_{60};
-    int fps_ = 30;
-    uint32_t bps_ = 0;
-    uint32_t out_w_ = 0, out_h_ = 0;
-    int pref_ = 0;
-    int monitor_index_ = 0;
-    uint32_t options_ = CAP_CURSOR | CAP_KEEP_CORNERS;
-
-    // clock
-    std::mutex clock_mutex_;
-    int64_t start_qpc_ = 0, paused_total_ = 0, pause_began_ = 0, resume_qpc_ = 0;
-    bool paused_ = false;
-    bool mic_continuous_ = false;
-
-    // pending capture target (IR_SetCaptureTarget / IR_SetCanvasHint, honoured by the next start)
-    HWND pending_window_ = nullptr;
-    uint32_t pending_options_ = CAP_CLIENT_AREA | CAP_CURSOR | CAP_KEEP_CORNERS;
-    uint32_t hint_w_ = 0, hint_h_ = 0;
-
-    // gpu
-    GpuDevice gpu_;
-    std::mutex canvas_mutex_;
-    GpuCanvas canvas_;
-    uint32_t max_w_ = 0, max_h_ = 0;
-    uint64_t canvas_gen_ = 0;
-    uint32_t last_place_w_ = 0, last_place_h_ = 0, last_dx_ = 0, last_dy_ = 0;
-    bool need_clear_ = true;
-    int64_t latest_pts_ = -1;
-    uint64_t frame_seq_ = 0;
-    std::condition_variable_any frame_cv_;
-    int64_t last_pts_ = -1;
-
-    // capture
-    std::mutex capture_mutex_;
-    std::unique_ptr<CaptureSource> capture_;
-    CaptureTarget target_;
-    CaptureMethod method_ = CaptureMethod::Wgc;
-    std::atomic<int> active_method_{0};
-    std::atomic<int> cap_hr_{0};
-
-    // encoder
-    std::thread video_thread_;
-    VideoSelection selection_;
-    std::unique_ptr<MfEncoder> mf_;
-    VideoOptions video_options_;
-    ObsVideoPipeline pipe_;
-    bool pipe_ready_ = false;
-    uint64_t pipe_gen_ = ~0ull;
-    ComPtr<ID3D11Texture2D> snap_;
-    ComPtr<ID3D11ShaderResourceView> snap_srv_;
-    struct Pending { int slot; int64_t pts; };
-    std::deque<Pending> pending_;
-    int next_slot_ = 0;
-    bool first_frame_ = true;
-    Scaler scaler_ = Scaler::Bicubic;
-
-    // rings
-    std::mutex ring_mutex_;
-    std::deque<std::shared_ptr<EncodedFrame>> vring_;
-    int64_t vbytes_ = 0;
-    std::deque<AudioBlock> sys_ring_, mic_ring_;
-
-    // audio
-    std::unique_ptr<AudioSource> sys_audio_, mic_audio_;
-    AudioCounters sys_counters_, mic_counters_;
-    bool want_audio_ = false;
-    std::wstring mic_device_;
-
-    // stats
-    std::atomic<int64_t> encoded_{0}, dropped_{0}, heartbeat_{0};
-    std::atomic<bool> has_error_{false};
-    std::atomic<int> last_hr_{0}, fail_stage_{0}, fail_hr_{0}, active_encoder_{0}, hw_init_hr_{0};
-};
-
-// ------------------------------------------------------------------------------------------------
-
-HRESULT Engine::open_capture(const CaptureTarget& target, CaptureMethod method) {
-    std::lock_guard<std::mutex> lock(capture_mutex_);
-    if (capture_) {
-        capture_->stop();
-        capture_.reset();
+    std::string wide_to_utf8(const wchar_t *s, size_t len)
+    {
+        if (!s || len == 0)
+            return {};
+        int n = WideCharToMultiByte(CP_UTF8, 0, s, (int)len, nullptr, 0, nullptr, nullptr);
+        std::string out(n > 0 ? n : 0, '\0');
+        if (n > 0)
+            WideCharToMultiByte(CP_UTF8, 0, s, (int)len, out.data(), n, nullptr, nullptr);
+        return out;
     }
-    target_ = target;
-    auto cb = [this](const CapturedFrame& f) { on_frame(f); };
-    auto try_method = [&](CaptureMethod m) -> HRESULT {
-        auto src = m == CaptureMethod::Wgc ? make_wgc_capture(gpu_, target, cb) : make_dxgi_capture(gpu_, target, cb);
-        HRESULT hr = src->start();
-        if (SUCCEEDED(hr)) {
-            capture_ = std::move(src);
-            active_method_ = (int)m;
-            method_ = m;
-        } else {
-            cap_hr_ = (int)hr;
-            fail_stage_ = src->stage() ? src->stage() : STAGE_START_CAPTURE;
+
+    std::wstring utf8_to_wide(const std::string &s)
+    {
+        if (s.empty())
+            return {};
+        int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), (int)s.size(), nullptr, 0);
+        std::wstring out(n > 0 ? n : 0, L'\0');
+        if (n > 0)
+            MultiByteToWideChar(CP_UTF8, 0, s.data(), (int)s.size(), out.data(), n);
+        return out;
+    }
+
+    // -------------------------------------------------------------------------
+    // Engine facade
+    // -------------------------------------------------------------------------
+    class Engine
+    {
+    public:
+        Engine() = default;
+        ~Engine()
+        {
+            try
+            {
+                stop();
+            }
+            catch (...)
+            {
+            }
+        }
+
+        int start(int monitor_index, int ring_seconds, int fps, int bitrate_kbps, int cap_w, int cap_h, bool audio,
+                  bool mic, const wchar_t *mic_device, int pref, int method, int64_t *start_qpc);
+        void stop();
+
+        int set_target(HWND window, uint32_t options);
+        int set_source(int method, int monitor_index, HWND window, uint32_t options);
+        int set_canvas_hint(int w, int h);
+        int set_paused(bool paused);
+
+        int begin_save(const std::wstring &path, int seconds_back, uint64_t *job_id);
+        std::shared_ptr<SaveJob> retain_job(uint64_t id);
+        int poll_save(uint64_t id, int *progress, int *result);
+
+        void status(int *buffering, int *ring_seconds, int64_t *encoded, int64_t *dropped, int *has_error,
+                    int64_t *a_frames, int64_t *a_events, int64_t *a_got, int64_t *heartbeat);
+        void mic_status(int64_t *frames, int64_t *events, int64_t *got, int64_t *fail_hr, int *sys_peak,
+                        int *mic_peak, wchar_t *name, int name_cap);
+        void audio_diagnostics(int which, int64_t *activate_hr, int64_t *init_hr, int64_t *start_hr, int *tag,
+                               int *rate, int *channels, int *bits, int *is_float, int *convert_failures,
+                               int64_t *last_fail_hr);
+        void telemetry(int64_t *captured, int64_t *paced, int64_t *rejected, int64_t *encoded, int64_t *dropped,
+                       int *encoder, int64_t *last_pts);
+        void timing(double *map_ms, double *encode_ms, double *render_ms, double *submit_ms, double *snapshot_ms,
+                    double *unmap_ms, int64_t *frames);
+
+        int active_capture_method() const { return active_method_.load(); }
+        int last_hresult() const { return last_hr_.load(); }
+        int last_fail_stage() const { return fail_stage_.load(); }
+        int last_fail_hr() const { return fail_hr_.load(); }
+        int last_capture_hr();
+        int active_encoder() const { return active_encoder_.load(); }
+        int hw_init_hr() const { return hw_init_hr_.load(); }
+
+    private:
+        void fail(int stage, HRESULT hr, const std::string &message);
+        int post_control(ControlKind kind, int a = 0, int b = 0, int c = 0, int d = 0, HWND window = nullptr,
+                         std::chrono::milliseconds timeout = std::chrono::milliseconds(1000));
+        void handle_command(const std::shared_ptr<ControlCommand> &cmd);
+
+        HRESULT open_capture(const CaptureTarget &target, CaptureMethod requested);
+        int apply_switch_source(int method, int monitor_index, HWND window, uint32_t options);
+        void restart_system_audio(HWND window);
+        void watch_target();
+        void drain_raw_queues();
+
+        void signal_ack(const Ref<VideoFrame> &frame) noexcept;
+        bool process_frame(Ref<VideoFrame> frame);
+        bool ensure_canvas_size(uint32_t w, uint32_t h);
+        bool recreate_canvas(uint32_t w, uint32_t h);
+        bool ensure_pipeline();
+        bool create_video_encoders(const ObsVideoPipeline *pipe, bool allow_mf, std::string *err);
+        bool encoder_uses_textures() const;
+        bool encode_slot(Pending &pending);
+        bool flush_pending();
+        void push_video(Ref<PacketRef> frame);
+
+        void push_system(const int16_t *data, uint32_t frames, int64_t qpc);
+        void push_mic(const int16_t *data, uint32_t frames, int64_t qpc);
+        void flush_audio_accumulator(bool mic);
+
+        bool video_init(const VideoInit &init);
+        void video_loop();
+        void video_exit();
+
+        void ensure_save_thread();
+        void stop_save();
+        void save_loop();
+        int run_save(const std::shared_ptr<SaveJob> &job);
+        static void finish_job(const std::shared_ptr<SaveJob> &job, int result, int progress);
+        void register_job(const std::shared_ptr<SaveJob> &job);
+        void unregister_job(uint64_t id);
+        uint64_t audio_bytes_snapshot();
+        bool has_video_frames();
+
+        // Lifecycle. Serializes start/stop; never held while joining the video thread
+        // by a command that the video thread must acknowledge.
+        std::mutex lifecycle_mutex_;
+        std::atomic<bool> running_{false};
+        std::thread video_thread_;
+
+        // Single shared clock and stop-aware control bus.
+        Clock clock_;
+        ControlBus ctl_;
+        std::mutex ctl_post_mutex_;
+        std::atomic<uint64_t> ctl_seq_{0};
+
+        // Preallocated data-plane queues and pools.
+        SpscQueue<Ref<VideoFrame>> q_raw_wgc_{kRawWgc};
+        SpscQueue<Ref<VideoFrame>> q_raw_dxgi_{kRawDxgi};
+        ObjectPool<VideoFrame> frame_pool_{8};
+        ObjectPool<Keepalive> keepalive_pool_{kKeepalivePool};
+        ObjectPool<FrameAck> ack_pool_{kAckPool};
+        ObjectPool<PacketRef> packet_pool_{kPacketPool, 4096};
+        ObjectPool<AudioBlock> audio_pool_{kAudioPool, kAudioAccumFrames};
+
+        // Capture (capture objects are control-plane; their frames are data-plane).
+        std::mutex capture_mutex_;
+        std::unique_ptr<CaptureSource> capture_;
+        CaptureTarget target_;
+        CaptureMethod method_ = CaptureMethod::Wgc;
+        std::atomic<int> active_method_{0};
+        std::atomic<int> cap_hr_{0};
+
+        // GPU device outlives every canvas, pipeline, encoder and capture source.
+        GpuContext gpu_;
+
+        // ---- owned exclusively by the video thread ----
+        GpuCanvas canvas_;
+        uint32_t max_w_ = 0, max_h_ = 0;
+        uint64_t canvas_gen_ = 0;
+        uint32_t last_place_w_ = 0, last_place_h_ = 0, last_dx_ = 0, last_dy_ = 0;
+        bool need_clear_ = true;
+        std::atomic<int64_t> latest_pts_{-1};
+        uint64_t frame_seq_ = 0;
+        ObsVideoPipeline pipe_;
+        bool pipe_ready_ = false;
+        uint64_t pipe_gen_ = ~0ull;
+        ComPtr<ID3D11Texture2D> snap_;
+        ComPtr<ID3D11ShaderResourceView> snap_srv_;
+        std::deque<Pending> pending_;
+        uint32_t next_slot_ = 0;
+        bool first_frame_ = true;
+        VideoSelection selection_;
+        std::unique_ptr<MfEncoder> mf_;
+        VideoOptions video_options_;
+        Scaler scaler_ = Scaler::Bicubic;
+
+        // Replay rings. Only intrusive leases are stored.
+        std::mutex ring_mutex_;
+        std::deque<Ref<PacketRef>> vring_;
+        int64_t vbytes_ = 0;
+        std::deque<Ref<AudioBlock>> sys_ring_, mic_ring_;
+        AudioAccumulator sys_acc_, mic_acc_;
+
+        // Audio producers.
+        std::unique_ptr<AudioSource> sys_audio_, mic_audio_;
+        AudioCounters sys_counters_, mic_counters_;
+        bool want_audio_ = false;
+        HWND audio_target_ = nullptr;
+        std::wstring mic_device_;
+
+        // Shared configuration.
+        std::mutex config_mutex_;
+        std::atomic<int> ring_seconds_{60};
+        int fps_ = 30;
+        uint32_t bps_ = 0, out_w_ = 0, out_h_ = 0;
+        int pref_ = 0, monitor_index_ = 0;
+        uint32_t options_ = CAP_CURSOR | CAP_KEEP_CORNERS;
+        HWND pending_window_ = nullptr;
+        uint32_t pending_options_ = CAP_CLIENT_AREA | CAP_CURSOR | CAP_KEEP_CORNERS;
+        uint32_t hint_w_ = 0, hint_h_ = 0;
+
+        // Telemetry / timing.
+        std::atomic<int64_t> captured_{0}, encoded_{0}, dropped_{0}, heartbeat_{0};
+        std::atomic<int64_t> t_map_{0}, t_encode_{0}, t_render_{0}, t_submit_{0}, t_snapshot_{0}, t_unmap_{0}, t_frames_{0};
+        std::atomic<bool> has_error_{false};
+        std::atomic<int> last_hr_{0}, fail_stage_{0}, fail_hr_{0}, active_encoder_{0}, hw_init_hr_{0};
+
+        // Save control plane.
+        SpscQueue<std::shared_ptr<SaveJob>> q_save_{kSaveQueue};
+        std::atomic<bool> save_stopped_{false}; // SpscQueue has no public stopped() accessor
+        std::mutex save_lifecycle_mutex_;
+        std::thread save_thread_;
+        std::mutex jobs_mutex_;
+        std::unordered_map<uint64_t, std::shared_ptr<SaveJob>> jobs_;
+        std::deque<uint64_t> job_order_;
+        std::atomic<uint64_t> next_job_id_{1};
+    };
+
+    // -------------------------------------------------------------------------
+    // Diagnostics and control
+    // -------------------------------------------------------------------------
+    void Engine::fail(int stage, HRESULT hr, const std::string &message)
+    {
+        fail_stage_.store(stage);
+        fail_hr_.store((int)hr);
+        last_hr_.store((int)hr);
+        has_error_.store(true);
+        if (!message.empty())
+            set_last_error(message);
+    }
+
+    int Engine::post_control(ControlKind kind, int a, int b, int c, int d, HWND window,
+                             std::chrono::milliseconds timeout)
+    {
+        std::lock_guard<std::mutex> lock(ctl_post_mutex_);
+        // Increment before post: the video thread can wake, call pop() and wait
+        // for the command to be published without ever blocking forever.
+        ctl_seq_.fetch_add(1, std::memory_order_release);
+        auto cmd = ctl_.post(kind, a, b, c, d, window);
+        return ControlBus::wait(cmd, timeout);
+    }
+
+    void Engine::handle_command(const std::shared_ptr<ControlCommand> &cmd)
+    {
+        if (!cmd)
+            return;
+        int rc = IR_FAIL;
+        switch (cmd->kind)
+        {
+        case ControlKind::SwitchSource:
+            rc = apply_switch_source(cmd->values[0], cmd->values[1], cmd->window,
+                                     (uint32_t)cmd->values[2]);
+            break;
+        case ControlKind::Pause:
+            clock_.set_paused(cmd->values[0] != 0);
+            rc = IR_OK;
+            break;
+        case ControlKind::ReconfigureCanvas:
+            need_clear_ = true;
+            rc = IR_OK;
+            break;
+        case ControlKind::SetNeedClear:
+            need_clear_ = true;
+            rc = IR_OK;
+            break;
+        case ControlKind::Stop:
+            running_.store(false);
+            q_raw_wgc_.stop();
+            q_raw_dxgi_.stop();
+            rc = IR_OK;
+            break;
+        }
+        ControlBus::complete(cmd, rc);
+    }
+
+    int Engine::last_capture_hr()
+    {
+        std::lock_guard<std::mutex> lock(capture_mutex_);
+        return capture_ ? (int)capture_->last_hr() : cap_hr_.load();
+    }
+
+    void Engine::drain_raw_queues()
+    {
+        Ref<VideoFrame> frame;
+        while (q_raw_wgc_.try_pop(frame))
+            frame.reset();
+        while (q_raw_dxgi_.try_pop(frame))
+            frame.reset();
+    }
+
+    // -------------------------------------------------------------------------
+    // Capture lifecycle — capture threads only publish Ref<VideoFrame>.
+    // -------------------------------------------------------------------------
+    HRESULT Engine::open_capture(const CaptureTarget &target, CaptureMethod requested)
+    {
+        std::lock_guard<std::mutex> lock(capture_mutex_);
+        if (capture_)
+        {
+            capture_->stop(); // joins the producer before any queue is reset
+            capture_.reset();
+        }
+        target_ = target;
+
+        auto attempt = [&](CaptureMethod m) -> HRESULT
+        {
+            drain_raw_queues();
+            q_raw_wgc_.reset();
+            q_raw_dxgi_.reset();
+
+            FrameSink sink = [this, m](Ref<VideoFrame> frame)
+            {
+                SpscQueue<Ref<VideoFrame>> &q = m == CaptureMethod::Dxgi ? q_raw_dxgi_ : q_raw_wgc_;
+                q.push(std::move(frame)); // stop-aware; q is stopped on teardown
+            };
+
+            std::unique_ptr<CaptureSource> src;
+            if (m == CaptureMethod::Wgc)
+                src = make_wgc_capture(gpu_, target, &frame_pool_, &keepalive_pool_, std::move(sink));
+            else
+                src = make_dxgi_capture(gpu_, target, &frame_pool_, &keepalive_pool_, &ack_pool_, std::move(sink));
+
+            HRESULT hr = src->start();
+            if (SUCCEEDED(hr))
+            {
+                capture_ = std::move(src);
+                active_method_.store((int)m);
+                method_ = m;
+                return hr;
+            }
+            cap_hr_.store((int)hr);
+            fail_stage_.store(src->stage() ? src->stage() : STAGE_START_CAPTURE);
+            return hr;
+        };
+
+        HRESULT hr = attempt(requested);
+        if (FAILED(hr))
+        {
+            const CaptureMethod other = requested == CaptureMethod::Wgc ? CaptureMethod::Dxgi : CaptureMethod::Wgc;
+            const HRESULT hr2 = attempt(other);
+            if (SUCCEEDED(hr2))
+                return hr2;
         }
         return hr;
-    };
-    HRESULT hr = try_method(method);
-    if (FAILED(hr)) {
-        // Fall back to the other method (e.g. WGC unavailable on this Windows build).
-        HRESULT hr2 = try_method(method == CaptureMethod::Wgc ? CaptureMethod::Dxgi : CaptureMethod::Wgc);
-        if (SUCCEEDED(hr2)) return hr2;
     }
-    return hr;
-}
 
-void Engine::on_frame(const CapturedFrame& f) {
-    if (!running_) return;
-    const int64_t pts = timeline(f.pts100ns);
-    if (pts < 0) return; // paused
-    const uint32_t w = f.box.right - f.box.left, h = f.box.bottom - f.box.top;
-    if (w < 2 || h < 2) return;
-
-    std::lock_guard<std::mutex> lock(canvas_mutex_);
-    const uint32_t nw = std::max(max_w_, w), nh = std::max(max_h_, h);
-    if (!canvas_.width() || nw != max_w_ || nh != max_h_) {
-        max_w_ = nw;
-        max_h_ = nh;
-        // Canvas keeps the output aspect ratio so scaling never distorts; the source is centred with black bars.
-        uint32_t cw = max_w_, ch = max_h_;
-        if ((uint64_t)cw * out_h_ < (uint64_t)ch * out_w_) cw = (uint32_t)(((uint64_t)ch * out_w_ + out_h_ - 1) / out_h_);
-        else ch = (uint32_t)(((uint64_t)cw * out_h_ + out_w_ - 1) / out_w_);
-        cw = even_up(cw);
-        ch = even_up(ch);
-        GpuCanvas fresh;
-        if (FAILED(fresh.create(gpu_, cw, ch))) return;
-        canvas_ = std::move(fresh);
-        ++canvas_gen_;
-        need_clear_ = true;
-    }
-    const uint32_t dx = ((canvas_.width() - w) / 2) & ~1u, dy = ((canvas_.height() - h) / 2) & ~1u;
-    const bool moved = w != last_place_w_ || h != last_place_h_ || dx != last_dx_ || dy != last_dy_;
-    canvas_.submit(f.texture, f.box, dx, dy, need_clear_ || moved);
-    need_clear_ = false;
-    last_place_w_ = w;
-    last_place_h_ = h;
-    last_dx_ = dx;
-    last_dy_ = dy;
-    if (pts <= latest_pts_) {
-        ++dropped_; // two frames with the same timestamp: keep only the later content
-        latest_pts_ += 1;
-    } else {
-        latest_pts_ = pts;
-    }
-    ++frame_seq_;
-    frame_cv_.notify_all();
-}
-
-bool Engine::ensure_pipeline() {
-    // Called with canvas_mutex_ held.
-    if (pipe_ready_ && pipe_gen_ == canvas_gen_) return true;
-    if (!canvas_.width()) return false;
-    flush_pending();
-    D3D11_TEXTURE2D_DESC d = {};
-    d.Width = canvas_.width();
-    d.Height = canvas_.height();
-    d.MipLevels = d.ArraySize = 1;
-    d.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-    d.SampleDesc.Count = 1;
-    d.Usage = D3D11_USAGE_DEFAULT;
-    d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-    snap_.Reset();
-    snap_srv_.Reset();
-    HRESULT hr = gpu_.dev->CreateTexture2D(&d, nullptr, &snap_);
-    if (SUCCEEDED(hr)) hr = gpu_.dev->CreateShaderResourceView(snap_.Get(), nullptr, &snap_srv_);
-    if (SUCCEEDED(hr)) {
-        pipe_ = ObsVideoPipeline();
-        const bool hd = out_w_ >= 1280 || out_h_ > 576;
-        hr = pipe_.create(gpu_, canvas_.width(), canvas_.height(), out_w_, out_h_, hd, scaler_);
-    }
-    if (FAILED(hr)) {
-        fail(STAGE_ENCODER, hr, "Could not create the GPU video pipeline (0x" + std::to_string((unsigned)hr) + ").");
-        return false;
-    }
-    pipe_ready_ = true;
-    pipe_gen_ = canvas_gen_;
-    next_slot_ = 0;
-    return true;
-}
-
-void Engine::push_video(EncodedFrame&& f) {
-    ++encoded_;
-    auto frame = std::make_shared<EncodedFrame>(std::move(f));
-    std::lock_guard<std::mutex> lock(ring_mutex_);
-    vbytes_ += (int64_t)frame->data.size();
-    const int64_t newest = frame->pts100ns;
-    vring_.push_back(std::move(frame));
-    const int64_t cutoff = newest - (int64_t)ring_seconds_.load() * SECOND_100NS;
-    // Keep the last keyframe at or before the cutoff so a save can always start on a keyframe.
-    long k = -1;
-    for (size_t i = 0; i < vring_.size(); ++i) {
-        if (vring_[i]->pts100ns > cutoff) break;
-        if (vring_[i]->keyframe) k = (long)i;
-    }
-    for (long i = 0; i < k; ++i) {
-        vbytes_ -= (int64_t)vring_.front()->data.size();
-        vring_.pop_front();
-    }
-    while (vbytes_ > RING_BUDGET_BYTES && vring_.size() > 1) {
-        size_t next_key = 1;
-        while (next_key < vring_.size() && !vring_[next_key]->keyframe) ++next_key;
-        if (next_key >= vring_.size()) break;
-        for (size_t i = 0; i < next_key; ++i) {
-            vbytes_ -= (int64_t)vring_.front()->data.size();
-            vring_.pop_front();
-        }
-    }
-}
-
-bool Engine::encode_slot(int slot, int64_t pts, bool idr) {
-    Nv12Mapped m;
-    if (!pipe_.map(slot, &m)) {
-        ++dropped_;
-        return true;
-    }
-    std::vector<EncodedFrame> out;
-    std::string err;
-    bool ok;
-    if (mf_) ok = mf_->encode_memory(m.y, m.y_stride, m.uv, m.uv_stride, pts, idr, out, &err);
-    else ok = selection_.video->encode_nv12(m.y, m.y_stride, m.uv, m.uv_stride, pts, idr, out, &err);
-    pipe_.unmap(slot);
-    if (!ok) {
-        fail(STAGE_ENCODER, E_FAIL, "Video encoder failed: " + err);
-        return false;
-    }
-    for (auto& f : out) push_video(std::move(f));
-    return true;
-}
-
-void Engine::flush_pending() {
-    while (!pending_.empty()) {
-        Pending p = pending_.front();
-        pending_.pop_front();
-        if (!encode_slot(p.slot, p.pts, first_frame_)) { running_ = false; return; }
-        first_frame_ = false;
-    }
-}
-
-void Engine::video_thread() {
-    ComGuard com;
-    uint64_t seen = 0;
-    int64_t last_alive = qpc100ns();
-    while (running_) {
-        ++heartbeat_;
-        bool have_new = false;
-        int64_t pts = 0;
-        {
-            std::unique_lock<std::mutex> lock(canvas_mutex_);
-            frame_cv_.wait_for(lock, std::chrono::milliseconds(20), [&] { return frame_seq_ != seen || !running_; });
-            if (!running_) break;
-            if (frame_seq_ != seen) {
-                seen = frame_seq_;
-                pts = latest_pts_;
-                if (ensure_pipeline()) {
-                    canvas_.snapshot_into(snap_.Get());
-                    have_new = true;
-                } else {
-                    const HRESULT hr = has_error_ ? (HRESULT)last_hr_.load() : E_FAIL;
-                    const std::string message = has_error_ ? last_error() : "Video pipeline could not be created.";
-                    running_ = false;
-                    frame_cv_.notify_all();
-                    fail(STAGE_ENCODER, hr, message);
-                    break;
-                }
-            }
-        }
-        if (have_new) {
-            const int slot = next_slot_;
-            next_slot_ = (next_slot_ + 1) % ObsVideoPipeline::kSlots;
-            pipe_.render(snap_srv_.Get(), slot);
-            pending_.push_back({slot, pts});
-            // One-frame delay before mapping, like OBS's staging ring, so Map() never stalls the GPU.
-            while (pending_.size() > 1) {
-                Pending p = pending_.front();
-                pending_.pop_front();
-                if (!encode_slot(p.slot, p.pts, first_frame_)) { running_ = false; break; }
-                first_frame_ = false;
-            }
-        } else if (!pending_.empty()) {
-            Pending p = pending_.front();
-            pending_.pop_front();
-            if (!encode_slot(p.slot, p.pts, first_frame_)) { running_ = false; break; }
-            first_frame_ = false;
-        }
-        const int64_t now = qpc100ns();
-        if (now - last_alive > SECOND_100NS / 4) {
-            last_alive = now;
-            watch_target();
-        }
-    }
-    // Drain the one-frame-delayed staging slot and flush the active encoder before teardown,
-    // otherwise the final B-frames never reach the ring.
-    if (mf_ || selection_.video) {
-        if (pipe_ready_) flush_pending();
-        std::vector<EncodedFrame> out;
-        std::string err;
-        const bool ok = mf_ ? mf_->flush(out, &err) : selection_.video->flush(out, &err);
-        if (ok) {
-            for (auto& f : out) push_video(std::move(f));
-        } else {
-            fail(STAGE_ENCODER, E_FAIL, "Video encoder flush failed: " + err);
-        }
-    }
-}
-
-void Engine::restart_system_audio(HWND window) {
-    if (!want_audio_) return;
-    if (sys_audio_) sys_audio_->stop();
-    sys_audio_ = std::make_unique<AudioSource>(false, L"", window,
-        [this](const int16_t* d, uint32_t n, int64_t q) { push_system(d, n, q); }, &sys_counters_);
-    sys_audio_->start();
-}
-
-void Engine::watch_target() {
-    std::lock_guard<std::mutex> ctl(ctl_mutex_);
-    if (!running_) return;
-    // The captured window closed: keep recording by switching to the whole monitor.
-    CaptureSource* cap = nullptr;
+    int Engine::apply_switch_source(int method, int monitor_index, HWND window, uint32_t options)
     {
-        std::lock_guard<std::mutex> lock(capture_mutex_);
-        cap = capture_.get();
-        if (!cap || !cap->closed()) return;
-    }
-    auto mons = enumerate_monitors();
-    CaptureTarget t;
-    t.fps = fps_;
-    t.options = options_ & ~CAP_CLIENT_AREA;
-    if (!mons.empty()) t.monitor = mons[(size_t)std::clamp(monitor_index_, 0, (int)mons.size() - 1)].handle;
-    open_capture(t, method_);
-    if (running_) restart_system_audio(nullptr);
-}
+        if (!running_.load())
+            return IR_FAIL;
+        options &= 255;
+        if (method == (int)CaptureMethod::Wgc && !window)
+            return IR_FAIL; // WGC requires a window target
 
-void Engine::push_system(const int16_t* data, uint32_t frames, int64_t qpc) {
-    const int64_t pts = timeline(qpc);
-    if (pts < 0 || !running_) return;
-    AudioBlock b;
-    b.pcm.assign(data, data + (size_t)frames * 2);
-    b.frames = frames;
-    b.pts = pts;
-    std::lock_guard<std::mutex> lock(ring_mutex_);
-    sys_ring_.push_back(std::move(b));
-    const int64_t cutoff = pts - ((int64_t)ring_seconds_.load() + 3) * SECOND_100NS;
-    while (!sys_ring_.empty() && sys_ring_.front().pts < cutoff) sys_ring_.pop_front();
-}
-
-void Engine::push_mic(const int16_t* data, uint32_t frames, int64_t qpc) {
-    const int64_t pts = mic_timeline(qpc);
-    if (pts < 0 || !running_) return;
-    AudioBlock b;
-    b.pcm.assign(data, data + frames);
-    b.frames = frames;
-    b.pts = pts;
-    std::lock_guard<std::mutex> lock(ring_mutex_);
-    mic_ring_.push_back(std::move(b));
-    const int64_t cutoff = pts - ((int64_t)ring_seconds_.load() + 3) * SECOND_100NS;
-    while (!mic_ring_.empty() && mic_ring_.front().pts < cutoff) mic_ring_.pop_front();
-}
-
-// ------------------------------------------------------------------------------------------------
-
-int Engine::start(int monitor_index, int ring_seconds, int fps, int bitrate_kbps, int cap_w, int cap_h, bool audio,
-                  bool mic, const wchar_t* mic_device, int pref, int method, int64_t* start_qpc) {
-    std::unique_lock<std::mutex> ctl(ctl_mutex_);
-    if (stopping_) return IR_FAIL;
-    if (running_) return IR_OK;
-    set_last_error("");
-    has_error_ = false;
-    fail_stage_ = fail_hr_ = last_hr_ = cap_hr_ = hw_init_hr_ = 0;
-    encoded_ = dropped_ = heartbeat_ = 0;
-
-    ComGuard com;
-    if (!ff_load()) {
-        fail(STAGE_FFMPEG, E_FAIL, "");
-        return IR_FFMPEG_UNAVAILABLE;
-    }
-
-    auto mons = enumerate_monitors();
-    if (mons.empty()) {
-        fail(STAGE_CREATE_ITEM, E_FAIL, "No display was found to capture.");
-        return IR_FAIL;
-    }
-    monitor_index_ = (monitor_index < 0 || (size_t)monitor_index >= mons.size()) ? 0 : monitor_index;
-    const MonInfo& mon = mons[(size_t)monitor_index_];
-
-    ring_seconds_.store(std::max(5, ring_seconds));
-    fps_ = std::clamp(fps, 1, 240);
-    bps_ = (uint32_t)std::max(250, bitrate_kbps) * 1000u;
-    const auto [out_w, out_h] = fit_resolution(mon.w, mon.h, cap_w, cap_h);
-    out_w_ = out_w;
-    out_h_ = out_h;
-    pref_ = pref;
-    want_audio_ = audio;
-    scaler_ = scaler_from_env();
-
-    video_options_ = options_from_pref(pref, (int)out_w_, (int)out_h_, fps_, bps_);
-    std::string err;
-    selection_ = VideoSelection();
-    if (!select_video(video_options_, true, &selection_, &err)) {
-        fail(STAGE_ENCODER, E_FAIL, err);
-        return IR_FAIL;
-    }
-
-    // One device on the adapter that owns the monitor: capture, scaling and conversion all stay on it.
-    ComPtr<IDXGIAdapter> adapter = adapter_for_monitor(mon.handle);
-    HRESULT hr = create_gpu_device(adapter.Get(), &gpu_);
-    if (FAILED(hr)) hr = create_gpu_device(nullptr, &gpu_);
-    if (FAILED(hr)) {
-        fail(STAGE_CREATE_DEVICE, hr, "Could not create a Direct3D 11 device.");
-        return IR_FAIL;
-    }
-
-    mf_.reset();
-    if (selection_.kind == VideoSelection::MediaFoundation) {
-        err.clear();
-        mf_ = MfEncoder::create(selection_.mf, &gpu_, (int)out_w_, (int)out_h_, fps_, bps_,
-                                video_options_.rate, video_options_.preset, &err);
-        if (!mf_) {
-            hw_init_hr_ = E_FAIL;
-            if (video_options_.enc == Enc::Auto && selection_.mf == MfCodec::H264) {
-                // MF is only an Auto fallback: when its transform cannot be created, H.264 can still
-                // use libx264. HEVC stays hardware-only and reports the MF failure below.
-                VideoOptions fallback = video_options_;
-                fallback.avail &= ~ENC_H264_MF;
-                std::string fallback_err;
-                selection_ = VideoSelection();
-                if (select_video(fallback, false, &selection_, &fallback_err) && selection_.video) {
-                    hw_init_hr_ = 0;
-                    active_encoder_ = selection_.video->kind_code();
-                } else {
-                    fail(STAGE_ENCODER, E_FAIL, "Media Foundation H.264 encoder failed (" + err +
-                                                    "); software fallback failed: " + fallback_err);
+        {
+            std::lock_guard<std::mutex> lock(config_mutex_);
+            auto mons = enumerate_monitors();
+            if (!mons.empty())
+                monitor_index_ = (monitor_index < 0 || (size_t)monitor_index >= mons.size()) ? 0 : monitor_index;
+            if (window)
+            {
+                int w = 0, h = 0;
+                if (!window_size(window, (options & CAP_CLIENT_AREA) != 0, &w, &h))
                     return IR_FAIL;
-                }
-            } else {
-                fail(STAGE_ENCODER, E_FAIL, err.empty() ? "Media Foundation encoder could not be created." : err);
+                pending_window_ = window;
+            }
+            else
+            {
+                pending_window_ = nullptr;
+            }
+            options_ = options;
+            audio_target_ = (window && (options & CAP_PROCESS_AUDIO)) ? window : nullptr;
+
+            CaptureTarget t;
+            t.fps = fps_;
+            t.window = window;
+            if (!window && !mons.empty())
+                t.monitor = mons[(size_t)monitor_index_].handle;
+            t.options = options | CAP_SWITCHED;
+
+            need_clear_ = true; // video-thread-owned
+            HRESULT hr = open_capture(t, method == (int)CaptureMethod::Dxgi ? CaptureMethod::Dxgi : CaptureMethod::Wgc);
+            if (FAILED(hr))
+            {
+                fail(STAGE_START_CAPTURE, hr,
+                     "Switching the capture source failed (0x" + std::to_string((unsigned)hr) + ").");
                 return IR_FAIL;
             }
-        } else {
-            active_encoder_ = mf_->kind_code();
+            has_error_.store(false);
         }
-    } else {
-        active_encoder_ = selection_.video->kind_code();
+        restart_system_audio((window && (options & CAP_PROCESS_AUDIO)) ? window : nullptr);
+        return IR_OK;
     }
 
+    void Engine::restart_system_audio(HWND window)
     {
-        std::lock_guard<std::mutex> lock(ring_mutex_);
-        vring_.clear();
-        sys_ring_.clear();
-        mic_ring_.clear();
-        vbytes_ = 0;
-    }
-    {
-        std::lock_guard<std::mutex> lock(canvas_mutex_);
-        canvas_ = GpuCanvas();
-        max_w_ = hint_w_;
-        max_h_ = hint_h_;
-        pipe_ready_ = false;
-        pipe_gen_ = ~0ull;
-        pending_.clear();
-        latest_pts_ = -1;
-        frame_seq_ = 0;
-        need_clear_ = true;
-        first_frame_ = true;
-        canvas_gen_ = 0;
-    }
-    {
-        std::lock_guard<std::mutex> lock(clock_mutex_);
-        start_qpc_ = qpc100ns();
-        paused_total_ = 0;
-        paused_ = false;
-        resume_qpc_ = 0;
-        mic_continuous_ = mic;
-    }
-    if (start_qpc) *start_qpc = start_qpc_;
-
-    options_ = pending_options_;
-    CaptureTarget t;
-    t.fps = fps_;
-    t.monitor = mon.handle;
-    t.window = (pending_window_ && IsWindow(pending_window_)) ? pending_window_ : nullptr;
-    t.options = options_;
-    running_ = true;
-    video_thread_ = std::thread([this] { video_thread(); });
-
-    hr = open_capture(t, method == (int)CaptureMethod::Dxgi ? CaptureMethod::Dxgi : CaptureMethod::Wgc);
-    if (FAILED(hr)) {
-        running_ = false;
-        stopping_ = true;
-        frame_cv_.notify_all();
-        std::thread worker = std::move(video_thread_);
-        // The worker may be inside watch_target() waiting for ctl_mutex_; release it so it can exit.
-        ctl.unlock();
-        if (worker.joinable()) worker.join();
-        ctl.lock();
-        stopping_ = false;
-        fail(fail_stage_ ? fail_stage_.load() : STAGE_START_CAPTURE, hr,
-             "Screen capture could not start (0x" + std::to_string((unsigned)hr) + ").");
-        return IR_FAIL;
-    }
-
-    if (audio) {
-        const HWND audio_window = (t.window && (t.options & CAP_PROCESS_AUDIO)) ? t.window : nullptr;
-        sys_audio_ = std::make_unique<AudioSource>(false, L"", audio_window,
-            [this](const int16_t* d, uint32_t n, int64_t q) { push_system(d, n, q); }, &sys_counters_);
+        if (!want_audio_)
+            return;
+        if (sys_audio_)
+            sys_audio_->stop();
+        sys_audio_ = std::make_unique<AudioSource>(false, L"", window,
+                                                   [this](const int16_t *d, uint32_t n, int64_t q)
+                                                   { push_system(d, n, q); }, &sys_counters_);
         sys_audio_->start();
     }
-    if (mic) {
-        mic_audio_ = std::make_unique<AudioSource>(true, mic_device ? mic_device : L"", nullptr,
-            [this](const int16_t* d, uint32_t n, int64_t q) { push_mic(d, n, q); }, &mic_counters_);
-        mic_audio_->start();
-    }
-    return IR_OK;
-}
 
-void Engine::stop() {
-    std::lock_guard<std::mutex> stop(stop_mutex_);
-    std::thread worker;
+    void Engine::watch_target()
     {
-        std::lock_guard<std::mutex> ctl(ctl_mutex_);
-        if (stopping_) return;
-        stopping_ = true;
-        running_ = false;
-        frame_cv_.notify_all();
-        worker = std::move(video_thread_);
+        // Called only from the video thread's heartbeat.
+        if (!running_.load())
+            return;
+        {
+            std::lock_guard<std::mutex> lock(capture_mutex_);
+            if (!capture_ || !capture_->closed())
+                return;
+        }
+
+        std::lock_guard<std::mutex> lock(config_mutex_);
+        if (!running_.load())
+            return;
+        auto mons = enumerate_monitors();
+        CaptureTarget t;
+        t.fps = fps_;
+        t.options = options_ & ~CAP_CLIENT_AREA;
+        if (!mons.empty())
+            t.monitor = mons[(size_t)std::clamp(monitor_index_, 0, (int)mons.size() - 1)].handle;
+        open_capture(t, method_);
+        if (running_.load())
+        {
+            audio_target_ = nullptr;
+            restart_system_audio(nullptr);
+        }
     }
-    // watch_target() takes ctl_mutex_, so join with the lock released to avoid a deadlock.
-    if (worker.joinable()) worker.join();
-    std::lock_guard<std::mutex> ctl(ctl_mutex_);
-    // Always clear capture and audio: a watcher can recreate them, and a previous stop may have
-    // been skipped while nothing was running.
+
+    // -------------------------------------------------------------------------
+    // Video lane: canvas, snapshot, scaling/conversion, delayed encode.
+    // -------------------------------------------------------------------------
+    void Engine::signal_ack(const Ref<VideoFrame> &frame) noexcept
     {
-        std::lock_guard<std::mutex> lock(capture_mutex_);
-        if (capture_) { capture_->stop(); capture_.reset(); }
+        if (frame && frame->ack)
+            frame->ack->signal();
     }
-    if (sys_audio_) { sys_audio_->stop(); sys_audio_.reset(); }
-    if (mic_audio_) { mic_audio_->stop(); mic_audio_.reset(); }
+
+    bool Engine::recreate_canvas(uint32_t w, uint32_t h)
     {
-        std::lock_guard<std::mutex> lock(canvas_mutex_);
+        GpuCanvas fresh;
+        if (FAILED(fresh.create(gpu_, w, h)))
+            return false;
+        canvas_ = std::move(fresh);
+        ++canvas_gen_;
+        pipe_ready_ = false;
+        need_clear_ = true;
+        return true;
+    }
+
+    bool Engine::ensure_canvas_size(uint32_t w, uint32_t h)
+    {
+        const uint32_t nw = std::max(max_w_, w), nh = std::max(max_h_, h);
+        if (!canvas_.width() || nw != max_w_ || nh != max_h_)
+        {
+            max_w_ = nw;
+            max_h_ = nh;
+            const auto [cw, ch] = canvas_size_for(max_w_, max_h_, out_w_, out_h_);
+            if (!recreate_canvas(cw, ch))
+                return false;
+        }
+        return ensure_pipeline();
+    }
+
+    bool Engine::create_video_encoders(const ObsVideoPipeline *pipe, bool allow_mf, std::string *err)
+    {
+        hw_init_hr_.store(0);
+        mf_.reset();
+        selection_ = VideoSelection();
+        std::string local;
+        std::string &message = err ? *err : local;
+        message.clear();
+        if (!select_video(video_options_, allow_mf, &gpu_, pipe, &packet_pool_, &selection_, &message))
+            return false;
+
+        if (selection_.kind == VideoSelection::MediaFoundation)
+        {
+            std::string mf_err;
+            auto mf = MfEncoder::create(selection_.mf, &gpu_, (int)out_w_, (int)out_h_, fps_, bps_,
+                                        video_options_.rate, video_options_.preset, &mf_err);
+            if (!mf)
+            {
+                hw_init_hr_.store((int)E_FAIL);
+                message = mf_err.empty() ? "Media Foundation encoder could not be created." : mf_err;
+                return false;
+            }
+            mf_ = std::move(mf);
+            active_encoder_.store(mf_->kind_code());
+        }
+        else
+        {
+            active_encoder_.store(selection_.video->kind_code());
+        }
+        return true;
+    }
+
+    bool Engine::encoder_uses_textures() const
+    {
+        return (mf_ && mf_->accepts_textures()) || (selection_.video && selection_.video->accepts_textures());
+    }
+
+    bool Engine::ensure_pipeline()
+    {
+        // Video thread only. Encodes anything rendered into the old pipeline
+        // before its textures and encoder are replaced.
+        if (pipe_ready_ && pipe_gen_ == canvas_gen_)
+            return true;
+        if (!canvas_.width())
+            return false;
+        if (!flush_pending())
+            return false;
+
+        D3D11_TEXTURE2D_DESC d = {};
+        d.Width = canvas_.width();
+        d.Height = canvas_.height();
+        d.MipLevels = d.ArraySize = 1;
+        d.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        d.SampleDesc.Count = 1;
+        d.Usage = D3D11_USAGE_DEFAULT;
+        d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        ComPtr<ID3D11Texture2D> snap;
+        ComPtr<ID3D11ShaderResourceView> snap_srv;
+        HRESULT hr = gpu_.dev->CreateTexture2D(&d, nullptr, &snap);
+        if (SUCCEEDED(hr))
+            hr = gpu_.dev->CreateShaderResourceView(snap.Get(), nullptr, &snap_srv);
+
+        ObsVideoPipeline fresh;
+        if (SUCCEEDED(hr))
+        {
+            const bool hd = out_w_ >= 1280 || out_h_ > 576;
+            hr = fresh.create(gpu_, canvas_.width(), canvas_.height(), out_w_, out_h_, hd, scaler_);
+        }
+        if (FAILED(hr))
+        {
+            fail(STAGE_ENCODER, hr, "Could not create the GPU video pipeline (0x" + std::to_string((unsigned)hr) + ").");
+            return false;
+        }
+        // The new encoder wraps these exact textures: create it before publishing.
+        std::string err;
+        if (!create_video_encoders(&fresh, true, &err))
+        {
+            fail(STAGE_ENCODER, E_FAIL, err.empty() ? "Could not recreate the video encoder." : err);
+            return false;
+        }
+        snap_ = std::move(snap);
+        snap_srv_ = std::move(snap_srv);
+        pipe_ = std::move(fresh);
+        pipe_ready_ = true;
+        pipe_gen_ = canvas_gen_;
+        next_slot_ = 0;
+        return true;
+    }
+
+    void Engine::push_video(Ref<PacketRef> frame)
+    {
+        if (!frame)
+            return;
+        ++encoded_;
+        const int64_t bytes = (int64_t)frame->payload.size();
+        std::lock_guard<std::mutex> lock(ring_mutex_);
+        vbytes_ += bytes;
+        const int64_t newest = frame->pts100ns;
+        vring_.push_back(std::move(frame));
+        const int64_t cutoff = newest - (int64_t)ring_seconds_.load() * SECOND_100NS;
+        // Keep the last keyframe at or before the cutoff so a save can start on one.
+        long k = -1;
+        for (size_t i = 0; i < vring_.size(); ++i)
+        {
+            if (vring_[i]->pts100ns > cutoff)
+                break;
+            if (vring_[i]->keyframe)
+                k = (long)i;
+        }
+        for (long i = 0; i < k; ++i)
+        {
+            vbytes_ -= (int64_t)vring_.front()->payload.size();
+            vring_.pop_front();
+        }
+        while (vbytes_ > RING_BUDGET_BYTES && vring_.size() > 1)
+        {
+            size_t next_key = 1;
+            while (next_key < vring_.size() && !vring_[next_key]->keyframe)
+                ++next_key;
+            if (next_key >= vring_.size())
+                break;
+            for (size_t i = 0; i < next_key; ++i)
+            {
+                vbytes_ -= (int64_t)vring_.front()->payload.size();
+                vring_.pop_front();
+            }
+        }
+    }
+
+    bool Engine::encode_slot(Pending &pending)
+    {
+        const uint32_t slot = pending.slot;
+        const int64_t pts = pending.pts;
+        const bool idr = first_frame_;
+        std::vector<Ref<PacketRef>> out;
+        std::string err;
+        bool ok = false;
+        if (encoder_uses_textures())
+        {
+            const int64_t t0 = qpc100ns();
+            ID3D11Texture2D *tex = pipe_.nv12_texture(slot);
+            if (!tex)
+            {
+                ++dropped_;
+                return true;
+            }
+            if (mf_)
+                ok = mf_->encode_texture(tex, pts, idr, out, &err);
+            else
+                ok = selection_.video->encode_texture(slot, pts, idr, out, &err);
+            t_encode_ += qpc100ns() - t0;
+            ++t_frames_;
+        }
+        else
+        {
+            const int64_t t0 = qpc100ns();
+            MappedFrame mapped = pipe_.map(slot, std::move(pending.frame));
+            const int64_t t1 = qpc100ns();
+            if (!mapped)
+            {
+                ++dropped_;
+                return true;
+            }
+            const auto y = mapped.y(), uv = mapped.uv();
+            const size_t y_stride = mapped.y_stride(), uv_stride = mapped.uv_stride();
+            if (mf_)
+                ok = mf_->encode_memory(y.data(), y_stride, uv.data(), uv_stride, pts, idr, out, &err);
+            else
+                ok = selection_.video->encode_nv12(y.data(), y_stride, uv.data(), uv_stride, pts, idr, out, &err);
+            const int64_t t2 = qpc100ns();
+            t_map_ += t1 - t0;
+            t_encode_ += t2 - t1;
+            ++t_frames_;
+            // MappedFrame's destructor performs the Unmap outside any MT guard.
+            const int64_t t3 = qpc100ns();
+            mapped = MappedFrame();
+            t_unmap_ += qpc100ns() - t3;
+        }
+        if (!ok)
+        {
+            fail(STAGE_ENCODER, E_FAIL, "Video encoder failed: " + err);
+            return false;
+        }
+        for (auto &packet : out)
+            push_video(std::move(packet));
+        return true;
+    }
+
+    bool Engine::flush_pending()
+    {
+        while (!pending_.empty())
+        {
+            Pending p = std::move(pending_.front());
+            pending_.pop_front();
+            if (!encode_slot(p))
+            {
+                running_.store(false);
+                return false;
+            }
+            first_frame_ = false;
+        }
+        return true;
+    }
+
+    bool Engine::process_frame(Ref<VideoFrame> frame)
+    {
+        ++captured_;
+        const int64_t pts = clock_.timeline(frame->pts100ns);
+        if (pts < 0)
+        {
+            signal_ack(frame); // paused / pre-resume frame
+            return false;
+        }
+        const uint32_t w = frame->box.right - frame->box.left;
+        const uint32_t h = frame->box.bottom - frame->box.top;
+        if (w < 2 || h < 2)
+        {
+            signal_ack(frame);
+            return false;
+        }
+        if (!ensure_canvas_size(w, h))
+        {
+            signal_ack(frame);
+            return false;
+        }
+
+        const uint32_t dx = ((canvas_.width() - w) / 2) & ~1u;
+        const uint32_t dy = ((canvas_.height() - h) / 2) & ~1u;
+        const bool moved = w != last_place_w_ || h != last_place_h_ || dx != last_dx_ || dy != last_dy_;
+        const int64_t s0 = qpc100ns();
+        canvas_.submit(frame->texture.Get(), frame->box, dx, dy, need_clear_ || moved);
+        t_submit_ += qpc100ns() - s0;
+        // The GPU copy is queued; release the capture resource immediately.
+        signal_ack(frame);
+        need_clear_ = false;
+        last_place_w_ = w;
+        last_place_h_ = h;
+        last_dx_ = dx;
+        last_dy_ = dy;
+
+        const int64_t lp = latest_pts_.load();
+        if (pts <= lp)
+        {
+            ++dropped_;
+            latest_pts_.store(lp + 1);
+        }
+        else
+        {
+            latest_pts_.store(pts);
+        }
+        ++frame_seq_;
+        return true;
+    }
+
+    bool Engine::video_init(const VideoInit &init)
+    {
+        video_options_ = init.options;
+        scaler_ = init.scaler;
+        max_w_ = init.cap_w;
+        max_h_ = init.cap_h;
+        canvas_gen_ = 0;
+        if (!recreate_canvas(init.canvas_w, init.canvas_h) || !ensure_pipeline())
+            return false;
+        pending_.clear();
+        next_slot_ = 0;
+        first_frame_ = true;
+        need_clear_ = true;
+        latest_pts_.store(-1);
+        frame_seq_ = 0;
+        return true;
+    }
+
+    void Engine::video_loop()
+    {
+        uint64_t seen_ctl = ctl_seq_.load(std::memory_order_acquire);
+        int64_t last_alive = qpc100ns();
+        int64_t pts = 0;
+
+        while (running_.load())
+        {
+            ++heartbeat_;
+
+            // Control commands first, so Stop/Pause are not starved by frames.
+            const uint64_t seq = ctl_seq_.load(std::memory_order_acquire);
+            while (seen_ctl != seq)
+            {
+                auto cmd = ctl_.pop();
+                ++seen_ctl;
+                if (!cmd)
+                    break;
+                handle_command(cmd);
+            }
+            if (!running_.load())
+                break;
+
+            SpscQueue<Ref<VideoFrame>> &q = active_method_.load() == (int)CaptureMethod::Dxgi
+                                                 ? q_raw_dxgi_
+                                                 : q_raw_wgc_;
+            Ref<VideoFrame> frame;
+            const bool have_new = q.try_pop(frame) && process_frame(std::move(frame));
+            if (have_new)
+            {
+                pts = latest_pts_.load();
+                const int64_t p0 = qpc100ns();
+                canvas_.snapshot_into(snap_.Get());
+                t_snapshot_ += qpc100ns() - p0;
+                const uint32_t slot = next_slot_;
+                next_slot_ = (next_slot_ + 1) % ObsVideoPipeline::kSlots;
+                // GPU encoders already hold the six slot leases (returned by their
+                // AVBufferRef release callbacks). Only the CPU staging path needs an
+                // engine-held lease, released by MappedFrame after Map/Unmap.
+                const bool gpu_path = encoder_uses_textures();
+                Ref<GpuFrame> lease;
+                if (!gpu_path)
+                    lease = pipe_.acquire_slot(slot);
+                if (!gpu_path && !lease)
+                {
+                    ++dropped_;
+                }
+                else
+                {
+                    const int64_t r0 = qpc100ns();
+                    pipe_.render(snap_srv_.Get(), slot, !gpu_path);
+                    t_render_ += qpc100ns() - r0;
+                    pending_.push_back(Pending{slot, pts, std::move(lease)});
+                    // Keep a couple of frames in flight like OBS's staging ring,
+                    // so Map() has less chance to stall a slow whole-screen capture.
+                    while (pending_.size() > 2) // kPendingMax: at most 3 outstanding
+                    {
+                        Pending p = std::move(pending_.front());
+                        pending_.pop_front();
+                        if (!encode_slot(p))
+                        {
+                            running_.store(false);
+                            break;
+                        }
+                        first_frame_ = false;
+                    }
+                }
+            }
+            else if (!pending_.empty())
+            {
+                Pending p = std::move(pending_.front());
+                pending_.pop_front();
+                if (!encode_slot(p))
+                {
+                    running_.store(false);
+                    break;
+                }
+                first_frame_ = false;
+            }
+
+            const int64_t now = qpc100ns();
+            if (now - last_alive > SECOND_100NS / 4)
+            {
+                last_alive = now;
+                watch_target();
+            }
+            if (!have_new && pending_.empty())
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    }
+
+    void Engine::video_exit()
+    {
+        // Drain the one-frame-delayed staging slot and flush the active encoder
+        // while every GPU texture is still alive.
+        if (mf_ || selection_.video)
+        {
+            if (pipe_ready_)
+                flush_pending();
+            std::vector<Ref<PacketRef>> out;
+            std::string err;
+            const bool ok = mf_ ? mf_->flush(out, &err) : selection_.video->flush(out, &err);
+            if (ok)
+            {
+                for (auto &packet : out)
+                    push_video(std::move(packet));
+            }
+            else
+            {
+                fail(STAGE_ENCODER, E_FAIL, "Video encoder flush failed: " + err);
+            }
+        }
+        mf_.reset();
+        selection_ = VideoSelection();
         pending_.clear();
         pipe_ = ObsVideoPipeline();
         pipe_ready_ = false;
@@ -680,434 +1003,1236 @@ void Engine::stop() {
         snap_srv_.Reset();
         canvas_ = GpuCanvas();
     }
-    mf_.reset();
-    selection_ = VideoSelection();
-    gpu_ = GpuDevice();
+
+    // -------------------------------------------------------------------------
+    // Audio producers: two dedicated WASAPI threads, one shared Clock.
+    // -------------------------------------------------------------------------
+    void Engine::flush_audio_accumulator(bool mic)
     {
-        std::lock_guard<std::mutex> lock(ring_mutex_);
-        vring_.clear();
-        sys_ring_.clear();
-        mic_ring_.clear();
-        vbytes_ = 0;
-    }
-    stopping_ = false;
-}
+        AudioAccumulator &acc = mic ? mic_acc_ : sys_acc_;
+        if (!acc.frames || acc.pcm.empty())
+        {
+            acc.clear();
+            return;
+        }
 
-int Engine::set_target(HWND window, uint32_t options) {
-    std::lock_guard<std::mutex> ctl(ctl_mutex_);
-    if (running_) return IR_FAIL; // the target is chosen before start; IR_SetCaptureSource switches live
-    int w, h;
-    if (window && !window_size(window, (options & CAP_CLIENT_AREA) != 0, &w, &h)) return IR_FAIL;
-    pending_window_ = window;
-    pending_options_ = options & 255;
-    return IR_OK;
-}
-
-int Engine::set_source(int method, int monitor_index, HWND window, uint32_t options) {
-    std::lock_guard<std::mutex> ctl(ctl_mutex_);
-    if (!running_) return IR_FAIL;
-    options &= 255;
-    if (method == (int)CaptureMethod::Wgc && !window) return IR_FAIL; // WGC needs a window target
-    auto mons = enumerate_monitors();
-    if (!mons.empty()) monitor_index_ = (monitor_index < 0 || (size_t)monitor_index >= mons.size()) ? 0 : monitor_index;
-    if (window) {
-        int w, h;
-        if (!window_size(window, (options & CAP_CLIENT_AREA) != 0, &w, &h)) return IR_FAIL;
-        pending_window_ = window;
-    } else {
-        pending_window_ = nullptr; // switching to display capture
+        Ref<AudioBlock> block = audio_pool_.acquire();
+        if (!block)
+        {
+            // Recycle the oldest replay block before dropping live audio.
+            std::lock_guard<std::mutex> lock(ring_mutex_);
+            auto &ring = mic ? mic_ring_ : sys_ring_;
+            if (!ring.empty())
+                ring.pop_front();
+            block = audio_pool_.acquire();
+        }
+        if (!block)
+        {
+            acc.clear();
+            return;
+        }
+        block->pcm.assign(acc.pcm.begin(), acc.pcm.end());
+        block->frames = mic ? (uint32_t)acc.pcm.size() : acc.frames;
+        block->pts100ns = acc.pts;
+        {
+            std::lock_guard<std::mutex> lock(ring_mutex_);
+            auto &ring = mic ? mic_ring_ : sys_ring_;
+            ring.push_back(std::move(block));
+            const int64_t cutoff = acc.pts - ((int64_t)ring_seconds_.load() + 3) * SECOND_100NS;
+            while (!ring.empty() && ring.front()->pts100ns < cutoff)
+                ring.pop_front();
+        }
+        acc.clear();
     }
-    options_ = options;
-    CaptureTarget t;
-    t.fps = fps_;
-    t.window = window;
-    if (!window && !mons.empty()) t.monitor = mons[(size_t)monitor_index_].handle;
-    t.options = options | CAP_SWITCHED;
+
+    void Engine::push_system(const int16_t *data, uint32_t frames, int64_t qpc)
     {
-        std::lock_guard<std::mutex> lock(canvas_mutex_);
-        need_clear_ = true;
+        const int64_t pts = clock_.timeline(qpc);
+        if (pts < 0 || !running_.load())
+        {
+            flush_audio_accumulator(false); // never bridge a pause boundary
+            return;
+        }
+        if (sys_acc_.frames && sys_acc_.pts >= 0 && pts < sys_acc_.pts)
+            flush_audio_accumulator(false);
+        if (!sys_acc_.frames)
+            sys_acc_.pts = pts;
+        sys_acc_.pcm.insert(sys_acc_.pcm.end(), data, data + (size_t)frames * AUDIO_CHANNELS);
+        sys_acc_.frames += frames;
+        if (sys_acc_.frames >= kAudioAccumFrames)
+            flush_audio_accumulator(false);
     }
-    HRESULT hr = open_capture(t, method == (int)CaptureMethod::Dxgi ? CaptureMethod::Dxgi : CaptureMethod::Wgc);
-    if (FAILED(hr)) {
-        fail(STAGE_START_CAPTURE, hr, "Switching the capture source failed (0x" + std::to_string((unsigned)hr) + ").");
-        return IR_FAIL;
+
+    void Engine::push_mic(const int16_t *data, uint32_t frames, int64_t qpc)
+    {
+        const int64_t pts = clock_.mic_timeline(qpc);
+        if (pts < 0 || !running_.load())
+        {
+            flush_audio_accumulator(true);
+            return;
+        }
+        if (mic_acc_.frames && mic_acc_.pts >= 0 && pts < mic_acc_.pts)
+            flush_audio_accumulator(true);
+        if (!mic_acc_.frames)
+            mic_acc_.pts = pts;
+        mic_acc_.pcm.insert(mic_acc_.pcm.end(), data, data + frames); // mono
+        mic_acc_.frames += frames;
+        if (mic_acc_.frames >= kAudioAccumFrames)
+            flush_audio_accumulator(true);
     }
-    has_error_ = false;
-    restart_system_audio((window && (options & CAP_PROCESS_AUDIO)) ? window : nullptr);
-    return IR_OK;
-}
 
-int Engine::set_canvas_hint(int w, int h) {
-    std::lock_guard<std::mutex> ctl(ctl_mutex_);
-    if (running_) return IR_FAIL;
-    hint_w_ = (uint32_t)std::clamp(w, 0, 16384);
-    hint_h_ = (uint32_t)std::clamp(h, 0, 16384);
-    return IR_OK;
-}
+    // -------------------------------------------------------------------------
+    // Start / stop
+    // -------------------------------------------------------------------------
+    int Engine::start(int monitor_index, int ring_seconds, int fps, int bitrate_kbps, int cap_w, int cap_h, bool audio,
+                      bool mic, const wchar_t *mic_device, int pref, int method, int64_t *start_qpc)
+    {
+        std::lock_guard<std::mutex> life(lifecycle_mutex_);
+        if (running_.load())
+            return IR_OK;
+        set_last_error("");
+        has_error_.store(false);
+        fail_stage_.store(0);
+        fail_hr_.store(0);
+        last_hr_.store(0);
+        cap_hr_.store(0);
+        hw_init_hr_.store(0);
+        encoded_.store(0);
+        dropped_.store(0);
+        heartbeat_.store(0);
+        captured_.store(0);
 
-int Engine::set_paused(bool paused) {
-    std::lock_guard<std::mutex> lock(clock_mutex_);
-    const int64_t now = qpc100ns();
-    if (paused && !paused_) {
-        paused_ = true;
-        pause_began_ = now;
-    } else if (!paused && paused_) {
-        paused_ = false;
-        if (!mic_continuous_) paused_total_ += now - pause_began_;
-        resume_qpc_ = now;
-    }
-    return IR_OK;
-}
+        ComGuard com;
+        if (!ff_load())
+        {
+            fail(STAGE_FFMPEG, E_FAIL, "");
+            return IR_FFMPEG_UNAVAILABLE;
+        }
 
-// ---- Save ----
+        auto mons = enumerate_monitors();
+        if (mons.empty())
+        {
+            fail(STAGE_CREATE_ITEM, E_FAIL, "No display was found to capture.");
+            return IR_FAIL;
+        }
+        const int resolved_monitor = (monitor_index < 0 || (size_t)monitor_index >= mons.size()) ? 0 : monitor_index;
+        const MonInfo &mon = mons[(size_t)resolved_monitor];
 
-static std::vector<int16_t> mix_range(int64_t t0, int64_t t1, const std::deque<AudioBlock>& sys,
-                                      const std::deque<AudioBlock>& mic) {
-    const int64_t n = (t1 - t0) * AUDIO_RATE / SECOND_100NS;
-    std::vector<int32_t> acc((size_t)n * 2, 0);
-    auto place = [&](const AudioBlock& b, bool mono) {
-        const int64_t first = (b.pts - t0) * AUDIO_RATE / SECOND_100NS;
-        for (uint32_t i = 0; i < b.frames; ++i) {
-            const int64_t at = first + i;
-            if (at < 0 || at >= n) continue;
-            if (mono) {
-                acc[(size_t)at * 2] += b.pcm[i];
-                acc[(size_t)at * 2 + 1] += b.pcm[i];
-            } else {
-                acc[(size_t)at * 2] += b.pcm[(size_t)i * 2];
-                acc[(size_t)at * 2 + 1] += b.pcm[(size_t)i * 2 + 1];
+        ring_seconds_.store(std::max(5, ring_seconds));
+        const int resolved_fps = std::clamp(fps, 1, 240);
+        const uint32_t bps = (uint32_t)std::max(250, bitrate_kbps) * 1000u;
+        const auto [out_w, out_h] = fit_resolution(mon.w, mon.h, cap_w, cap_h);
+        video_options_ = options_from_pref(pref, (int)out_w, (int)out_h, resolved_fps, bps);
+
+        {
+            std::lock_guard<std::mutex> lock(config_mutex_);
+            monitor_index_ = resolved_monitor;
+            fps_ = resolved_fps;
+            bps_ = bps;
+            out_w_ = out_w;
+            out_h_ = out_h;
+            pref_ = pref;
+            want_audio_ = audio;
+            mic_device_ = mic_device ? mic_device : L"";
+            options_ = pending_options_;
+        }
+        {
+            std::lock_guard<std::mutex> lock(ring_mutex_);
+            vring_.clear();
+            sys_ring_.clear();
+            mic_ring_.clear();
+            vbytes_ = 0;
+        }
+        sys_acc_.clear();
+        mic_acc_.clear();
+        clock_.start(qpc100ns(), mic);
+        if (start_qpc)
+            *start_qpc = clock_.start_qpc();
+
+        ComPtr<IDXGIAdapter> adapter = adapter_for_monitor(mon.handle);
+        HRESULT hr = create_gpu_device(adapter.Get(), &gpu_);
+        if (FAILED(hr))
+            hr = create_gpu_device(nullptr, &gpu_);
+        if (FAILED(hr))
+        {
+            fail(STAGE_CREATE_DEVICE, hr, "Could not create a Direct3D 11 device.");
+            return IR_FAIL;
+        }
+
+        int initial_cap_w = mon.w, initial_cap_h = mon.h;
+        {
+            std::lock_guard<std::mutex> lock(config_mutex_);
+            const HWND win = (pending_window_ && IsWindow(pending_window_)) ? pending_window_ : nullptr;
+            if (win && window_size(win, (pending_options_ & CAP_CLIENT_AREA) != 0, &initial_cap_w, &initial_cap_h) &&
+                (initial_cap_w < 2 || initial_cap_h < 2))
+            {
+                initial_cap_w = mon.w;
+                initial_cap_h = mon.h;
+            }
+            if (hint_w_ >= 2 && hint_h_ >= 2)
+            {
+                initial_cap_w = (int)hint_w_;
+                initial_cap_h = (int)hint_h_;
             }
         }
-    };
-    for (auto& b : sys) place(b, false);
-    for (auto& b : mic) place(b, true);
-    std::vector<int16_t> out(acc.size());
-    for (size_t i = 0; i < acc.size(); ++i) out[i] = (int16_t)std::clamp(acc[i], -32768, 32767);
-    return out;
-}
+        const auto [canvas_w, canvas_h] = canvas_size_for((uint32_t)std::max(2, initial_cap_w),
+                                                          (uint32_t)std::max(2, initial_cap_h), out_w, out_h);
 
-int Engine::save(const std::string& path, int seconds_back) {
-    g_save_progress = 0;
-    uint64_t audio_bytes = 0;
+        VideoInit init;
+        init.canvas_w = canvas_w;
+        init.canvas_h = canvas_h;
+        init.cap_w = (uint32_t)std::max(2, initial_cap_w);
+        init.cap_h = (uint32_t)std::max(2, initial_cap_h);
+        init.hd = out_w >= 1280 || out_h > 576;
+        init.scaler = scaler_from_env();
+        init.options = video_options_;
+
+        q_raw_wgc_.reset();
+        q_raw_dxgi_.reset();
+        ctl_.reset();
+        ctl_seq_.store(0);
+
+        std::binary_semaphore init_done{0};
+        std::atomic<int> init_rc{IR_FAIL};
+        running_.store(true);
+        video_thread_ = std::thread([this, init, &init_done, &init_rc]
+        {
+            int rc = IR_FAIL;
+            try
+            {
+                rc = video_init(init) ? IR_OK : IR_FAIL;
+            }
+            catch (const std::exception &e)
+            {
+                fail(STAGE_ENCODER, E_FAIL, std::string("Video initialization failed: ") + e.what());
+            }
+            catch (...)
+            {
+                fail(STAGE_ENCODER, E_FAIL, "Video initialization failed.");
+            }
+            if (rc != IR_OK)
+            {
+                video_exit();
+                init_rc.store(rc);
+                init_done.release();
+                return;
+            }
+            init_rc.store(IR_OK);
+            init_done.release();
+            try
+            {
+                video_loop();
+            }
+            catch (const std::exception &e)
+            {
+                fail(STAGE_ENCODER, E_FAIL, std::string("Video thread failed: ") + e.what());
+            }
+            catch (...)
+            {
+                fail(STAGE_ENCODER, E_FAIL, "Video thread failed.");
+            }
+            video_exit();
+        });
+        init_done.acquire();
+        if (init_rc.load() != IR_OK)
+        {
+            running_.store(false);
+            q_raw_wgc_.stop();
+            q_raw_dxgi_.stop();
+            if (video_thread_.joinable())
+                video_thread_.join();
+            if (!has_error_.load())
+                fail(STAGE_ENCODER, E_FAIL, "Video pipeline could not be created.");
+            return IR_FAIL;
+        }
+
+        CaptureTarget t;
+        t.fps = resolved_fps;
+        {
+            std::lock_guard<std::mutex> lock(config_mutex_);
+            t.monitor = mon.handle;
+            t.window = (pending_window_ && IsWindow(pending_window_)) ? pending_window_ : nullptr;
+            t.options = options_;
+        }
+        hr = open_capture(t, method == (int)CaptureMethod::Dxgi ? CaptureMethod::Dxgi : CaptureMethod::Wgc);
+        if (FAILED(hr))
+        {
+            running_.store(false);
+            q_raw_wgc_.stop();
+            q_raw_dxgi_.stop();
+            if (video_thread_.joinable())
+                video_thread_.join();
+            fail(fail_stage_.load() ? fail_stage_.load() : STAGE_START_CAPTURE, hr,
+                 "Screen capture could not start (0x" + std::to_string((unsigned)hr) + ").");
+            return IR_FAIL;
+        }
+
+        ensure_save_thread();
+        {
+            std::lock_guard<std::mutex> lock(config_mutex_);
+            audio_target_ = (t.window && (t.options & CAP_PROCESS_AUDIO)) ? t.window : nullptr;
+        }
+        if (audio)
+        {
+            sys_audio_ = std::make_unique<AudioSource>(false, L"", audio_target_,
+                                                       [this](const int16_t *d, uint32_t n, int64_t q)
+                                                       { push_system(d, n, q); }, &sys_counters_);
+            sys_audio_->start();
+        }
+        if (mic)
+        {
+            mic_audio_ = std::make_unique<AudioSource>(true, mic_device_, nullptr,
+                                                       [this](const int16_t *d, uint32_t n, int64_t q)
+                                                       { push_mic(d, n, q); }, &mic_counters_);
+            mic_audio_->start();
+        }
+        return IR_OK;
+    }
+
+    void Engine::stop()
+    {
+        std::lock_guard<std::mutex> life(lifecycle_mutex_);
+        const bool was_running = running_.load();
+
+        // Stop capture producers first. Stopping the queues first guarantees no
+        // producer can remain blocked in push() while its source is joined.
+        if (was_running && video_thread_.joinable())
+        {
+            q_raw_wgc_.stop();
+            q_raw_dxgi_.stop();
+            (void)post_control(ControlKind::Stop, 0, 0, 0, 0, nullptr, std::chrono::seconds(5));
+        }
+        else
+        {
+            q_raw_wgc_.stop();
+            q_raw_dxgi_.stop();
+        }
+        running_.store(false);
+
+        {
+            std::lock_guard<std::mutex> lock(capture_mutex_);
+            if (capture_)
+            {
+                capture_->stop();
+                capture_.reset();
+            }
+        }
+        if (sys_audio_)
+        {
+            sys_audio_->stop();
+            sys_audio_.reset();
+        }
+        if (mic_audio_)
+        {
+            mic_audio_->stop();
+            mic_audio_.reset();
+        }
+        flush_audio_accumulator(false);
+        flush_audio_accumulator(true);
+
+        if (video_thread_.joinable())
+            video_thread_.join();
+
+        ctl_.stop_and_drain();
+        {
+            std::lock_guard<std::mutex> lock(ctl_post_mutex_);
+            ctl_seq_.fetch_add(1, std::memory_order_release);
+        }
+        stop_save();
+
+        {
+            std::lock_guard<std::mutex> lock(ring_mutex_);
+            vring_.clear();
+            sys_ring_.clear();
+            mic_ring_.clear();
+            vbytes_ = 0;
+        }
+        // GPU device is released last, after capture, video and save teardown.
+        gpu_ = GpuContext();
+        q_raw_wgc_.reset();
+        q_raw_dxgi_.reset();
+    }
+
+    // -------------------------------------------------------------------------
+    // Setters
+    // -------------------------------------------------------------------------
+    int Engine::set_target(HWND window, uint32_t options)
+    {
+        std::lock_guard<std::mutex> lock(config_mutex_);
+        if (running_.load())
+            return IR_FAIL; // chosen before start; IR_SetCaptureSource switches live
+        int w = 0, h = 0;
+        if (window && !window_size(window, (options & CAP_CLIENT_AREA) != 0, &w, &h))
+            return IR_FAIL;
+        pending_window_ = window;
+        pending_options_ = options & 255;
+        return IR_OK;
+    }
+
+    int Engine::set_source(int method, int monitor_index, HWND window, uint32_t options)
+    {
+        if (!running_.load())
+            return IR_FAIL;
+        return post_control(ControlKind::SwitchSource, method, monitor_index, (int)(options & 255), 0, window);
+    }
+
+    int Engine::set_canvas_hint(int w, int h)
+    {
+        std::lock_guard<std::mutex> lock(config_mutex_);
+        if (running_.load())
+            return IR_FAIL;
+        hint_w_ = (uint32_t)std::clamp(w, 0, 16384);
+        hint_h_ = (uint32_t)std::clamp(h, 0, 16384);
+        return IR_OK;
+    }
+
+    int Engine::set_paused(bool paused)
+    {
+        if (running_.load())
+            return post_control(ControlKind::Pause, paused ? 1 : 0);
+        clock_.set_paused(paused);
+        return IR_OK;
+    }
+
+    // -------------------------------------------------------------------------
+    // Save control plane
+    // -------------------------------------------------------------------------
+    uint64_t Engine::audio_bytes_snapshot()
+    {
+        uint64_t bytes = 0;
+        std::lock_guard<std::mutex> lock(ring_mutex_);
+        for (const auto &b : sys_ring_)
+            bytes += b->pcm.size() * sizeof(int16_t);
+        for (const auto &b : mic_ring_)
+            bytes += b->pcm.size() * sizeof(int16_t);
+        return bytes;
+    }
+
+    bool Engine::has_video_frames()
     {
         std::lock_guard<std::mutex> lock(ring_mutex_);
-        for (const auto& b : sys_ring_) audio_bytes += b.pcm.size() * sizeof(int16_t);
-        for (const auto& b : mic_ring_) audio_bytes += b.pcm.size() * sizeof(int16_t);
+        return !vring_.empty();
     }
-    if (!save_memory_available(audio_bytes)) {
-        g_save_progress = -1;
-        set_last_error("Not enough committed memory to save the clip.");
-        return IR_LOW_MEMORY;
-    }
-    std::vector<std::shared_ptr<EncodedFrame>> frames;
-    std::deque<AudioBlock> sys, mic;
+
+    void Engine::register_job(const std::shared_ptr<SaveJob> &job)
     {
-        std::lock_guard<std::mutex> lock(ring_mutex_);
-        frames.assign(vring_.begin(), vring_.end());
-        sys = sys_ring_;
-        mic = mic_ring_;
+        std::lock_guard<std::mutex> lock(jobs_mutex_);
+        jobs_[job->id] = job;
+        job_order_.push_back(job->id);
+        while (job_order_.size() > kJobRing)
+        {
+            // Eviction only unlinks the map entry: waiters/pollers keep their own
+            // shared_ptr, so the SaveJob is never destroyed underneath them.
+            jobs_.erase(job_order_.front());
+            job_order_.pop_front();
+        }
+        remember_last_job(job);
     }
-    if (frames.empty()) {
-        g_save_progress = -1;
-        return IR_NOT_ENOUGH_DATA;
+
+    void Engine::unregister_job(uint64_t id)
+    {
+        std::lock_guard<std::mutex> lock(jobs_mutex_);
+        jobs_.erase(id);
+        auto it = std::find(job_order_.begin(), job_order_.end(), id);
+        if (it != job_order_.end())
+            job_order_.erase(it);
     }
-    try {
+
+    std::shared_ptr<SaveJob> Engine::retain_job(uint64_t id)
+    {
+        std::lock_guard<std::mutex> lock(jobs_mutex_);
+        auto it = jobs_.find(id);
+        if (it != jobs_.end())
+            return it->second;
+        return retain_global_last_job(id);
+    }
+
+    int Engine::poll_save(uint64_t id, int *progress, int *result)
+    {
+        std::shared_ptr<SaveJob> job;
+        {
+            std::lock_guard<std::mutex> lock(jobs_mutex_);
+            auto it = jobs_.find(id);
+            if (it == jobs_.end())
+                return 0;
+            job = it->second; // strong reference before touching the job
+        }
+        if (progress)
+            *progress = std::clamp(job->progress.load(std::memory_order_relaxed), 0, 100);
+        if (result)
+            *result = job->result.load(std::memory_order_relaxed);
+        return 1;
+    }
+
+    void Engine::finish_job(const std::shared_ptr<SaveJob> &job, int result, int progress)
+    {
+        if (!job)
+            return;
+        job->result.store(result, std::memory_order_release);
+        publish_last_progress(job, progress);
+        job->state.store(SaveState::Done, std::memory_order_release);
+        job->done.release();
+    }
+
+    void Engine::ensure_save_thread()
+    {
+        std::lock_guard<std::mutex> lock(save_lifecycle_mutex_);
+        if (save_thread_.joinable())
+            return;
+        if (save_stopped_.load())
+        {
+            q_save_.reset();
+            save_stopped_.store(false);
+        }
+        save_thread_ = std::thread([this] { save_loop(); });
+    }
+
+    void Engine::stop_save()
+    {
+        std::lock_guard<std::mutex> lock(save_lifecycle_mutex_);
+        save_stopped_.store(true);
+        q_save_.stop();
+        if (save_thread_.joinable())
+            save_thread_.join();
+        std::shared_ptr<SaveJob> job;
+        while (q_save_.try_pop(job))
+            finish_job(job, IR_FAIL, -1);
+    }
+
+    int Engine::begin_save(const std::wstring &path, int seconds_back, uint64_t *job_id)
+    {
+        std::lock_guard<std::mutex> life(lifecycle_mutex_);
+        if (!job_id)
+            return IR_FAIL;
+        *job_id = 0;
+        try
+        {
+            if (!save_memory_available(audio_bytes_snapshot()))
+            {
+                clear_last_job(-1);
+                set_last_error("Not enough committed memory to save the clip.");
+                return IR_LOW_MEMORY;
+            }
+            if (!has_video_frames())
+            {
+                clear_last_job(-1);
+                return IR_NOT_ENOUGH_DATA;
+            }
+
+            ensure_save_thread();
+            auto job = std::make_shared<SaveJob>();
+            job->id = next_job_id_.fetch_add(1) + 1;
+            job->path = path;
+            job->secondsBack = seconds_back;
+            job->progress.store(0, std::memory_order_relaxed);
+            job->result.store(IR_PENDING, std::memory_order_relaxed);
+            job->state.store(SaveState::Queued, std::memory_order_relaxed);
+            register_job(job);
+            if (!q_save_.try_push(job))
+            {
+                unregister_job(job->id);
+                finish_job(job, IR_FAIL, -1);
+                clear_last_job(-1);
+                set_last_error("Save queue is full.");
+                return IR_FAIL;
+            }
+            *job_id = job->id;
+            return IR_OK;
+        }
+        catch (const std::bad_alloc &)
+        {
+            clear_last_job(-1);
+            set_last_error("Not enough memory to save the clip.");
+            return IR_LOW_MEMORY;
+        }
+        catch (...)
+        {
+            clear_last_job(-1);
+            return IR_FAIL;
+        }
+    }
+
+    void Engine::save_loop()
+    {
+        ComGuard com;
+        std::shared_ptr<SaveJob> job;
+        while (q_save_.pop(job))
+        {
+            if (save_stopped_.load())
+            {
+                finish_job(job, IR_FAIL, -1);
+                continue;
+            }
+            job->state.store(SaveState::Running, std::memory_order_relaxed);
+            int rc = IR_FAIL;
+            try
+            {
+                rc = run_save(job);
+            }
+            catch (const std::bad_alloc &)
+            {
+                set_last_error("Not enough memory to save the clip.");
+                rc = IR_LOW_MEMORY;
+            }
+            catch (...)
+            {
+                rc = IR_FAIL;
+            }
+            finish_job(job, rc, rc == IR_OK ? 100 : -1);
+        }
+    }
+
+    static std::vector<int16_t> mix_range(int64_t t0, int64_t t1,
+                                          const std::vector<Ref<AudioBlock>> &sys,
+                                          const std::vector<Ref<AudioBlock>> &mic)
+    {
+        const int64_t n = (t1 - t0) * AUDIO_RATE / SECOND_100NS;
+        std::vector<int32_t> acc((size_t)n * 2, 0);
+        auto place = [&](const AudioBlock &b, bool mono)
+        {
+            const int64_t first = (b.pts100ns - t0) * AUDIO_RATE / SECOND_100NS;
+            for (uint32_t i = 0; i < b.frames; ++i)
+            {
+                const int64_t at = first + i;
+                if (at < 0 || at >= n)
+                    continue;
+                if (mono)
+                {
+                    acc[(size_t)at * 2] += b.pcm[i];
+                    acc[(size_t)at * 2 + 1] += b.pcm[i];
+                }
+                else
+                {
+                    acc[(size_t)at * 2] += b.pcm[(size_t)i * 2];
+                    acc[(size_t)at * 2 + 1] += b.pcm[(size_t)i * 2 + 1];
+                }
+            }
+        };
+        for (const auto &b : sys)
+            place(*b, false);
+        for (const auto &b : mic)
+            place(*b, true);
+        std::vector<int16_t> out(acc.size());
+        for (size_t i = 0; i < acc.size(); ++i)
+            out[i] = (int16_t)std::clamp(acc[i], -32768, 32767);
+        return out;
+    }
+
+    int Engine::run_save(const std::shared_ptr<SaveJob> &job)
+    {
+        const std::string utf8_path = wide_to_utf8(job->path.data(), job->path.size());
+        std::vector<Ref<PacketRef>> frames;
+        std::vector<Ref<AudioBlock>> sys, mic;
+        {
+            std::lock_guard<std::mutex> lock(ring_mutex_);
+            frames.assign(vring_.begin(), vring_.end());
+            sys.assign(sys_ring_.begin(), sys_ring_.end());
+            mic.assign(mic_ring_.begin(), mic_ring_.end());
+        }
+        if (frames.empty())
+            return IR_NOT_ENOUGH_DATA;
+
         const int64_t first = frames.front()->pts100ns;
         const int64_t dur = SECOND_100NS / std::max(1, fps_);
         const int64_t end = frames.back()->pts100ns + dur;
-        std::vector<VideoSample> v;
-        v.reserve(frames.size());
-        for (auto& f : frames) v.push_back({f->data.data(), f->data.size(), f->keyframe, f->pts100ns});
-        g_save_progress = 10;
+        publish_last_progress(job, 10);
+
         std::vector<int16_t> mixed;
-        std::vector<AudioChunk> a;
-        if (!sys.empty() || !mic.empty()) {
+        std::vector<AudioChunk> audio;
+        if (!sys.empty() || !mic.empty())
+        {
             int64_t t0 = first;
-            if (seconds_back > 0) t0 = std::max(first, end - (int64_t)seconds_back * SECOND_100NS - 6 * SECOND_100NS);
+            if (job->secondsBack > 0)
+                t0 = std::max(first, end - (int64_t)job->secondsBack * SECOND_100NS - 6 * SECOND_100NS);
             mixed = mix_range(t0, end, sys, mic);
-            a.push_back({reinterpret_cast<const uint8_t*>(mixed.data()), (uint32_t)(mixed.size() / 2), t0});
+            audio.push_back({reinterpret_cast<const uint8_t *>(mixed.data()), (uint32_t)(mixed.size() / 2), t0});
         }
-        g_save_progress = 30;
-        int rc = mux_until(path, v, a, fps_, (int)out_w_, (int)out_h_, seconds_back, end);
-        g_save_progress = rc == IR_OK ? 100 : -1;
-        return rc;
-    } catch (const std::bad_alloc&) {
-        set_last_error("Not enough memory to save the clip.");
-        g_save_progress = -1;
-        return IR_LOW_MEMORY;
+        publish_last_progress(job, 30);
+        return mux_until(utf8_path, frames, audio, fps_, (int)out_w_, (int)out_h_, job->secondsBack, end);
     }
-}
 
-void Engine::status(int* buffering, int* ring_seconds, int64_t* encoded, int64_t* dropped, int* has_error,
-                    int64_t* a_frames, int64_t* a_events, int64_t* a_got, int64_t* heartbeat) {
-    if (buffering) *buffering = running_ ? 1 : 0;
-    if (ring_seconds) *ring_seconds = ring_seconds_.load();
-    if (encoded) *encoded = encoded_;
-    if (dropped) *dropped = dropped_;
-    if (has_error) *has_error = has_error_ ? 1 : 0;
-    if (a_frames) *a_frames = sys_counters_.frames;
-    if (a_events) *a_events = sys_counters_.events;
-    if (a_got) *a_got = sys_counters_.got_frames;
-    if (heartbeat) *heartbeat = heartbeat_;
-}
-
-void Engine::mic_status(int64_t* frames, int64_t* events, int64_t* got, int64_t* fail_hr, int* sys_peak, int* mic_peak,
-                        wchar_t* name, int name_cap) {
-    if (sys_peak) *sys_peak = sys_counters_.peak;
-    if (mic_peak) *mic_peak = mic_counters_.peak;
-    if (frames) *frames = mic_counters_.frames;
-    if (events) *events = mic_counters_.events;
-    if (got) *got = mic_counters_.got_frames;
-    if (fail_hr) *fail_hr = mic_counters_.fail_hr;
-    if (name && name_cap > 0) {
-        std::lock_guard<std::mutex> lock(mic_counters_.name_mutex);
-        const size_t n = std::min<size_t>(mic_counters_.active_name.size(), (size_t)name_cap - 1);
-        std::memcpy(name, mic_counters_.active_name.data(), n * sizeof(wchar_t));
-        name[n] = 0;
+    // -------------------------------------------------------------------------
+    // Status / telemetry getters
+    // -------------------------------------------------------------------------
+    void Engine::status(int *buffering, int *ring_seconds, int64_t *encoded, int64_t *dropped, int *has_error,
+                        int64_t *a_frames, int64_t *a_events, int64_t *a_got, int64_t *heartbeat)
+    {
+        if (buffering)
+            *buffering = running_.load() ? 1 : 0;
+        if (ring_seconds)
+            *ring_seconds = ring_seconds_.load();
+        if (encoded)
+            *encoded = encoded_;
+        if (dropped)
+            *dropped = dropped_;
+        if (has_error)
+            *has_error = has_error_ ? 1 : 0;
+        if (a_frames)
+            *a_frames = sys_counters_.frames;
+        if (a_events)
+            *a_events = sys_counters_.events;
+        if (a_got)
+            *a_got = sys_counters_.got_frames;
+        if (heartbeat)
+            *heartbeat = heartbeat_;
     }
-}
 
-// ------------------------------------------------------------------------------------------------
-// Encoder probe (IR_ProbeEncoders)
-// ------------------------------------------------------------------------------------------------
-
-static uint32_t probe_all_encoders() {
-    constexpr int W = 1280, H = 720, FPS = 30;
-    constexpr uint32_t BPS = 4'000'000;
-    uint32_t mask = 0;
-    struct Item { const char* name; uint32_t bit; };
-    static const Item items[] = {
-        {"h264_nvenc", ENC_H264_NVENC}, {"hevc_nvenc", ENC_HEVC_NVENC}, {"h264_amf", ENC_H264_AMF},
-        {"hevc_amf", ENC_HEVC_AMF},     {"h264_qsv", ENC_H264_QSV},     {"hevc_qsv", ENC_HEVC_QSV},
-        {"libx264", ENC_H264_X264},     {"libx265", ENC_HEVC_X265},
-    };
-    if (ff_load()) {
-        for (const Item& it : items) {
-            try {
-                if (probe_ffmpeg_encoder(it.name, W, H, FPS, BPS)) mask |= it.bit;
-            } catch (...) {}
+    void Engine::mic_status(int64_t *frames, int64_t *events, int64_t *got, int64_t *fail_hr, int *sys_peak,
+                            int *mic_peak, wchar_t *name, int name_cap)
+    {
+        if (sys_peak)
+            *sys_peak = sys_counters_.peak;
+        if (mic_peak)
+            *mic_peak = mic_counters_.peak;
+        if (frames)
+            *frames = mic_counters_.frames;
+        if (events)
+            *events = mic_counters_.events;
+        if (got)
+            *got = mic_counters_.got_frames;
+        if (fail_hr)
+            *fail_hr = mic_counters_.fail_hr;
+        if (name && name_cap > 0)
+        {
+            std::lock_guard<std::mutex> lock(mic_counters_.name_mutex);
+            const size_t n = std::min<size_t>(mic_counters_.active_name.size(), (size_t)name_cap - 1);
+            std::memcpy(name, mic_counters_.active_name.data(), n * sizeof(wchar_t));
+            name[n] = 0;
         }
     }
-    try {
-        HRESULT hr;
-        if (probe_mf_encoder(MfCodec::H264, W, H, FPS, BPS, &hr)) mask |= ENC_H264_MF;
-        if (probe_mf_encoder(MfCodec::Hevc, W, H, FPS, BPS, &hr)) mask |= ENC_HEVC_MF;
-    } catch (...) {}
-    return mask;
-}
+
+    void Engine::audio_diagnostics(int which, int64_t *activate_hr, int64_t *init_hr, int64_t *start_hr, int *tag,
+                                   int *rate, int *channels, int *bits, int *is_float, int *convert_failures,
+                                   int64_t *last_fail_hr)
+    {
+        const AudioCounters &c = which == 1 ? mic_counters_ : sys_counters_;
+        if (activate_hr)
+            *activate_hr = c.activate_hr;
+        if (init_hr)
+            *init_hr = c.init_hr;
+        if (start_hr)
+            *start_hr = c.start_hr;
+        if (tag)
+            *tag = c.mix_tag;
+        if (rate)
+            *rate = c.mix_rate;
+        if (channels)
+            *channels = c.mix_channels;
+        if (bits)
+            *bits = c.mix_bits;
+        if (is_float)
+            *is_float = c.mix_float;
+        if (convert_failures)
+            *convert_failures = c.convert_failures;
+        if (last_fail_hr)
+            *last_fail_hr = c.fail_hr;
+    }
+
+    void Engine::telemetry(int64_t *captured, int64_t *paced, int64_t *rejected, int64_t *encoded, int64_t *dropped,
+                           int *encoder, int64_t *last_pts)
+    {
+        if (captured)
+            *captured = captured_;
+        if (encoded)
+            *encoded = encoded_;
+        if (dropped)
+            *dropped = dropped_;
+        if (encoder)
+            *encoder = active_encoder_;
+        if (last_pts)
+            *last_pts = latest_pts_.load();
+        CaptureSource *cap = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(capture_mutex_);
+            cap = capture_.get();
+        }
+        if (paced)
+            *paced = cap ? cap->paced_frames() : 0;
+        if (rejected)
+            *rejected = cap ? cap->rejected_frames() : 0;
+    }
+
+    void Engine::timing(double *map_ms, double *encode_ms, double *render_ms, double *submit_ms, double *snapshot_ms,
+                        double *unmap_ms, int64_t *frames)
+    {
+        const int64_t n = t_frames_.load();
+        if (frames)
+            *frames = n;
+        const double div = n > 0 ? (double)n : 1.0;
+        if (map_ms)
+            *map_ms = (double)t_map_.load() / div / 10000.0;
+        if (encode_ms)
+            *encode_ms = (double)t_encode_.load() / div / 10000.0;
+        if (render_ms)
+            *render_ms = (double)t_render_.load() / div / 10000.0;
+        if (submit_ms)
+            *submit_ms = (double)t_submit_.load() / div / 10000.0;
+        if (snapshot_ms)
+            *snapshot_ms = (double)t_snapshot_.load() / div / 10000.0;
+        if (unmap_ms)
+            *unmap_ms = (double)t_unmap_.load() / div / 10000.0;
+    }
+
+    // -------------------------------------------------------------------------
+    // Probe
+    // -------------------------------------------------------------------------
+    static uint32_t probe_all_encoders()
+    {
+        constexpr int W = 1280, H = 720, FPS = 30;
+        constexpr uint32_t BPS = 4'000'000;
+        uint32_t mask = 0;
+        struct Item
+        {
+            const char *name;
+            uint32_t bit;
+        };
+        static const Item items[] = {
+            {"h264_nvenc", ENC_H264_NVENC},
+            {"hevc_nvenc", ENC_HEVC_NVENC},
+            {"h264_amf", ENC_H264_AMF},
+            {"hevc_amf", ENC_HEVC_AMF},
+            {"h264_qsv", ENC_H264_QSV},
+            {"hevc_qsv", ENC_HEVC_QSV},
+            {"libx264", ENC_H264_X264},
+            {"libx265", ENC_HEVC_X265},
+        };
+        if (ff_load())
+        {
+            for (const Item &it : items)
+            {
+                try
+                {
+                    if (probe_ffmpeg_encoder(it.name, W, H, FPS, BPS))
+                        mask |= it.bit;
+                }
+                catch (...)
+                {
+                }
+            }
+        }
+        try
+        {
+            HRESULT hr;
+            if (probe_mf_encoder(MfCodec::H264, W, H, FPS, BPS, &hr))
+                mask |= ENC_H264_MF;
+            if (probe_mf_encoder(MfCodec::Hevc, W, H, FPS, BPS, &hr))
+                mask |= ENC_HEVC_MF;
+        }
+        catch (...)
+        {
+        }
+        return mask;
+    }
 
 } // namespace ir
 
-// ================================================================================================
+// =============================================================================
 // Exported C ABI (must match InstantReplay.Native/IrNative.cs)
-// ================================================================================================
+// =============================================================================
 
 using ir::Engine;
 
 #define IR_EXPORT extern "C" __declspec(dllexport)
 #define GUARD(expr, fallback) \
-    try { return (expr); } catch (...) { return (fallback); }
+    try                       \
+    {                         \
+        return (expr);        \
+    }                         \
+    catch (...)               \
+    {                         \
+        return (fallback);    \
+    }
 
-static void copy_wide(const std::wstring& text, wchar_t* out, int cap) {
-    if (!out || cap <= 0) return;
+static void copy_wide(const std::wstring &text, wchar_t *out, int cap)
+{
+    if (!out || cap <= 0)
+        return;
     const size_t n = std::min<size_t>(text.size(), (size_t)cap - 1);
     std::memcpy(out, text.data(), n * sizeof(wchar_t));
     out[n] = 0;
 }
 
-IR_EXPORT int IR_Create(void** engine) {
-    try {
-        if (!engine) return ir::IR_FAIL;
+IR_EXPORT int IR_Create(void **engine)
+{
+    try
+    {
+        if (!engine)
+            return ir::IR_FAIL;
         *engine = new Engine();
         return ir::IR_OK;
-    } catch (...) {
+    }
+    catch (...)
+    {
         return ir::IR_LOW_MEMORY;
     }
 }
 
-IR_EXPORT void IR_Destroy(void* engine) {
-    try { delete static_cast<Engine*>(engine); } catch (...) {}
+IR_EXPORT void IR_Destroy(void *engine)
+{
+    try
+    {
+        delete static_cast<Engine *>(engine);
+    }
+    catch (...)
+    {
+    }
 }
 
-IR_EXPORT int IR_Start(void* engine, int monitor_index, int ring_seconds, int fps, int bitrate_kbps, int cap_w, int cap_h,
-                       int capture_audio, int capture_mic, const wchar_t* mic_device, int encoder_pref,
-                       int capture_method, long long* start_qpc) {
-    if (!engine) return ir::IR_FAIL;
-    try {
+IR_EXPORT int IR_Start(void *engine, int monitor_index, int ring_seconds, int fps, int bitrate_kbps, int cap_w, int cap_h,
+                       int capture_audio, int capture_mic, const wchar_t *mic_device, int encoder_pref,
+                       int capture_method, long long *start_qpc)
+{
+    if (!engine)
+        return ir::IR_FAIL;
+    try
+    {
         int64_t q = 0;
-        int rc = static_cast<Engine*>(engine)->start(monitor_index, ring_seconds, fps, bitrate_kbps, cap_w, cap_h,
+        int rc = static_cast<Engine *>(engine)->start(monitor_index, ring_seconds, fps, bitrate_kbps, cap_w, cap_h,
                                                      capture_audio != 0, capture_mic != 0, mic_device, encoder_pref,
                                                      capture_method, &q);
-        if (start_qpc) *start_qpc = q;
+        if (start_qpc)
+            *start_qpc = q;
         return rc;
-    } catch (const std::exception& e) {
+    }
+    catch (const std::exception &e)
+    {
         ir::set_last_error(std::string("Engine start failed: ") + e.what());
         return ir::IR_FAIL;
-    } catch (...) {
+    }
+    catch (...)
+    {
         return ir::IR_FAIL;
     }
 }
 
-IR_EXPORT int IR_LastErrorMessage(unsigned char* buffer, int capacity) {
-    try {
+IR_EXPORT int IR_LastErrorMessage(unsigned char *buffer, int capacity)
+{
+    try
+    {
         const std::string msg = ir::last_error();
-        if (!buffer || capacity <= 0) return (int)msg.size();
+        if (!buffer || capacity <= 0)
+            return (int)msg.size();
         const size_t n = std::min<size_t>(msg.size(), (size_t)capacity - 1);
         std::memcpy(buffer, msg.data(), n);
         buffer[n] = 0;
         return (int)n;
-    } catch (...) {
+    }
+    catch (...)
+    {
         return 0;
     }
 }
 
-IR_EXPORT void IR_Stop(void* engine) {
-    try { if (engine) static_cast<Engine*>(engine)->stop(); } catch (...) {}
+IR_EXPORT void IR_Stop(void *engine)
+{
+    try
+    {
+        if (engine)
+            static_cast<Engine *>(engine)->stop();
+    }
+    catch (...)
+    {
+    }
 }
 
-IR_EXPORT int IR_SetCaptureTarget(void* engine, HWND window, unsigned options) {
-    if (!engine) return ir::IR_FAIL;
-    GUARD(static_cast<Engine*>(engine)->set_target(window, options), ir::IR_FAIL)
+IR_EXPORT int IR_SetCaptureTarget(void *engine, HWND window, unsigned options)
+{
+    if (!engine)
+        return ir::IR_FAIL;
+    GUARD(static_cast<Engine *>(engine)->set_target(window, options), ir::IR_FAIL)
 }
 
-IR_EXPORT int IR_SetCaptureSource(void* engine, int method, int monitor_index, HWND window, unsigned options) {
-    if (!engine) return ir::IR_FAIL;
-    GUARD(static_cast<Engine*>(engine)->set_source(method, monitor_index, window, options), ir::IR_FAIL)
+IR_EXPORT int IR_SetCaptureSource(void *engine, int method, int monitor_index, HWND window, unsigned options)
+{
+    if (!engine)
+        return ir::IR_FAIL;
+    GUARD(static_cast<Engine *>(engine)->set_source(method, monitor_index, window, options), ir::IR_FAIL)
 }
 
-IR_EXPORT int IR_SetCanvasHint(void* engine, int width, int height) {
-    if (!engine) return ir::IR_FAIL;
-    GUARD(static_cast<Engine*>(engine)->set_canvas_hint(width, height), ir::IR_FAIL)
+IR_EXPORT int IR_SetCanvasHint(void *engine, int width, int height)
+{
+    if (!engine)
+        return ir::IR_FAIL;
+    GUARD(static_cast<Engine *>(engine)->set_canvas_hint(width, height), ir::IR_FAIL)
 }
 
-IR_EXPORT int IR_SetPaused(void* engine, int paused) {
-    if (!engine) return ir::IR_FAIL;
-    GUARD(static_cast<Engine*>(engine)->set_paused(paused != 0), ir::IR_FAIL)
+IR_EXPORT int IR_SetPaused(void *engine, int paused)
+{
+    if (!engine)
+        return ir::IR_FAIL;
+    GUARD(static_cast<Engine *>(engine)->set_paused(paused != 0), ir::IR_FAIL)
 }
 
-IR_EXPORT int IR_GetWindowCount() {
-    GUARD((int)ir::enumerate_windows().size(), 0)
-}
+IR_EXPORT int IR_GetWindowCount(){
+    GUARD((int)ir::enumerate_windows().size(), 0)}
 
-IR_EXPORT void IR_GetWindowInfo(int index, HWND* window, wchar_t* title, int capacity, int* width, int* height) {
-    try {
-        if (window) *window = nullptr;
-        if (title && capacity > 0) title[0] = 0;
+IR_EXPORT void IR_GetWindowInfo(int index, HWND *window, wchar_t *title, int capacity, int *width, int *height)
+{
+    try
+    {
+        if (window)
+            *window = nullptr;
+        if (title && capacity > 0)
+            title[0] = 0;
         auto list = ir::enumerate_windows();
-        if (index < 0 || (size_t)index >= list.size()) return;
-        const auto& w = list[(size_t)index];
-        if (window) *window = w.handle;
-        if (width) *width = w.w;
-        if (height) *height = w.h;
+        if (index < 0 || (size_t)index >= list.size())
+            return;
+        const auto &w = list[(size_t)index];
+        if (window)
+            *window = w.handle;
+        if (width)
+            *width = w.w;
+        if (height)
+            *height = w.h;
         copy_wide(w.title, title, capacity);
-    } catch (...) {}
+    }
+    catch (...)
+    {
+    }
 }
 
-IR_EXPORT int IR_Save(void* engine, const wchar_t* out_path, int seconds_back) {
-    if (!engine || !out_path) return ir::IR_FAIL;
-    try {
-        return static_cast<Engine*>(engine)->save(ir::wide_to_utf8(out_path, wcslen(out_path)), seconds_back);
-    } catch (...) {
-        ir::g_save_progress = -1;
+IR_EXPORT int IR_BeginSave(void *engine, const wchar_t *out_path, int seconds_back, unsigned long long *job_id)
+{
+    if (!engine || !out_path || !job_id)
+        return ir::IR_FAIL;
+    try
+    {
+        uint64_t id = 0;
+        const int rc = static_cast<Engine *>(engine)->begin_save(std::wstring(out_path), seconds_back, &id);
+        if (rc == ir::IR_OK)
+            *job_id = (unsigned long long)id;
+        return rc;
+    }
+    catch (...)
+    {
+        ir::clear_save_progress();
         return ir::IR_FAIL;
     }
 }
 
-IR_EXPORT int IR_SaveProgress() { return ir::g_save_progress.load(); }
+IR_EXPORT int IR_PollSave(void *engine, unsigned long long job_id, int *progress, int *result)
+{
+    if (!engine)
+        return 0;
+    GUARD(static_cast<Engine *>(engine)->poll_save((uint64_t)job_id, progress, result), 0)
+}
 
-IR_EXPORT void IR_GetStatus(void* engine, int* buffering, int* ring_seconds, long long* encoded, long long* dropped,
-                            int* has_error, long long* audio_frames, long long* audio_events, long long* audio_got,
-                            long long* heartbeat) {
-    try {
-        if (!engine) return;
+IR_EXPORT int IR_Save(void *engine, const wchar_t *out_path, int seconds_back)
+{
+    if (!engine || !out_path)
+        return ir::IR_FAIL;
+    try
+    {
+        unsigned long long id = 0;
+        const int rc = IR_BeginSave(engine, out_path, seconds_back, &id);
+        if (rc != ir::IR_OK)
+            return rc;
+        auto *e = static_cast<Engine *>(engine);
+        std::shared_ptr<ir::SaveJob> job = e->retain_job((uint64_t)id);
+        if (!job)
+            return ir::IR_FAIL;
+        // The strong reference is held for the entire wait: eviction may unlink
+        // the record but must never destroy the object being awaited.
+        job->done.acquire();
+        return job->result.load();
+    }
+    catch (...)
+    {
+        ir::clear_save_progress();
+        return ir::IR_FAIL;
+    }
+}
+
+IR_EXPORT int IR_SaveProgress() { return ir::current_save_progress(); }
+
+IR_EXPORT void IR_GetStatus(void *engine, int *buffering, int *ring_seconds, long long *encoded, long long *dropped,
+                            int *has_error, long long *audio_frames, long long *audio_events, long long *audio_got,
+                            long long *heartbeat)
+{
+    try
+    {
+        if (!engine)
+            return;
         static_assert(sizeof(long long) == sizeof(int64_t), "ABI");
-        static_cast<Engine*>(engine)->status(buffering, ring_seconds, reinterpret_cast<int64_t*>(encoded),
-                                             reinterpret_cast<int64_t*>(dropped), has_error,
-                                             reinterpret_cast<int64_t*>(audio_frames),
-                                             reinterpret_cast<int64_t*>(audio_events),
-                                             reinterpret_cast<int64_t*>(audio_got), reinterpret_cast<int64_t*>(heartbeat));
-    } catch (...) {}
+        static_cast<Engine *>(engine)->status(buffering, ring_seconds, reinterpret_cast<int64_t *>(encoded),
+                                              reinterpret_cast<int64_t *>(dropped), has_error,
+                                              reinterpret_cast<int64_t *>(audio_frames),
+                                              reinterpret_cast<int64_t *>(audio_events),
+                                              reinterpret_cast<int64_t *>(audio_got), reinterpret_cast<int64_t *>(heartbeat));
+    }
+    catch (...)
+    {
+    }
 }
 
-IR_EXPORT int IR_GetMonitorCount() {
-    GUARD((int)ir::enumerate_monitors().size(), 0)
-}
+IR_EXPORT int IR_GetMonitorCount(){
+    GUARD((int)ir::enumerate_monitors().size(), 0)}
 
-IR_EXPORT void IR_GetMonitorInfo(int index, wchar_t* name, int name_cap, int* width, int* height) {
-    try {
+IR_EXPORT void IR_GetMonitorInfo(int index, wchar_t *name, int name_cap, int *width, int *height)
+{
+    try
+    {
         auto mons = ir::enumerate_monitors();
-        if (mons.empty()) return;
-        const auto& m = mons[(index < 0 || (size_t)index >= mons.size()) ? 0 : (size_t)index];
-        if (width) *width = m.w;
-        if (height) *height = m.h;
+        if (mons.empty())
+            return;
+        const auto &m = mons[(index < 0 || (size_t)index >= mons.size()) ? 0 : (size_t)index];
+        if (width)
+            *width = m.w;
+        if (height)
+            *height = m.h;
         std::wstring text = (m.primary ? L"Primary - " : L"") + std::to_wstring(m.w) + L"x" + std::to_wstring(m.h);
         copy_wide(text, name, name_cap);
-    } catch (...) {}
+    }
+    catch (...)
+    {
+    }
 }
 
-IR_EXPORT int IR_IsDxgiSupported() {
-    GUARD(ir::enumerate_monitors().empty() ? 0 : 1, 0)
+IR_EXPORT int IR_IsDxgiSupported(){
+    GUARD(ir::enumerate_monitors().empty() ? 0 : 1, 0)}
+
+IR_EXPORT int IR_DxgiDuplicationSupported(){
+    GUARD(ir::dxgi_duplication_supported() ? 1 : 0, 0)}
+
+IR_EXPORT int IR_ActiveCaptureMethod(void *engine)
+{
+    if (!engine)
+        return 0;
+    GUARD(static_cast<Engine *>(engine)->active_capture_method(), 0)
+}
+IR_EXPORT int IR_LastHresult(void *engine)
+{
+    if (!engine)
+        return 0;
+    GUARD(static_cast<Engine *>(engine)->last_hresult(), 0)
+}
+IR_EXPORT int IR_LastFailStage(void *engine)
+{
+    if (!engine)
+        return 0;
+    GUARD(static_cast<Engine *>(engine)->last_fail_stage(), 0)
+}
+IR_EXPORT int IR_LastFailHr(void *engine)
+{
+    if (!engine)
+        return 0;
+    GUARD(static_cast<Engine *>(engine)->last_fail_hr(), 0)
+}
+IR_EXPORT int IR_LastCaptureHr(void *engine)
+{
+    if (!engine)
+        return 0;
+    GUARD(static_cast<Engine *>(engine)->last_capture_hr(), 0)
+}
+IR_EXPORT int IR_ActiveEncoder(void *engine)
+{
+    if (!engine)
+        return 0;
+    GUARD(static_cast<Engine *>(engine)->active_encoder(), 0)
+}
+IR_EXPORT int IR_HwInitHr(void *engine)
+{
+    if (!engine)
+        return 0;
+    GUARD(static_cast<Engine *>(engine)->hw_init_hr(), 0)
 }
 
-IR_EXPORT int IR_DxgiDuplicationSupported() {
-    GUARD(ir::dxgi_duplication_supported() ? 1 : 0, 0)
-}
+IR_EXPORT int IR_GetMicDeviceCount(){
+    GUARD((int)ir::mic_devices().size(), 0)}
 
-IR_EXPORT int IR_ActiveCaptureMethod(void* engine) {
-    if (!engine) return 0;
-    GUARD(static_cast<Engine*>(engine)->active_capture_method(), 0)
-}
-IR_EXPORT int IR_LastHresult(void* engine) {
-    if (!engine) return 0;
-    GUARD(static_cast<Engine*>(engine)->last_hresult(), 0)
-}
-IR_EXPORT int IR_LastFailStage(void* engine) {
-    if (!engine) return 0;
-    GUARD(static_cast<Engine*>(engine)->last_fail_stage(), 0)
-}
-IR_EXPORT int IR_LastFailHr(void* engine) {
-    if (!engine) return 0;
-    GUARD(static_cast<Engine*>(engine)->last_fail_hr(), 0)
-}
-IR_EXPORT int IR_LastCaptureHr(void* engine) {
-    if (!engine) return 0;
-    GUARD(static_cast<Engine*>(engine)->last_capture_hr(), 0)
-}
-IR_EXPORT int IR_ActiveEncoder(void* engine) {
-    if (!engine) return 0;
-    GUARD(static_cast<Engine*>(engine)->active_encoder(), 0)
-}
-IR_EXPORT int IR_HwInitHr(void* engine) {
-    if (!engine) return 0;
-    GUARD(static_cast<Engine*>(engine)->hw_init_hr(), 0)
-}
-
-IR_EXPORT int IR_GetMicDeviceCount() {
-    GUARD((int)ir::mic_devices().size(), 0)
-}
-
-IR_EXPORT void IR_GetMicDeviceName(int index, wchar_t* name, int name_cap) {
-    try {
-        if (name && name_cap > 0) name[0] = 0;
+IR_EXPORT void IR_GetMicDeviceName(int index, wchar_t *name, int name_cap)
+{
+    try
+    {
+        if (name && name_cap > 0)
+            name[0] = 0;
         auto list = ir::mic_devices();
-        if (index >= 0 && (size_t)index < list.size()) copy_wide(list[(size_t)index], name, name_cap);
-    } catch (...) {}
+        if (index >= 0 && (size_t)index < list.size())
+            copy_wide(list[(size_t)index], name, name_cap);
+    }
+    catch (...)
+    {
+    }
 }
 
-IR_EXPORT void IR_MicStatus(void* engine, long long* mic_frames, long long* mic_events, long long* mic_got,
-                            long long* mic_fail_hr, int* sys_peak, int* mic_peak, wchar_t* active_name, int active_cap) {
-    try {
-        if (!engine) return;
-        static_cast<Engine*>(engine)->mic_status(reinterpret_cast<int64_t*>(mic_frames),
-                                                 reinterpret_cast<int64_t*>(mic_events),
-                                                 reinterpret_cast<int64_t*>(mic_got),
-                                                 reinterpret_cast<int64_t*>(mic_fail_hr), sys_peak, mic_peak,
-                                                 active_name, active_cap);
-    } catch (...) {}
+IR_EXPORT void IR_MicStatus(void *engine, long long *mic_frames, long long *mic_events, long long *mic_got,
+                            long long *mic_fail_hr, int *sys_peak, int *mic_peak, wchar_t *active_name, int active_cap)
+{
+    try
+    {
+        if (!engine)
+            return;
+        static_cast<Engine *>(engine)->mic_status(reinterpret_cast<int64_t *>(mic_frames),
+                                                  reinterpret_cast<int64_t *>(mic_events),
+                                                  reinterpret_cast<int64_t *>(mic_got),
+                                                  reinterpret_cast<int64_t *>(mic_fail_hr), sys_peak, mic_peak,
+                                                  active_name, active_cap);
+    }
+    catch (...)
+    {
+    }
 }
 
-IR_EXPORT const char* IR_Version() { return "cpp-obs-1.0"; }
+IR_EXPORT void IR_AudioDiagnostics(void *engine, int which, long long *activate_hr, long long *init_hr,
+                                   long long *start_hr, int *tag, int *rate, int *channels, int *bits,
+                                   int *is_float, int *convert_failures, long long *last_fail_hr)
+{
+    try
+    {
+        if (!engine)
+            return;
+        static_cast<Engine *>(engine)->audio_diagnostics(which,
+                                                         reinterpret_cast<int64_t *>(activate_hr), reinterpret_cast<int64_t *>(init_hr),
+                                                         reinterpret_cast<int64_t *>(start_hr), tag, rate, channels, bits, is_float,
+                                                         convert_failures, reinterpret_cast<int64_t *>(last_fail_hr));
+    }
+    catch (...)
+    {
+    }
+}
 
-IR_EXPORT unsigned IR_ProbeEncoders() {
-    try { return ir::probe_all_encoders(); } catch (...) { return 0; }
+IR_EXPORT void IR_GetTelemetry(void *engine, long long *captured, long long *paced, long long *rejected,
+                               long long *encoded, long long *dropped, int *encoder, long long *last_pts)
+{
+    try
+    {
+        if (!engine)
+            return;
+        static_cast<Engine *>(engine)->telemetry(
+            reinterpret_cast<int64_t *>(captured), reinterpret_cast<int64_t *>(paced),
+            reinterpret_cast<int64_t *>(rejected), reinterpret_cast<int64_t *>(encoded),
+            reinterpret_cast<int64_t *>(dropped), encoder, reinterpret_cast<int64_t *>(last_pts));
+    }
+    catch (...)
+    {
+    }
+}
+
+IR_EXPORT void IR_GetTiming(void *engine, double *map_ms, double *encode_ms, double *render_ms,
+                            double *submit_ms, double *snapshot_ms, double *unmap_ms, long long *frames)
+{
+    try
+    {
+        if (!engine)
+            return;
+        static_cast<Engine *>(engine)->timing(map_ms, encode_ms, render_ms, submit_ms, snapshot_ms,
+                                              unmap_ms, reinterpret_cast<int64_t *>(frames));
+    }
+    catch (...)
+    {
+    }
+}
+
+IR_EXPORT const char *IR_Version() { return "cpp-obs-1.0"; }
+
+IR_EXPORT unsigned IR_ProbeEncoders()
+{
+    try
+    {
+        return ir::probe_all_encoders();
+    }
+    catch (...)
+    {
+        return 0;
+    }
 }

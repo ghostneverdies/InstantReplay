@@ -934,7 +934,7 @@ static int dpi_scale_100(HWND hwnd, int screen_h)
     if (monitor && get_dpi_monitor)
     {
         UINT dx = 0, dy = 0;
-        if (SUCCEEDED(get_dpi_monitor(monitor, 0 , &dx, &dy)) && dx)
+        if (SUCCEEDED(get_dpi_monitor(monitor, 0, &dx, &dy)) && dx)
             dpi = dx;
     }
     if (previous)

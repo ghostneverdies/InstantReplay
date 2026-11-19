@@ -656,7 +656,6 @@ public partial class MainWindow : Window
         int ReplayDurationSeconds,
         int FrameRate,
         string QualityPreset,
-        int BitrateKbps,
         string EncoderChoice,
         string VideoCodec,
         string RateControl,
@@ -679,7 +678,6 @@ public partial class MainWindow : Window
         _settings.ReplayDurationSeconds,
         _settings.FrameRate,
         _settings.QualityPreset,
-        _settings.BitrateKbps,
         _settings.EncoderChoice,
         _settings.VideoCodec,
         _settings.RateControl,
@@ -1912,7 +1910,8 @@ public partial class MainWindow : Window
 
     private async Task InitialStartAsync()
     {
-        if (!EncoderDetector.HasResult(_settings))
+        if (!EncoderDetector.HasResult(_settings) ||
+            _settings.EncoderProbeVersion != Settings.CurrentEncoderProbeVersion)
             await RunEncoderDetectionAsync();
 
         bool ok = await Task.Run(StartCaptureCore);
@@ -2007,6 +2006,7 @@ public partial class MainWindow : Window
         if (!_engine.IsRunning) return;
         long memMb = Environment.WorkingSet / (1024 * 1024);
         Logger.Debug($"Buffer Status - Duration: {_settings.ReplayDurationSeconds}s, Memory: {memMb} MB");
+        _engine.LogDebugDiagnostics();
     }
 
     private void CheckForMemoryLeak()
@@ -2113,11 +2113,7 @@ public partial class MainWindow : Window
         SaveReplayResult result;
         try
         {
-            result = await Task.Run(() =>
-            {
-                Directory.CreateDirectory(destDir);
-                return _engine.SaveReplay(_tempDir, destDir);
-            });
+            result = await _engine.SaveReplayAsync(_tempDir, destDir).ConfigureAwait(true);
         }
         catch (Exception ex)
         {
@@ -2358,11 +2354,12 @@ public partial class MainWindow : Window
         return null;
     }
 
-    private void BitrateBox_ValueChanged(NumberBox sender, NumberBoxValueChangedEventArgs args)
+    private void RefreshBitrateDisplay()
     {
-        if (_initializing || _syncingBitrateBox || double.IsNaN(args.NewValue)) return;
-        _settings.BitrateKbps = Math.Clamp((int)Math.Round(args.NewValue), 1000, 100000);
-        CheckDirty();
+        (int width, int height) = ReplayEngine.MonitorSize(_settings.CaptureMonitorIndex);
+        int kbps = VideoQualityProfile.TargetBitrateKbps(
+            _settings.QualityPreset, _settings.FrameRate, width, height);
+        BitrateValueText.Text = $"{kbps / 1000.0:0.#} Mbps ({kbps:N0} kbps)";
     }
 
     private void RefreshQualityDetails()
@@ -2371,29 +2368,7 @@ public partial class MainWindow : Window
         for (int i = 0; i < presets.Length; i++)
             if (QualityCombo.Items[i] is ComboBoxItem item)
                 item.Content = VideoQualityProfile.FromPreset(presets[i], _settings.FrameRate).Label;
-
-        if (_settings.BitrateKbps <= 0)
-            _settings.BitrateKbps = VideoQualityProfile.FromPreset(_settings.QualityPreset, _settings.FrameRate).BitrateKbps;
-        UpdateBitrateBoxState();
-    }
-
-    private bool _syncingBitrateBox;
-
-    private void UpdateBitrateBoxState()
-    {
-        bool vbr = _settings.RateControl == "Vbr";
-        BitrateBox.IsEnabled = !vbr;
-        BitrateBox.Opacity = vbr ? 0.45 : 1.0;
-
-        int shown = vbr
-            ? VideoQualityProfile.FromPreset(_settings.QualityPreset, _settings.FrameRate).BitrateKbps
-            : _settings.BitrateKbps;
-        if (shown > 0 && BitrateBox.Value != shown)
-        {
-            _syncingBitrateBox = true;
-            try { BitrateBox.Value = shown; }
-            finally { _syncingBitrateBox = false; }
-        }
+        RefreshBitrateDisplay();
     }
 
     private void QualityCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -2401,8 +2376,7 @@ public partial class MainWindow : Window
         if (_initializing) return;
         string preset = QualityCombo.SelectedIndex switch { 1 => "Balanced", 2 => "Quality", _ => "Fast" };
         _settings.QualityPreset = preset;
-        _settings.BitrateKbps = VideoQualityProfile.FromPreset(preset, _settings.FrameRate).BitrateKbps;
-        UpdateBitrateBoxState();
+        RefreshBitrateDisplay();
         CheckDirty();
     }
 
@@ -2425,7 +2399,7 @@ public partial class MainWindow : Window
             _ => 0,
         };
         RateControlCombo.SelectedIndex = _settings.RateControl == "Vbr" ? 1 : 0;
-        UpdateBitrateBoxState();
+        RefreshBitrateDisplay();
         CodecCombo.SelectedIndex = _settings.VideoCodec switch { "Hevc" => 1, "H264" => 2, _ => 0 };
         EncoderPresetCombo.SelectedIndex = _settings.EncoderPreset switch { "Speed" => 0, "Quality" => 2, _ => 1 };
         ContainerCombo.SelectedIndex = _settings.Container switch
@@ -2457,7 +2431,6 @@ public partial class MainWindow : Window
     {
         if (_initializing) return;
         _settings.RateControl = RateControlCombo.SelectedIndex == 1 ? "Vbr" : "Cbr";
-        UpdateBitrateBoxState();
         CheckDirty();
     }
 
@@ -2844,7 +2817,8 @@ public partial class MainWindow : Window
             }
 
             _settings.DetectedEncoders = map;
-            _settings.SaveFields(nameof(Settings.DetectedEncoders));
+            _settings.EncoderProbeVersion = Settings.CurrentEncoderProbeVersion;
+            _settings.SaveFields(nameof(Settings.DetectedEncoders), nameof(Settings.EncoderProbeVersion));
 
             // A saved preference can be unavailable on this machine (or an unknown string from an
             // older build); fall back to Auto now that a complete detection map is known.
@@ -3136,7 +3110,6 @@ public partial class MainWindow : Window
         _settings.ReplayDurationSeconds = previous.ReplayDurationSeconds;
         _settings.FrameRate = previous.FrameRate;
         _settings.QualityPreset = previous.QualityPreset;
-        _settings.BitrateKbps = previous.BitrateKbps;
         _settings.EncoderChoice = previous.EncoderChoice;
         _settings.VideoCodec = previous.VideoCodec;
         _settings.RateControl = previous.RateControl;

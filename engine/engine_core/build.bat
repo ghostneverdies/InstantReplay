@@ -1,6 +1,6 @@
 @echo off
 rem ---------------------------------------------------------------------------------------------
-rem Builds engine\bin\engine.dll (the C++17 engine) with MSVC. No CMake.
+rem Builds engine\bin\engine.dll (the C++20 engine) with MSVC. No CMake.
 rem
 rem   build.bat           release build
 rem   build.bat debug     debug build (/Od /Zi)
@@ -97,7 +97,7 @@ call :fxc "%SH%\obs_scale_bilinear.hlsl" VSDefault        vs_5_0 obs_vs_bilinear
 call :fxc "%SH%\obs_scale_bilinear.hlsl" PSDrawBilinear   ps_5_0 obs_ps_bilinear      || exit /b 1
 
 rem ---- 5. Engine DLL ----
-set "CFLAGS=/nologo /std:c++17 /EHsc /MT /W3 /utf-8 /permissive- /DUNICODE /D_UNICODE /DNOMINMAX /DWIN32_LEAN_AND_MEAN"
+set "CFLAGS=/nologo /std:c++20 /EHsc /MT /W3 /utf-8 /permissive- /DUNICODE /D_UNICODE /DNOMINMAX /DWIN32_LEAN_AND_MEAN"
 if /i "%MODE%"=="debug" (
     set "CFLAGS=!CFLAGS! /Od /Zi /DDEBUG"
 ) else (
@@ -109,8 +109,7 @@ if /i "%MODE%"=="debug" set LFLAGS=!LFLAGS! /DEBUG
 
 echo Compiling engine...
 cl.exe %CFLAGS% /I"%FFSDK%\include" /I"%BUILD_DIR%" /Fo"%OBJ_DIR%\\" /Fd"%OBJ_DIR%\engine.pdb" ^
-    "%HERE%\src\ir_common.cpp" "%HERE%\src\gpu_pipeline.cpp" "%HERE%\src\ffmpeg_rt.cpp" ^
-    "%HERE%\src\mf_encoder.cpp" "%HERE%\src\capture.cpp" "%HERE%\src\audio.cpp" "%HERE%\src\engine.cpp" ^
+    "%HERE%\src\capture.cpp" "%HERE%\src\video.cpp" "%HERE%\src\audio.cpp" "%HERE%\src\engine.cpp" ^
     /link %LFLAGS% ^
     avcodec.lib avformat.lib avutil.lib swresample.lib delayimp.lib ^
     d3d11.lib dxgi.lib dwmapi.lib mfplat.lib mf.lib mfuuid.lib mmdevapi.lib ole32.lib oleaut32.lib propsys.lib ^

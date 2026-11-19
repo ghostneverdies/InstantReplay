@@ -149,11 +149,15 @@ The scrollable Settings page puts replay target, video quality, audio and storag
 
 Quality changes bitrate only. All encoder choices use the same maximum output bounds of **4K (3840 × 2160)**, preserve the source aspect ratio and do not upscale smaller sources. Auto no longer applies a hidden 900p limit. Actual 4K frame rates depend on encoder and system performance; the source must be 4K to produce 4K output. Presets use one shared mapping for both UI labels and native encoder parameters:
 
+At 1920 × 1080 the targets are:
+
 | FPS | Low | Balanced | High |
 |---|---|---|---|
 | 30 | 6 Mbps | 10 Mbps | 15 Mbps |
 | 60 | 12 Mbps | 20 Mbps | 30 Mbps |
 | 120 | 24 Mbps | 40 Mbps | 60 Mbps |
+
+Other resolutions use the same table scaled by `clamp(width × height / (1920 × 1080), 0.35, 2.0)` and rounded to the nearest Mbps, so 4K tops out at twice the 1080p rate. This calculated target is used for both CBR and VBR; there is no manual bitrate setting.
 
 These are bitrate targets, not fixed output file sizes; static scenes can use less data. The AVC/H.264 path internally requests more bits per second than the HEVC tiers shown here (about 18 / 28 / 40 Mbps at 60 fps for Low / Balanced / High) so quality stays comparable. Existing `Fast` and `Quality` settings remain compatible with Low and High. Quality does not change the selected encoder or frame-pacing behavior.
 

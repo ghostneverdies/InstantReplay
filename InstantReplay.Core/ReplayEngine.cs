@@ -15,6 +15,8 @@ public sealed class ReplayEngine : IDisposable
     public const int SaveOk = IrNative.OK;
     public const int SaveFailed = IrNative.Fail;
     public const int SaveNotEnoughData = IrNative.NotEnoughData;
+    public const int SaveLowMemory = IrNative.LowMemory;
+    public const int SavePending = IrNative.SavePending;
 
     private readonly object _opLock = new();
     private IntPtr _engine;
@@ -200,6 +202,50 @@ public sealed class ReplayEngine : IDisposable
         }
     }
 
+    public int BeginSaveReplay(string outPath, int secondsBack, out ulong jobId)
+    {
+        jobId = 0;
+        lock (_opLock)
+        {
+            if (_engine == IntPtr.Zero || string.IsNullOrWhiteSpace(outPath)) return SaveFailed;
+            try
+            {
+                int rc = IrNative.IR_BeginSave(_engine, outPath, Math.Max(secondsBack, 1), out jobId);
+                Logger.Info($"[Engine] IR_BeginSave('{outPath}', {secondsBack}s, job {jobId}) -> rc={rc}");
+                return rc;
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("[Engine] IR_BeginSave failed", ex);
+                jobId = 0;
+                return SaveFailed;
+            }
+        }
+    }
+
+    public bool TryPollSave(ulong jobId, out int progress, out int result)
+    {
+        progress = -1;
+        result = SaveFailed;
+        if (_engine == IntPtr.Zero || jobId == 0) return false;
+        try
+        {
+            bool alive = IrNative.IR_PollSave(_engine, jobId, out progress, out result) != 0;
+            if (!alive)
+            {
+                progress = -1;
+                result = SaveFailed;
+            }
+            return alive;
+        }
+        catch
+        {
+            progress = -1;
+            result = SaveFailed;
+            return false;
+        }
+    }
+
     public int SaveProgress
     {
         get
@@ -241,6 +287,65 @@ public sealed class ReplayEngine : IDisposable
         audioEvents = ae;
         audioGotFrames = agf;
         healthHeartbeat = hb;
+    }
+
+    public bool TryGetTelemetry(out long captured, out long paced, out long rejected,
+        out long encoded, out long dropped, out int encoder, out long lastPts)
+    {
+        captured = paced = rejected = encoded = dropped = lastPts = 0;
+        encoder = 0;
+        if (_engine == IntPtr.Zero) return false;
+        try
+        {
+            IrNative.IR_GetTelemetry(_engine, out captured, out paced, out rejected,
+                out encoded, out dropped, out encoder, out lastPts);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"[Engine] IR_GetTelemetry failed: {ex.Message}");
+            return false;
+        }
+    }
+
+    public bool TryGetTiming(out double mapMs, out double encodeMs, out double renderMs,
+        out double submitMs, out double snapshotMs, out double unmapMs, out long frames)
+    {
+        mapMs = encodeMs = renderMs = submitMs = snapshotMs = unmapMs = 0;
+        frames = 0;
+        if (_engine == IntPtr.Zero) return false;
+        try
+        {
+            IrNative.IR_GetTiming(_engine, out mapMs, out encodeMs, out renderMs,
+                out submitMs, out snapshotMs, out unmapMs, out frames);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"[Engine] IR_GetTiming failed: {ex.Message}");
+            return false;
+        }
+    }
+
+    public bool TryGetAudioDiagnostics(int which, out long activateHr, out long initHr,
+        out long startHr, out int tag, out int rate, out int channels, out int bits,
+        out int isFloat, out int convertFailures, out long lastFailHr)
+    {
+        activateHr = initHr = startHr = lastFailHr = 0;
+        tag = rate = channels = bits = isFloat = convertFailures = 0;
+        if (_engine == IntPtr.Zero) return false;
+        try
+        {
+            IrNative.IR_AudioDiagnostics(_engine, which, out activateHr, out initHr,
+                out startHr, out tag, out rate, out channels, out bits, out isFloat,
+                out convertFailures, out lastFailHr);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"[Engine] IR_AudioDiagnostics failed: {ex.Message}");
+            return false;
+        }
     }
 
     public string DescribeFailure()
@@ -286,6 +391,21 @@ public sealed class ReplayEngine : IDisposable
         }
         catch (Exception error) { Logger.Warn($"[Engine] Window enumeration failed: {error.Message}"); }
         return result;
+    }
+
+    public static (int Width, int Height) MonitorSize(int index)
+    {
+        try
+        {
+            var sb = new StringBuilder(256);
+            IrNative.IR_GetMonitorInfo(index, sb, sb.Capacity, out int width, out int height);
+            return (width, height);
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"[Engine] MonitorSize failed: {ex.Message}");
+            return (1920, 1080);
+        }
     }
 
     public static List<(int Index, string Name)> EnumerateMonitors()

@@ -10,6 +10,8 @@ internal static class IrNative
     internal const int OK = 0;
     internal const int Fail = -1;
     internal const int NotEnoughData = -30;
+    internal const int LowMemory = -31;
+    internal const int SavePending = -999;
 
     private const string Dll = "engine";
 
@@ -103,6 +105,13 @@ internal static class IrNative
         [MarshalAs(UnmanagedType.LPWStr)] string outPath, int secondsBack);
 
     [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int IR_BeginSave(IntPtr engine,
+        [MarshalAs(UnmanagedType.LPWStr)] string outPath, int secondsBack, out ulong jobId);
+
+    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int IR_PollSave(IntPtr engine, ulong jobId, out int progress, out int result);
+
+    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
     internal static extern int IR_SaveProgress();
 
     [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
@@ -110,6 +119,22 @@ internal static class IrNative
         out int ringSeconds, out long framesEncoded, out long framesDropped,
         out int hasError, out long audioFrames, out long audioEvents,
         out long audioGotFrames, out long healthHeartbeat);
+
+    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern void IR_GetTelemetry(IntPtr engine, out long captured,
+        out long paced, out long rejected, out long encoded, out long dropped,
+        out int encoder, out long lastPts);
+
+    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern void IR_GetTiming(IntPtr engine, out double mapMs,
+        out double encodeMs, out double renderMs, out double submitMs,
+        out double snapshotMs, out double unmapMs, out long frames);
+
+    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern void IR_AudioDiagnostics(IntPtr engine, int which,
+        out long activateHr, out long initHr, out long startHr, out int tag,
+        out int rate, out int channels, out int bits, out int isFloat,
+        out int convertFailures, out long lastFailHr);
 
     [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
     internal static extern int IR_GetMonitorCount();

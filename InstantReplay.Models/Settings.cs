@@ -28,7 +28,6 @@ public sealed class Settings
     public uint HotkeyVk { get; set; } = 0x6A;
 
     public string QualityPreset { get; set; } = "Balanced";
-    public int BitrateKbps { get; set; }
 
     public string EncoderChoice { get; set; } = "Auto";
 
@@ -39,6 +38,15 @@ public sealed class Settings
     /// </summary>
     [JsonPropertyName("encoders")]
     public Dictionary<string, bool>? DetectedEncoders { get; set; }
+
+    /// <summary>
+    /// Bumped whenever the FFmpeg build or the probe logic changes. A stored result from an older
+    /// version is discarded so a stale "NVENC available" entry can never survive an upgrade.
+    /// </summary>
+    public const int CurrentEncoderProbeVersion = 2;
+
+    [JsonPropertyName("encoders_probe_version")]
+    public int EncoderProbeVersion { get; set; }
 
     public string VideoCodec { get; set; } = "H264";
 
@@ -98,6 +106,13 @@ public sealed class Settings
                     if (loaded.EncoderChoice is not ("Auto" or "Nvenc" or "Amf" or "Qsv" or "X264" or "X265" or "Software"))
                         loaded.EncoderChoice = "Auto";
                     if (loaded.FrameRate is not (30 or 60 or 120)) loaded.FrameRate = 60;
+                    loaded.RateControl = string.Equals(loaded.RateControl, "Vbr", StringComparison.OrdinalIgnoreCase)
+                        ? "Vbr" : "Cbr";
+                    if (loaded.EncoderProbeVersion != CurrentEncoderProbeVersion)
+                    {
+                        loaded.DetectedEncoders = null;
+                        loaded.EncoderProbeVersion = CurrentEncoderProbeVersion;
+                    }
                     return loaded;
                 }
             }
