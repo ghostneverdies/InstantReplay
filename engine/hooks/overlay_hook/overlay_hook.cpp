@@ -1,4 +1,4 @@
-﻿#define WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <objidl.h>
 #include <gl/GL.h>
@@ -8,10 +8,6 @@
 #include <d3d12.h>
 #include <d3dcompiler.h>
 #include <dxgi1_4.h>
-#include <mfapi.h>
-#include <mferror.h>
-#include <mfidl.h>
-#include <mfreadwrite.h>
 #include <math.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -31,9 +27,6 @@
 #pragma comment(lib, "d3d9.lib")
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "d3dcompiler.lib")
-#pragma comment(lib, "mfplat.lib")
-#pragma comment(lib, "mfreadwrite.lib")
-#pragma comment(lib, "mfuuid.lib")
 #pragma comment(lib, "ole32.lib")
 
 #ifndef GL_BGRA
@@ -151,7 +144,6 @@ enum : uint32_t
     IR_CTL_DETAIL = 168,
     IR_CTL_ICON_PATH = 424,
     IR_CTL_LOG_PATH = 944,
-    IR_CTL_ANIMATION_PATH = 1464,
     IR_CTL_SIZE = 2048,
 };
 
@@ -257,7 +249,6 @@ struct ControlSnapshot
     std::wstring title;
     std::wstring detail;
     std::wstring icon_path;
-    std::wstring animation_path;
     bool strings_changed;
 };
 
@@ -355,8 +346,6 @@ static void control_read(ControlSnapshot &s)
         copy_wide(reinterpret_cast<const uint16_t *>(p + IR_CTL_TITLE), 64, s.title);
         copy_wide(reinterpret_cast<const uint16_t *>(p + IR_CTL_DETAIL), 128, s.detail);
         copy_wide(reinterpret_cast<const uint16_t *>(p + IR_CTL_ICON_PATH), 260, s.icon_path);
-        copy_wide(reinterpret_cast<const uint16_t *>(p + IR_CTL_ANIMATION_PATH), 260,
-                  s.animation_path);
         g_copied_seq = s.overlay_seq;
     }
     s.valid = true;
@@ -507,8 +496,7 @@ struct OverlayState
     std::wstring title;
     std::wstring detail;
     std::wstring icon_path;
-    std::wstring animation_path;
-    int64_t animation_at = 0;
+    int64_t success_at = 0;
 
     int64_t show_at = 0;
     int64_t hide_at = 0;
@@ -538,7 +526,6 @@ struct OverlayState
     HGLRC context = nullptr;
 
     int64_t last_render_at = 0;
-    int rendered_anim_index = -2;
 
     bool dirty = true;
     bool render_error_logged = false;
@@ -587,302 +574,93 @@ static std::wstring default_icon_path()
     return std::wstring();
 }
 
-struct AnimationFrame
+struct AnimKey
 {
-    int64_t timestamp = 0;
-    Bitmap *bitmap = nullptr;
+    int ms;
+    float value;
 };
 
-static std::vector<AnimationFrame> g_animation_frames;
-static int64_t g_animation_duration = 30000000LL;
-static std::wstring g_loaded_animation;
-static std::wstring g_attempted_animation;
-static bool g_mf_started = false;
-
-static SRWLOCK g_anim_lock = SRWLOCK_INIT;
-static std::vector<AnimationFrame> g_anim_staging;
-static int64_t g_anim_staging_duration = 0;
-static std::wstring g_anim_staging_path;
-static std::wstring g_anim_worker_path;
-static volatile LONG g_anim_loading = 0;
-static volatile LONG g_anim_ready = 0;
-static HANDLE g_anim_thread = nullptr;
-
-template <typename T>
-static void ir_release(T *&value)
+static float ir_ease_out_cubic(float t)
 {
-    if (value)
-    {
-        value->Release();
-        value = nullptr;
-    }
+    if (t <= 0.0f) return 0.0f;
+    if (t >= 1.0f) return 1.0f;
+    const float inv = 1.0f - t;
+    return 1.0f - inv * inv * inv;
 }
 
-static void animation_clear()
+static float ir_anim_value(int64_t elapsed_ms, const AnimKey *keys, size_t count)
 {
-    for (auto &frame : g_animation_frames)
-        delete frame.bitmap;
-    g_animation_frames.clear();
-    g_loaded_animation.clear();
-    g_animation_duration = 30000000LL;
+    if (elapsed_ms <= keys[0].ms) return keys[0].value;
+    for (size_t i = 1; i < count; ++i)
+    {
+        if (elapsed_ms > keys[i].ms) continue;
+        const AnimKey &a = keys[i - 1];
+        const AnimKey &b = keys[i];
+        const float t = static_cast<float>(elapsed_ms - a.ms) / static_cast<float>(b.ms - a.ms);
+        return a.value + (b.value - a.value) * ir_ease_out_cubic(t);
+    }
+    return keys[count - 1].value;
 }
 
-static void animation_free_frames(std::vector<AnimationFrame> &frames)
+static bool ir_success_active(int64_t now, int64_t success_at)
 {
-    for (auto &frame : frames)
-        delete frame.bitmap;
-    frames.clear();
+    return success_at > 0 && now >= success_at && now - success_at <= 6200000LL;
 }
 
-static bool animation_decode(const std::wstring &path, std::vector<AnimationFrame> &frames,
-                             int64_t &duration)
+static float ir_success_icon_scale(int64_t elapsed_ms)
 {
-    if (path.empty())
-        return false;
-
-    if (!g_mf_started)
-    {
-        if (FAILED(MFStartup(MF_VERSION, MFSTARTUP_LITE)))
-            return false;
-        g_mf_started = true;
-    }
-
-    IMFAttributes *attributes = nullptr;
-    IMFSourceReader *reader = nullptr;
-    IMFMediaType *type = nullptr;
-    HRESULT hr = MFCreateAttributes(&attributes, 2);
-    if (SUCCEEDED(hr))
-    {
-        attributes->SetUINT32(MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, TRUE);
-        attributes->SetUINT32(MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING, TRUE);
-        hr = MFCreateSourceReaderFromURL(path.c_str(), attributes, &reader);
-    }
-    if (SUCCEEDED(hr))
-        hr = MFCreateMediaType(&type);
-    if (SUCCEEDED(hr))
-        hr = type->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
-    if (SUCCEEDED(hr))
-        hr = type->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB32);
-    if (SUCCEEDED(hr))
-        MFSetAttributeSize(type, MF_MT_FRAME_SIZE, 84, 84);
-    if (SUCCEEDED(hr))
-        hr = reader->SetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, nullptr, type);
-    if (FAILED(hr) && reader && type)
-    {
-        type->DeleteItem(MF_MT_FRAME_SIZE);
-        hr = reader->SetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, nullptr, type);
-    }
-
-    UINT32 width = 0, height = 0;
-    IMFMediaType *current = nullptr;
-    if (SUCCEEDED(hr))
-        hr = reader->GetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, &current);
-    if (SUCCEEDED(hr))
-        hr = MFGetAttributeSize(current, MF_MT_FRAME_SIZE, &width, &height);
-    bool bottom_up = true;
-    if (current)
-    {
-        UINT32 stride_attr = 0;
-        if (SUCCEEDED(current->GetUINT32(MF_MT_DEFAULT_STRIDE, &stride_attr)))
-            bottom_up = static_cast<LONG>(stride_attr) < 0;
-    }
-    ir_release(current);
-
-    int64_t first_timestamp = -1;
-    while (SUCCEEDED(hr) && !g_shutting_down)
-    {
-        DWORD stream = 0, flags = 0;
-        LONGLONG timestamp = 0;
-        IMFSample *sample = nullptr;
-        hr = reader->ReadSample(MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0, &stream, &flags,
-                                &timestamp, &sample);
-        if (FAILED(hr) || (flags & MF_SOURCE_READERF_ENDOFSTREAM))
-        {
-            ir_release(sample);
-            break;
-        }
-        if (!sample)
-            continue;
-
-        IMFMediaBuffer *buffer = nullptr;
-        BYTE *data = nullptr;
-        DWORD length = 0;
-        bool locked = false;
-        if (SUCCEEDED(sample->ConvertToContiguousBuffer(&buffer)) && buffer)
-            locked = SUCCEEDED(buffer->Lock(&data, nullptr, &length));
-        if (locked && width && height && length >= width * height * 4)
-        {
-            if (first_timestamp < 0)
-                first_timestamp = timestamp;
-            BYTE *scan0 = bottom_up ? data + static_cast<size_t>(height - 1) * width * 4 : data;
-            INT stride = static_cast<INT>(width * 4);
-            Bitmap source(static_cast<INT>(width), static_cast<INT>(height),
-                          bottom_up ? -stride : stride, PixelFormat32bppRGB, scan0);
-            Bitmap *scaled = nullptr;
-            try
-            {
-                scaled = new Bitmap(84, 84, PixelFormat32bppPARGB);
-            }
-            catch (...)
-            {
-                scaled = nullptr;
-            }
-            if (scaled && scaled->GetLastStatus() == Ok)
-            {
-                Graphics graphics(scaled);
-                graphics.SetInterpolationMode(InterpolationModeHighQualityBicubic);
-                graphics.Clear(Color(0, 0, 0, 0));
-                graphics.DrawImage(&source, Rect(0, 0, 84, 84));
-                frames.push_back({timestamp - first_timestamp, scaled});
-            }
-            else
-            {
-                delete scaled;
-            }
-        }
-        if (locked)
-            buffer->Unlock();
-        ir_release(buffer);
-        ir_release(sample);
-    }
-
-    ir_release(type);
-    ir_release(reader);
-    ir_release(attributes);
-    if (frames.empty())
-        return false;
-    duration = 30000000LL;
-    if (frames.size() > 1)
-    {
-        int64_t step = frames.back().timestamp - frames[frames.size() - 2].timestamp;
-        duration = frames.back().timestamp + (step > 0 ? step : 333333LL);
-    }
-    return true;
+    static const AnimKey keys[] = {{0, 1.0f}, {140, 1.12f}, {300, 0.96f}, {420, 1.0f}};
+    return ir_anim_value(elapsed_ms, keys, _countof(keys));
 }
 
-static DWORD WINAPI animation_worker(LPVOID)
+static void ir_draw_success_pulse(Graphics &g, float icon_x, float icon_y, float icon_size,
+                                  int64_t elapsed_ms, const Color &accent)
 {
-    const bool com = SUCCEEDED(CoInitializeEx(nullptr, COINIT_MULTITHREADED));
-    std::vector<AnimationFrame> frames;
-    int64_t duration = 30000000LL;
-    const std::wstring path = g_anim_worker_path;
-
-    bool ok = false;
-    try
-    {
-        ok = !g_shutting_down && animation_decode(path, frames, duration);
-    }
-    catch (...)
-    {
-        ok = false;
-    }
-
-    if (ok && !g_shutting_down)
-    {
-        AcquireSRWLockExclusive(&g_anim_lock);
-        animation_free_frames(g_anim_staging);
-        g_anim_staging.swap(frames);
-        g_anim_staging_duration = duration;
-        g_anim_staging_path = path;
-        ReleaseSRWLockExclusive(&g_anim_lock);
-        InterlockedExchange(&g_anim_ready, 1);
-    }
-    else
-    {
-        animation_free_frames(frames);
-    }
-
-    InterlockedExchange(&g_anim_loading, 0);
-    if (com)
-        CoUninitialize();
-    return 0;
+    static const AnimKey scale_keys[] = {{0, 0.72f}, {620, 1.28f}};
+    static const AnimKey alpha_keys[] = {{0, 0.0f}, {80, 0.9f}, {620, 0.0f}};
+    const float alpha = ir_anim_value(elapsed_ms, alpha_keys, _countof(alpha_keys));
+    if (alpha <= 0.001f) return;
+    const float scale = ir_anim_value(elapsed_ms, scale_keys, _countof(scale_keys));
+    const float size = icon_size * scale;
+    RectF ring(icon_x + (icon_size - size) * 0.5f, icon_y + (icon_size - size) * 0.5f, size, size);
+    Pen pen(Color(static_cast<BYTE>(alpha * 255.0f + 0.5f), accent.GetR(), accent.GetG(),
+                  accent.GetB()),
+            2.0f * icon_size / 54.0f);
+    g.DrawEllipse(&pen, ring);
 }
 
-static void animation_worker_join()
+static void ir_draw_success_badge(Graphics &g, float icon_x, float icon_y, float icon_size,
+                                  int64_t elapsed_ms, const Color &accent)
 {
-    if (g_anim_thread)
-    {
-        WaitForSingleObject(g_anim_thread, 3000);
-        CloseHandle(g_anim_thread);
-        g_anim_thread = nullptr;
-    }
-    AcquireSRWLockExclusive(&g_anim_lock);
-    animation_free_frames(g_anim_staging);
-    ReleaseSRWLockExclusive(&g_anim_lock);
-}
+    static const AnimKey scale_keys[] = {{0, 0.0f}, {220, 1.14f}, {380, 1.0f}};
+    static const AnimKey alpha_keys[] = {{0, 0.0f}, {80, 1.0f}};
+    const float alpha = ir_anim_value(elapsed_ms, alpha_keys, _countof(alpha_keys));
+    if (alpha <= 0.001f) return;
+    const float scale = ir_anim_value(elapsed_ms, scale_keys, _countof(scale_keys));
+    const float u = icon_size / 54.0f;
+    const float size = 20.0f * u;
+    const float x = icon_x + 36.0f * u;
+    const float y = icon_y + 36.0f * u;
+    const float cx = x + size * 0.5f;
+    const float cy = y + size * 0.5f;
 
-static int animation_frame_index(int64_t now)
-{
-    if (g_animation_frames.empty() || g_ov.animation_at <= 0)
-        return -1;
-    const int64_t duration = g_animation_duration > 0 ? g_animation_duration : 1;
-    int64_t elapsed = (now - g_ov.animation_at) % duration;
-    if (elapsed < 0)
-        elapsed = 0;
-    size_t selected = 0;
-    for (size_t i = 1; i < g_animation_frames.size(); ++i)
-    {
-        if (g_animation_frames[i].timestamp > elapsed)
-            break;
-        selected = i;
-    }
-    return static_cast<int>(selected);
-}
+    const GraphicsState state = g.Save();
+    g.TranslateTransform(cx, cy);
+    g.ScaleTransform(scale, scale);
+    g.TranslateTransform(-cx, -cy);
 
-static Bitmap *animation_frame(int64_t now)
-{
-    const int index = animation_frame_index(now);
-    return index < 0 ? nullptr : g_animation_frames[index].bitmap;
-}
-
-static void animation_ensure()
-{
-    if (g_ov.animation_path.empty())
-        return;
-
-    if (InterlockedCompareExchange(&g_anim_ready, 0, 1) == 1)
-    {
-        AcquireSRWLockExclusive(&g_anim_lock);
-        if (g_anim_staging_path == g_ov.animation_path && !g_anim_staging.empty())
-        {
-            animation_clear();
-            g_animation_frames.swap(g_anim_staging);
-            g_animation_duration = g_anim_staging_duration;
-            g_loaded_animation = g_anim_staging_path;
-            g_anim_staging.clear();
-            const size_t frame_count = g_animation_frames.size();
-            ReleaseSRWLockExclusive(&g_anim_lock);
-            hook_log(L"loaded completion animation (%zu frames)", frame_count);
-            if (g_ov.state == 2)
-                g_ov.animation_at = qpc_100ns();
-            g_ov.dirty = true;
-            return;
-        }
-        animation_free_frames(g_anim_staging);
-        ReleaseSRWLockExclusive(&g_anim_lock);
-    }
-
-    if (!g_ov.visible && g_ov.state != 2)
-        return;
-    if (!g_animation_frames.empty() && g_loaded_animation == g_ov.animation_path)
-        return;
-    if (g_attempted_animation == g_ov.animation_path)
-        return;
-    if (InterlockedCompareExchange(&g_anim_loading, 1, 0) != 0)
-        return;
-
-    g_attempted_animation = g_ov.animation_path;
-    g_anim_worker_path = g_ov.animation_path;
-    if (g_anim_thread)
-    {
-        CloseHandle(g_anim_thread);
-        g_anim_thread = nullptr;
-    }
-    g_anim_thread = CreateThread(nullptr, 0, animation_worker, nullptr, 0, nullptr);
-    if (g_anim_thread)
-        SetThreadPriority(g_anim_thread, THREAD_PRIORITY_BELOW_NORMAL);
-    else
-        InterlockedExchange(&g_anim_loading, 0);
+    SolidBrush fill(Color(static_cast<BYTE>(alpha * 255.0f + 0.5f), accent.GetR(), accent.GetG(),
+                          accent.GetB()));
+    g.FillEllipse(&fill, x, y, size, size);
+    Pen check(Color(static_cast<BYTE>(alpha * 255.0f + 0.5f), 255, 255, 255), 2.2f * u);
+    check.SetLineJoin(LineJoinRound);
+    Point points[3] = {
+        {static_cast<INT>(x + 4.0f * u + 0.5f), static_cast<INT>(y + 10.0f * u + 0.5f)},
+        {static_cast<INT>(x + 8.0f * u + 0.5f), static_cast<INT>(y + 14.0f * u + 0.5f)},
+        {static_cast<INT>(x + 16.0f * u + 0.5f), static_cast<INT>(y + 5.0f * u + 0.5f)},
+    };
+    g.DrawLines(&check, points, 3);
+    g.Restore(state);
 }
 
 static void overlay_free_bitmap()
@@ -1228,21 +1006,41 @@ static void overlay_render(int card_w, int card_h, int scale100, float text_alph
     const float icon_y = 27.0f * s;
     const float icon_size = 54.0f * s;
 
+    const int64_t now = qpc_100ns();
+    const bool success = g_ov.state == 2;
+    int64_t elapsed_ms = 0;
+    if (success && g_ov.success_at > 0 && now > g_ov.success_at)
+        elapsed_ms = (now - g_ov.success_at) / 10000;
+    if (success)
+        ir_draw_success_pulse(g, icon_x, icon_y, icon_size, elapsed_ms, accent);
+
     {
-        const float image_size = icon_size;
-        Bitmap *frame = g_ov.state == 2 ? animation_frame(qpc_100ns()) : nullptr;
-        if (frame)
+        std::wstring path = g_ov.icon_path.empty() ? default_icon_path() : g_ov.icon_path;
+        Bitmap *icon = render_cache_icon(path, static_cast<int>(icon_size + 0.5f));
+        if (icon)
         {
-            g.DrawImage(frame, RectF(icon_x, icon_y, image_size, image_size));
-        }
-        else
-        {
-            std::wstring path = g_ov.icon_path.empty() ? default_icon_path() : g_ov.icon_path;
-            Bitmap *icon = render_cache_icon(path, static_cast<int>(image_size + 0.5f));
-            if (icon)
-                g.DrawImage(icon, static_cast<INT>(icon_x + 0.5f), static_cast<INT>(icon_y + 0.5f));
+            const float scale = success ? ir_success_icon_scale(elapsed_ms) : 1.0f;
+            if (success && scale != 1.0f)
+            {
+                const GraphicsState state = g.Save();
+                const float cx = icon_x + icon_size * 0.5f;
+                const float cy = icon_y + icon_size * 0.5f;
+                g.TranslateTransform(cx, cy);
+                g.ScaleTransform(scale, scale);
+                g.TranslateTransform(-cx, -cy);
+                g.DrawImage(icon, static_cast<INT>(icon_x + 0.5f),
+                            static_cast<INT>(icon_y + 0.5f));
+                g.Restore(state);
+            }
+            else
+            {
+                g.DrawImage(icon, static_cast<INT>(icon_x + 0.5f),
+                            static_cast<INT>(icon_y + 0.5f));
+            }
         }
     }
+    if (success)
+        ir_draw_success_badge(g, icon_x, icon_y, icon_size, elapsed_ms, accent);
 
     const float text_x = floorf(92.0f * s + 0.5f);
     const float content_h = 76.0f * s;
@@ -1338,10 +1136,10 @@ static bool overlay_update_content(int64_t now, int card_w, int card_h, int scal
     }
 
     const bool fading = g_ov.morphing || g_ov.bar_fading;
-    const int anim_index = g_ov.state == 2 ? animation_frame_index(now) : -1;
+    const bool success_animating = g_ov.state == 2 && ir_success_active(now, g_ov.success_at);
     const bool size_changed = !g_ov.bitmap || g_ov.bitmap_w != card_w || g_ov.bitmap_h != card_h;
     const int64_t since = now - g_ov.last_render_at;
-    const bool frame_due = anim_index != g_ov.rendered_anim_index && since >= IR_ANIM_MIN_INTERVAL_100NS;
+    const bool frame_due = success_animating && since >= IR_ANIM_MIN_INTERVAL_100NS;
     const bool fade_due = fading && since >= IR_FADE_INTERVAL_100NS;
     if (!(g_ov.dirty || size_changed || frame_due || fade_due))
         return false;
@@ -1349,7 +1147,6 @@ static bool overlay_update_content(int64_t now, int card_w, int card_h, int scal
     overlay_render(card_w, card_h, scale100, text_alpha, text_shift, bar_alpha);
     g_ov.dirty = false;
     g_ov.last_render_at = now;
-    g_ov.rendered_anim_index = anim_index;
     return true;
 }
 
@@ -1964,6 +1761,7 @@ static void overlay_sync(const ControlSnapshot &ctl)
         g_ov.hide_at = 0;
         g_ov.morphing = false;
         g_ov.bar_fading = false;
+        g_ov.success_at = 0;
         changed = true;
     }
 
@@ -1981,18 +1779,14 @@ static void overlay_sync(const ControlSnapshot &ctl)
             g_ov.detail = ctl.detail;
             if (!ctl.icon_path.empty())
                 g_ov.icon_path = ctl.icon_path;
-            if (!ctl.animation_path.empty())
-                g_ov.animation_path = ctl.animation_path;
         }
         if (state_changed && ctl.overlay_state == 2)
         {
-            g_ov.animation_at = now;
-            g_attempted_animation.clear();
+            g_ov.success_at = now;
         }
         else if (state_changed)
         {
-            g_ov.animation_at = 0;
-            g_attempted_animation.clear();
+            g_ov.success_at = 0;
         }
         if (ctl.overlay_progress != g_ov.progress)
         {
@@ -2023,8 +1817,7 @@ static void overlay_sync(const ControlSnapshot &ctl)
             g_ov.hide_at = 0;
             if (ctl.overlay_state == 2)
             {
-                g_ov.animation_at = now;
-                g_attempted_animation.clear();
+                g_ov.success_at = now;
             }
             hook_log(L"notification visible (state %d, seq %u)",
                      static_cast<int>(ctl.overlay_state), ctl.overlay_seq);
@@ -2053,8 +1846,6 @@ static void overlay_sync(const ControlSnapshot &ctl)
         }
         changed = true;
     }
-
-    animation_ensure();
 
     if (changed)
         g_ov.dirty = true;
@@ -3328,19 +3119,12 @@ static void shutdown()
     InterlockedExchange(&g_shutting_down, 1);
     MH_DisableHook(MH_ALL_HOOKS);
     MH_Uninitialize();
-    animation_worker_join();
     g_ov.texture = 0;
     overlay_d3d9_release();
     overlay_d3d11_release();
     overlay_d3d12_release();
     overlay_free_bitmap();
-    animation_clear();
     render_cache_free();
-    if (g_mf_started)
-    {
-        MFShutdown();
-        g_mf_started = false;
-    }
     log_close();
     control_close();
     if (g_ready_event)
