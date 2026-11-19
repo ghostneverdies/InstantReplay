@@ -90,7 +90,7 @@ public sealed class ClipNotificationWindow : Window
             RenderTransform = _iconTransform
         };
         string[] iconPaths = {
-            Path.Combine(AppContext.BaseDirectory, "assets", "icons", "clapperboard.png"),
+            Path.Combine(AppContext.BaseDirectory, "assets", "icons", "icon.png"),
             Path.Combine(AppContext.BaseDirectory, "assets", "icons", "icon.ico"),
             Path.Combine(AppContext.BaseDirectory, "assets", "icon.ico"),
             Path.Combine(AppContext.BaseDirectory, "icon.ico")
