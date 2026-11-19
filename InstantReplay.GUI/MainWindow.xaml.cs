@@ -332,6 +332,7 @@ public partial class MainWindow : Window
         InitFpsSegments();
         InitQualitySegments();
         InitEncoderSegments();
+        InitBufferMethodSegments();
         UpdateEncoderAvailabilityUi();
         InitCaptureSegments();
         InitCaptureTargets();
@@ -661,6 +662,7 @@ public partial class MainWindow : Window
         string RateControl,
         string EncoderPreset,
         string Container,
+        string BufferMethod,
         string CaptureMethod,
         string CaptureTarget,
         int CaptureMonitorIndex,
@@ -683,6 +685,7 @@ public partial class MainWindow : Window
         _settings.RateControl,
         _settings.EncoderPreset,
         _settings.Container,
+        _settings.BufferMethod,
         _settings.CaptureMethod,
         _settings.CaptureTarget,
         _settings.CaptureMonitorIndex,
@@ -1910,8 +1913,7 @@ public partial class MainWindow : Window
 
     private async Task InitialStartAsync()
     {
-        if (!EncoderDetector.HasResult(_settings) ||
-            _settings.EncoderProbeVersion != Settings.CurrentEncoderProbeVersion)
+        if (!EncoderDetector.HasResult)
             await RunEncoderDetectionAsync();
 
         bool ok = await Task.Run(StartCaptureCore);
@@ -2396,6 +2398,7 @@ public partial class MainWindow : Window
     private static readonly string[] EncoderChoices =
         ["Auto", "MfQsv", "MfVp12", "MfNvenc", "MfAmf", "MfSoftware"];
     private static readonly string[] CodecChoices = ["Auto", "Hevc", "H264", "Av1"];
+    private static readonly string[] BufferMethodChoices = ["Continuous", "Segmented"];
 
     private void InitEncoderSegments()
     {
@@ -2406,6 +2409,11 @@ public partial class MainWindow : Window
         EncoderPresetCombo.SelectedIndex = VideoQualityProfile.PresetIndex(_settings.EncoderPreset);
         // The writer is MP4-only; Settings.Load migrates every legacy container to Mp4.
         ContainerCombo.SelectedIndex = 0;
+    }
+
+    private void InitBufferMethodSegments()
+    {
+        BufferMethodCombo.SelectedIndex = _settings.BufferMethod == "Segmented" ? 1 : 0;
     }
 
     private void EncoderCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -2443,6 +2451,14 @@ public partial class MainWindow : Window
     {
         if (_initializing) return;
         _settings.Container = "Mp4";
+        CheckDirty();
+    }
+
+    private void BufferMethodCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_initializing) return;
+        _settings.BufferMethod = BufferMethodChoices[
+            Math.Clamp(BufferMethodCombo.SelectedIndex, 0, BufferMethodChoices.Length - 1)];
         CheckDirty();
     }
 
@@ -2773,8 +2789,8 @@ public partial class MainWindow : Window
     private TaskCompletionSource? _rootLoaded;
 
     /// <summary>
-    /// Probes all encoders (real frames), stores the true/false result in settings.json and refreshes
-    /// the encoder UI. While it runs a blurred overlay covers the whole window and blocks input.
+    /// Probes all encoders (real frames), refreshes the encoder UI and keeps the result in memory.
+    /// While it runs a blurred overlay covers the whole window and blocks input.
     /// Returns false if a detection was already running or the probe could not run.
     /// </summary>
     private async Task<bool> RunEncoderDetectionAsync()
@@ -2791,7 +2807,6 @@ public partial class MainWindow : Window
             ImageSource? snapshot = await CaptureBlurSnapshotAsync();
             await ShowEncoderOverlayAsync(snapshot);
             NavView.IsEnabled = false;
-            RefreshEncodersButton.IsEnabled = false;
 
             var map = await EncoderDetector.DetectAsync();
             if (map is null)
@@ -2799,10 +2814,6 @@ public partial class MainWindow : Window
                 Logger.Warn("Encoder detection could not run; keeping the previous result.");
                 return false;
             }
-
-            _settings.DetectedEncoders = map;
-            _settings.EncoderProbeVersion = Settings.CurrentEncoderProbeVersion;
-            _settings.SaveFields(nameof(Settings.DetectedEncoders), nameof(Settings.EncoderProbeVersion));
 
             // A saved preference can be unavailable on this machine (or an unknown string from an
             // older build); fall back to Auto now that a complete detection map is known.
@@ -2837,7 +2848,6 @@ public partial class MainWindow : Window
         finally
         {
             NavView.IsEnabled = wasEnabled;
-            RefreshEncodersButton.IsEnabled = true;
             await HideEncoderOverlayAsync();
             _detectingEncoders = false;
         }
@@ -2917,21 +2927,10 @@ public partial class MainWindow : Window
         EncoderDetectOverlay.Opacity = to;
     }
 
-    private async void RefreshEncodersButton_Click(object sender, RoutedEventArgs e)
-    {
-        bool ok = await RunEncoderDetectionAsync();
-        ShowInfoBar(ok ? InfoBarSeverity.Success : InfoBarSeverity.Warning,
-            ok ? "Encoders detected" : "Encoder detection failed",
-            ok ? "The encoder list was refreshed. Changes apply the next time recording starts."
-               : "The encoder probe could not run. The debug log has the details.",
-            null);
-    }
-
-    /// <summary>Greys out encoders that failed detection and summarises the result in Advanced.</summary>
+    /// <summary>Greys out encoders that failed detection. No detected-encoder text is shown.</summary>
     private void UpdateEncoderAvailabilityUi()
     {
-        var detected = _settings.DetectedEncoders;
-        bool known = EncoderAvailabilityMap.IsComplete(detected);
+        var detected = EncoderDetector.LastResult;
         EncoderPreference[] order = [EncoderPreference.Auto, EncoderPreference.MfQsv, EncoderPreference.MfVp12,
                                      EncoderPreference.MfNvenc, EncoderPreference.MfAmf, EncoderPreference.MfSoftware];
         for (int i = 0; i < order.Length && i < EncoderCombo.Items.Count; i++)
@@ -2939,30 +2938,6 @@ public partial class MainWindow : Window
             if (EncoderCombo.Items[i] is ComboBoxItem item)
                 item.IsEnabled = EncoderDetector.IsSelectable(order[i], detected) || EncoderCombo.SelectedIndex == i;
         }
-
-        if (!known)
-        {
-            DetectedEncodersText.Text = "Not detected yet.";
-            return;
-        }
-
-        string Names(params (string key, string label)[] pairs)
-        {
-            var on = pairs.Where(p => detected!.TryGetValue(p.key, out bool v) && v).Select(p => p.label).ToList();
-            return on.Count == 0 ? "none" : string.Join(", ", on);
-        }
-        var lines = new List<string>
-        {
-            "MF QSV (Intel): " + Names(("h264_mf_qsv", "H.264"), ("hevc_mf_qsv", "HEVC"), ("av1_mf_qsv", "AV1")),
-            "MF VP12 (Intel Gen12 / Arc): " + Names(("h264_mf_vp12", "H.264"), ("hevc_mf_vp12", "HEVC"),
-                                                    ("av1_mf_vp12", "AV1")),
-            "MF NVENC (NVIDIA): " + Names(("h264_mf_nvenc", "H.264"), ("hevc_mf_nvenc", "HEVC"),
-                                          ("av1_mf_nvenc", "AV1")),
-            "MF AMF (AMD): " + Names(("h264_mf_amf", "H.264"), ("hevc_mf_amf", "HEVC"), ("av1_mf_amf", "AV1")),
-            "MF Software (CPU): " + Names(("h264_mf_software", "H.264"), ("hevc_mf_software", "HEVC"),
-                                          ("av1_mf_software", "AV1")),
-        };
-        DetectedEncodersText.Text = string.Join("\n", lines);
     }
 
     private void DebugToggle_Changed(object sender, RoutedEventArgs e)
@@ -3103,6 +3078,7 @@ public partial class MainWindow : Window
         _settings.RateControl = previous.RateControl;
         _settings.EncoderPreset = previous.EncoderPreset;
         _settings.Container = previous.Container;
+        _settings.BufferMethod = previous.BufferMethod;
         _settings.CaptureMethod = previous.CaptureMethod;
         _settings.CaptureSecondaryWindows = previous.CaptureSecondaryWindows;
         _settings.CaptureRoundedCorners = previous.CaptureRoundedCorners;
@@ -3138,6 +3114,7 @@ public partial class MainWindow : Window
             InitQualitySegments();
             SaveLocationBox.Text = _settings.GetEffectiveSaveDestination();
             InitEncoderSegments();
+            InitBufferMethodSegments();
             _settings.CaptureMethod = "Dxgi";
             CaptureMethodCombo.SelectedIndex = 1;
             InitCaptureTargets();
