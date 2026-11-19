@@ -290,6 +290,7 @@ namespace ir
         int w = 0, h = 0, fps = 30;
         uint32_t bps = 0;
         uint32_t avail = 0;
+        bool segmented = false;
     };
 
     // -------------------------------------------------------------------------
@@ -1108,7 +1109,7 @@ namespace ir
 
     int write_mf_file(const std::wstring &path, const std::vector<Ref<PacketRef>> &video,
                       const std::vector<AudioChunk> &audio, CodecSel codec, int fps, int w, int h, int seconds_back,
-                      int64_t end_time);
+                      int64_t end_time, bool segmented);
 
     // Rejects unsupported encoder/codec/preset combinations before capture starts.
     bool validate_video_selection(const VideoOptions &o, std::string *err);
@@ -1240,6 +1241,7 @@ namespace ir
         uint64_t id = 0;
         std::wstring path;
         int secondsBack = 0;
+        bool segmented = false;
         std::atomic<int> progress{0};
         std::atomic<int> result{IR_PENDING};
         std::atomic<SaveState> state{SaveState::Queued};
