@@ -168,6 +168,7 @@ public sealed class RecorderEngine : IDisposable
     // Native pref layout (see options_from_pref in video.cpp):
     //   bits  0..7  encoder ordinal
     //   bit   8     rate control (0 CBR, 1 VBR)
+    //   bit   9     buffer method (0 continuous, 1 segmented)
     //   bits 12..14 quality/speed preset 0..6
     //   bits 15..16 codec (0 Auto, 1 HEVC, 2 H264, 3 AV1)
     //   bits 24..31 compact per-codec availability byte
@@ -177,8 +178,9 @@ public sealed class RecorderEngine : IDisposable
         int codecBits = codec switch { "Hevc" => 1, "H264" => 2, "Av1" => 3, _ => 0 };
         int presetBits = VideoQualityProfile.PresetIndex(s.EncoderPreset);
         uint compact = EncoderAvailabilityMap.Compact(
-            EncoderAvailabilityMap.FromDictionary(s.DetectedEncoders), codec);
+            EncoderAvailabilityMap.FromDictionary(EncoderDetector.LastResult), codec);
         return (s.RateControl == "Vbr" ? 1 << 8 : 0)
+             | (s.BufferMethod == "Segmented" ? 1 << 9 : 0)
              | (presetBits << 12)
              | (codecBits << 15)
              | (int)(compact << 24);
