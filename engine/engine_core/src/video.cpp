@@ -3527,7 +3527,9 @@ namespace ir
         MfVendor vendor = MfVendor::Qsv;
         HRESULT init_hr = S_OK;
 
-        ObjectPool<PacketRef> packets{256, 4096};
+        // Owned by Engine so encoded packets can outlive this encoder and stay in
+        // the replay ring across stop/restart cycles.
+        ObjectPool<PacketRef> *packets = nullptr;
 
         static HRESULT enumerate_mfts(MfCodec codec, MfVendor vendor, const GpuContext *gpu,
                                       IMFActivate ***list, UINT32 *count)
@@ -3689,7 +3691,7 @@ namespace ir
                         }
                         if (key || packet_params)
                             wrote_header = true;
-                        Ref<PacketRef> pr = packets.acquire();
+                        Ref<PacketRef> pr = packets ? packets->acquire() : Ref<PacketRef>();
                         if (!pr)
                         {
                             mb->Unlock();
@@ -3838,7 +3840,8 @@ namespace ir
     MfEncoder &MfEncoder::operator=(MfEncoder &&) noexcept = default;
 
     std::unique_ptr<MfEncoder> MfEncoder::create(MfCodec codec, MfVendor vendor, const GpuContext *gpu, int w, int h,
-                                                 int fps, uint32_t bps, Rate rate, Preset preset, std::string *err)
+                                                 int fps, uint32_t bps, Rate rate, Preset preset,
+                                                 ObjectPool<PacketRef> *packets, std::string *err)
     {
         auto fail = [&](const char *what, HRESULT hr) -> std::unique_ptr<MfEncoder>
         {
@@ -3903,6 +3906,7 @@ namespace ir
                 impl->av1 = codec == MfCodec::Av1;
                 impl->codec = codec;
                 impl->vendor = vendor;
+                impl->packets = packets;
                 impl->frame_dur = SECOND_100NS / std::max(1, fps);
                 hr = list[i]->ActivateObject(IID_PPV_ARGS(&impl->mft));
                 if (FAILED(hr) || !impl->mft)
@@ -4038,6 +4042,7 @@ namespace ir
         if (!created)
         {
             enc->p_ = std::make_unique<Impl>();
+            enc->p_->packets = packets;
             enc->p_->init_hr = last;
             return fail("encoder setup", last);
         }
@@ -4205,7 +4210,9 @@ namespace ir
         auto report = [&]() { if (err_out) *err_out = err; return false; };
         // Detection must exercise the same system-memory path the engine falls back to.
         // Passing a D3D device here would attach a DXGI manager on matching MFTs and probe GPU-only behaviour.
-        auto enc = MfEncoder::create(codec, vendor, nullptr, w, h, fps, bps, Rate::Cbr, Preset::Balanced, &err);
+        ObjectPool<PacketRef> probe_packets{256, 4096};
+        auto enc = MfEncoder::create(codec, vendor, nullptr, w, h, fps, bps, Rate::Cbr, Preset::Balanced,
+                                     &probe_packets, &err);
         if (!enc)
         {
             if (hr_out)
