@@ -558,7 +558,7 @@ static std::wstring default_icon_path()
         dir.resize(slash);
     }
     const wchar_t *candidates[] = {
-        L"\\assets\\icons\\clapperboard.png",
+        L"\\assets\\icons\\icon.png",
         L"\\assets\\icons\\icon.ico",
         L"\\assets\\icon.ico",
         L"\\icon.ico",
