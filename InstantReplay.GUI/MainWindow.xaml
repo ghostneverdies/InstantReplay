@@ -657,7 +657,7 @@
                                         Spacing="14">
                                 <Image Width="42"
                                        Height="42"
-                                       Source="ms-appx:///assets/icons/clapperboard.png"
+                                       Source="ms-appx:///assets/icons/icon.png"
                                        Stretch="Uniform"
                                        Opacity="0.38"
                                        VerticalAlignment="Center"/>
