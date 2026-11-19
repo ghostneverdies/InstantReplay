@@ -612,7 +612,8 @@ namespace ir
                 {
                     const int64_t fps = std::max<int64_t>(1, target_.fps);
                     WF::TimeSpan interval = {};
-                    interval.Duration = std::clamp<int64_t>(SECOND_100NS / fps, 10'000, 1'000'000);
+                    // Feed WGC at twice the target rate; FramePacer remains the FPS limiter.
+                    interval.Duration = std::clamp<int64_t>(SECOND_100NS / (int64_t)fps / 2, 10'000, 1'000'000);
                     s5->put_MinUpdateInterval(interval);
                 }
                 if (target_.options & CAP_SECONDARY)
@@ -944,7 +945,7 @@ VSOut vs(uint id : SV_VertexID)
     VSOut o;
     float2 p = float2(float((id << 1) & 2), float(id & 2));
     o.pos = float4(p * 2.0 - 1.0, 0.0, 1.0);
-    o.uv = p * 0.5;
+    o.uv = float2(p.x, 1.0f - p.y);
     return o;
 }
 Texture2D sprite : register(t0);
@@ -1065,7 +1066,8 @@ float4 ps(VSOut i) : SV_TARGET
                     if (FAILED(dev->CreateShaderResourceView(sprite_.Get(), nullptr, sprite_srv_.GetAddressOf())))
                         return;
                 }
-                ctx->UpdateSubresource(sprite_.Get(), 0, nullptr, pixels.data(), rw * 4, 0);
+                D3D11_BOX box = {0, 0, 0, rw, rh, 1};
+                ctx->UpdateSubresource(sprite_.Get(), 0, &box, pixels.data(), rw * 4, 0);
 
                 ID3D11RenderTargetView *prev_rtv = nullptr;
                 ctx->OMGetRenderTargets(1, &prev_rtv, nullptr);
