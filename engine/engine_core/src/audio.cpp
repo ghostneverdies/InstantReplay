@@ -453,6 +453,8 @@ namespace ir
         bool have_silence = !mic_ && device && silence.start(device.Get());
         const bool process_loopback = process_audio;
         int64_t last_packet = qpc100ns();
+        int64_t last_good_qpc = 0;
+        uint32_t last_good_frames = 0;
         bool ok = true;
         std::vector<int16_t> packet;
 
@@ -529,14 +531,30 @@ namespace ir
                 if (got_audio)
                     counters_->got_frames += out_frames;
                 counters_->peak = peak_of(packet.data(), packet.size());
-                // qpc from WASAPI is already in 100 ns units.
-                const int64_t t = (qpc == 0 || (bflags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR)) ? qpc100ns() : (int64_t)qpc;
+                // qpc from WASAPI is already in 100 ns units. A bad timestamp must not
+                // be replaced by the processing clock: that can move a packet up to
+                // 50 ms late and make the next valid packet look like a backward jump.
+                int64_t t = 0;
+                if (qpc && !(bflags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR))
+                {
+                    t = (int64_t)qpc;
+                    last_good_qpc = t;
+                    last_good_frames = out_frames;
+                }
+                else if (last_good_qpc)
+                {
+                    t = last_good_qpc + (int64_t)last_good_frames * SECOND_100NS / AUDIO_RATE;
+                    last_good_qpc = t;
+                    last_good_frames = out_frames;
+                }
+                else
+                    t = qpc100ns();
                 if (out_frames)
                     push_(packet.data(), out_frames, t);
             }
             if (received)
                 last_packet = qpc100ns();
-            else if (process_loopback && qpc100ns() - last_packet >= 15'000'000)
+            else if (process_loopback && qpc100ns() - last_packet >= SECOND_100NS)
                 ok = false; // process went quiet/away
         }
         client->Stop();
