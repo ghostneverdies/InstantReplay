@@ -1063,7 +1063,8 @@ namespace ir
         MfEncoder &operator=(const MfEncoder &) = delete;
 
         static std::unique_ptr<MfEncoder> create(MfCodec codec, MfVendor vendor, const GpuContext *gpu, int w, int h, int fps,
-                                                 uint32_t bps, Rate rate, Preset preset, std::string *err);
+                                                 uint32_t bps, Rate rate, Preset preset, ObjectPool<PacketRef> *packets,
+                                                 std::string *err);
         bool encode_texture(ID3D11Texture2D *nv12, int64_t pts100ns, bool idr,
                             std::vector<Ref<PacketRef>> &out, std::string *err);
         bool encode_memory(const uint8_t *y, size_t y_stride, const uint8_t *uv, size_t uv_stride,
