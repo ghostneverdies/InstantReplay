@@ -243,7 +243,7 @@ internal static class OverlayBridge
         string root = AppContext.BaseDirectory;
         string[] candidates =
         [
-            Path.Combine(root, "assets", "icons", "clapperboard.png"),
+            Path.Combine(root, "assets", "icons", "icon.png"),
             Path.Combine(root, "assets", "icons", "icon.ico"),
             Path.Combine(root, "assets", "icon.ico"),
             Path.Combine(root, "icon.ico"),
