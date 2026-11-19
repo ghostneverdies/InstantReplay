@@ -24,7 +24,7 @@
 - Two replay targets: Whole Desktop and Game Capture, with offline game detection and custom executable rules
 - Capture method: Windows Graphics Capture for games and windows, or DXGI Desktop Duplication for whole-desktop and exclusive-fullscreen capture
 - The clip card is drawn inside supported Direct3D 9/11/12 and OpenGL games (fullscreen and windowed); protected anti-cheat games are never injected and use the external popup
-- Video encoder (Windows Media Foundation): Auto, Intel Quick Sync, Intel Gen12 / Arc (VP12), NVIDIA, AMD or the system-memory software MFT, with encoders detected by encoding real test frames at first launch (re-runnable under Advanced), CBR/VBR rate control and a speed/quality preset
+- Video encoder (Windows Media Foundation): Auto, Intel Quick Sync, Intel Gen12 / Arc (VP12), NVIDIA, AMD or the system-memory software MFT, with encoders detected by encoding real test frames at first launch and unavailable choices disabled, CBR/VBR rate control and a speed/quality preset
 - MP4 output with AAC audio
 - Gallery with thumbnails, inline playback, optional fullscreen, seeking, volume and "show in folder"
 - Home page with a status/hotkey hero card, Save Replay / Start Replay actions, and live CPU and memory cards with sparkline history
@@ -159,9 +159,11 @@ Other resolutions use the same table scaled by `clamp(width × height / (1920 ×
 
 These are bitrate targets, not fixed output file sizes; static scenes can use less data. The AVC/H.264 path internally requests more bits per second than the HEVC tiers shown here (about 18 / 28 / 40 Mbps at 60 fps for Low / Balanced / High) so quality stays comparable. Existing `Fast` and `Quality` settings remain compatible with Low and High. Quality does not change the selected encoder or frame-pacing behavior.
 
+**buffer method** under Advanced is `Continuous` or `Segmented`. Continuous saves the requested replay window from the nearest usable keyframe and stamps the keyframe pre-roll at zero so the MP4 still ends at the selected duration. Segmented forces an IDR once per second, then attaches exactly the requested number of one-second segments in order on one MP4 timeline. Both methods cap the save to the selected number of seconds rather than adding a partial keyframe interval.
+
 **Whole Desktop** captures the selected monitor and system audio. It bypasses all game detection, focus switching and automatic pausing.
 
-**Show mouse cursor** enables or hides the recorded pointer for both WGC and DXGI. Apply changes to restart the buffer with the selected visibility. DXGI retains the last desktop image for cursor-only updates and composites the current pointer separately. The pointer is drawn with GDI onto the retained desktop image, which preserves color, masked-color and monochrome cursors. Frames are scaled and converted on the GPU with the embedded compute-shader bytecode and read back through a staging ring one frame late, so mapping a frame never stalls the GPU.
+**Show mouse cursor** enables or hides the recorded pointer for both WGC and DXGI. Apply changes to restart the buffer with the selected visibility. DXGI retains the last desktop image for cursor-only updates and composites the current pointer separately. The pointer is rendered as a GPU sprite from the current cursor bitmap, which preserves color, masked-color and monochrome cursors. Frames are scaled and converted on the GPU with the embedded compute-shader bytecode and read back through a staging ring one frame late, so mapping a frame never stalls the GPU.
 
 WGC polls its frame pool at 1 ms resolution and uses the frames' own system-relative timestamps; DXGI uses the duplication present time. Frames with duplicate or out-of-order timestamps are dropped, and after a stall capture resumes from fresh source frames instead of generating catch-up frames. The FPS setting remains a ceiling: source rendering, system load, and encoder throughput determine actual delivery. Static or paused scenes are not padded with artificial duplicate frames.
 
