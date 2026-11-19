@@ -2004,8 +2004,11 @@ public partial class MainWindow : Window
     private void LogDebugStats()
     {
         if (!_engine.IsRunning) return;
-        long memMb = Environment.WorkingSet / (1024 * 1024);
-        Logger.Debug($"Buffer Status - Duration: {_settings.ReplayDurationSeconds}s, Memory: {memMb} MB");
+        var profile = VideoQualityProfile.FromPreset(_settings.QualityPreset, _settings.FrameRate);
+        long estimatedMb = Math.Min(512L,
+            (long)profile.BitrateKbps * _settings.ReplayDurationSeconds / 8 / 1024);
+        Logger.Debug($"Buffer Status - Duration: {_settings.ReplayDurationSeconds}s, " +
+                     $"Estimated buffer: ~{estimatedMb} MB (cap 512 MB)");
         _engine.LogDebugDiagnostics();
     }
 
