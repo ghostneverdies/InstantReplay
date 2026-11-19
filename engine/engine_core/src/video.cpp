@@ -4245,8 +4245,8 @@ namespace ir
     VideoOptions options_from_pref(int pref, int w, int h, int fps, uint32_t bps)
     {
         VideoOptions o;
-        // pref layout: bits 0..7 encoder, bit 8 rate, bits 12..14 preset,
-        // bits 15..16 codec, bits 24..31 compact availability.
+        // pref layout: bits 0..7 encoder, bit 8 rate, bit 9 buffer method,
+        // bits 12..14 preset, bits 15..16 codec, bits 24..31 compact availability.
         switch (pref & 0xff)
         {
         case 5: o.enc = Enc::MfQsv; break;
@@ -4257,6 +4257,7 @@ namespace ir
         default: o.enc = Enc::Auto; break;
         }
         o.rate = (pref & 0x100) ? Rate::Vbr : Rate::Cbr;
+        o.segmented = (pref & 0x200) != 0;
         o.preset = (Preset)std::clamp((pref >> 12) & 7, 0, 6);
         const int codec_bits = (pref >> 15) & 3;
         o.codec = codec_bits == 1   ? CodecSel::Hevc
@@ -4637,7 +4638,7 @@ namespace ir
 
     int write_mf_file(const std::wstring &path, const std::vector<Ref<PacketRef>> &video,
                       const std::vector<AudioChunk> &audio, CodecSel codec, int fps, int w, int h, int seconds_back,
-                      int64_t end_time)
+                      int64_t end_time, bool segmented)
     {
         auto fail = [](const char *m)
         { set_last_error(m); return IR_FAIL; };
@@ -4657,7 +4658,15 @@ namespace ir
         fps = std::max(1, fps);
         w = std::max(2, w);
         h = std::max(2, h);
-        const int64_t trim_start = seconds_back > 0 ? end_time - (int64_t)seconds_back * SECOND_100NS : INT64_MIN;
+        const int64_t requested_duration =
+            seconds_back > 0 ? (int64_t)seconds_back * SECOND_100NS : 0;
+        const int64_t trim_start = seconds_back > 0 ? end_time - requested_duration : INT64_MIN;
+
+        std::vector<size_t> key_indices;
+        key_indices.reserve(pkts.size());
+        for (size_t i = 0; i < pkts.size(); ++i)
+            if (pkts[i]->keyframe)
+                key_indices.push_back(i);
 
         size_t start = 0;
         if (seconds_back > 0)
@@ -4672,27 +4681,119 @@ namespace ir
             }
             if (before >= 0)
                 start = (size_t)before;
+            else if (!key_indices.empty())
+                start = key_indices.front();
+        }
+
+        // Segmented mode forces one IDR per second. Pick exactly the requested
+        // number of one-second segments ending at the save boundary; choosing
+        // every keyframe from the old GOP-aligned start added a whole segment.
+        std::vector<int64_t> seg_starts;
+        bool exact_cap = false;
+        if (segmented)
+        {
+            size_t seg_first = 0;
+            if (seconds_back > 0 && !key_indices.empty())
+            {
+                size_t at_or_after = 0;
+                while (at_or_after < key_indices.size() &&
+                       pkts[key_indices[at_or_after]]->pts100ns <= trim_start)
+                    ++at_or_after;
+                seg_first = at_or_after > 0 ? at_or_after - 1 : 0;
+                const size_t needed = (size_t)seconds_back;
+                if (key_indices.size() - seg_first >= needed)
+                {
+                    exact_cap = true;
+                    start = key_indices[seg_first];
+                    for (size_t i = 0; i < needed; ++i)
+                        seg_starts.push_back(pkts[key_indices[seg_first + i]]->pts100ns);
+                }
+                else
+                {
+                    start = key_indices[seg_first];
+                    for (size_t i = seg_first; i < key_indices.size(); ++i)
+                        seg_starts.push_back(pkts[key_indices[i]]->pts100ns);
+                }
+            }
             else
             {
-                start = pkts.size();
-                for (size_t i = 0; i < pkts.size(); ++i)
-                    if (pkts[i]->keyframe)
+                for (size_t i = 0; i < key_indices.size(); ++i)
+                {
+                    if (key_indices[i] >= start)
                     {
-                        start = i;
+                        for (; i < key_indices.size(); ++i)
+                            seg_starts.push_back(pkts[key_indices[i]]->pts100ns);
                         break;
                     }
-                if (start == pkts.size())
-                    start = 0;
+                }
             }
+            if (seg_starts.empty())
+                seg_starts.push_back(pkts[start]->pts100ns);
         }
+
         const size_t count = pkts.size() - start;
-        const int64_t first_pts = (count == 1 && trim_start != INT64_MIN)
-                                      ? std::max(pkts[start]->pts100ns, trim_start)
-                                      : pkts[start]->pts100ns;
+        const int64_t first_pts = pkts[start]->pts100ns;
         const int64_t frame_dur = SECOND_100NS / fps;
         const int64_t last_end = std::max(end_time, pkts[start + count - 1]->pts100ns + frame_dur);
         if (last_end - first_pts < SECOND_100NS / 2)
             return IR_NOT_ENOUGH_DATA;
+
+        // In continuous mode the previous keyframe can be up to one two-second
+        // GOP before the requested start. Keep it as the decode pre-roll, but
+        // stamp everything before the requested start at zero so the output
+        // timeline still ends at exactly X seconds.
+        if (!segmented && seconds_back > 0 &&
+            end_time - first_pts >= requested_duration - std::min<int64_t>(SECOND_100NS, 2 * frame_dur))
+            exact_cap = true;
+
+        const int64_t out_end = exact_cap && !segmented
+                                    ? requested_duration
+                                    : (segmented ? (int64_t)seg_starts.size() * SECOND_100NS
+                                                 : std::max<int64_t>(0, last_end - first_pts));
+
+        auto mapped_video_pts = [&](int64_t pts) -> int64_t
+        {
+            if (segmented)
+            {
+                const auto it = std::upper_bound(seg_starts.begin(), seg_starts.end(), pts);
+                const size_t si = it == seg_starts.begin() ? 0 : (size_t)(it - seg_starts.begin() - 1);
+                const int64_t origin = seg_starts[si];
+                int64_t rel = std::max<int64_t>(0, pts - origin);
+                const int64_t next = si + 1 < seg_starts.size() ? seg_starts[si + 1] : end_time;
+                const int64_t limit = std::min<int64_t>(SECOND_100NS, std::max<int64_t>(1, next - origin));
+                if (limit > 0 && rel >= limit)
+                    rel = limit > frame_dur ? limit - frame_dur : 0;
+                return std::clamp<int64_t>((int64_t)si * SECOND_100NS + rel, 0, out_end - 1);
+            }
+            if (exact_cap)
+            {
+                if (pts <= trim_start)
+                    return 0;
+                return std::clamp<int64_t>(pts - trim_start, 0, out_end - 1);
+            }
+            return std::max<int64_t>(0, pts - first_pts);
+        };
+        struct TimeRange
+        {
+            int64_t begin;
+            int64_t end;
+            int64_t out_base;
+        };
+        std::vector<TimeRange> audio_ranges;
+        if (segmented)
+        {
+            for (size_t i = 0; i < seg_starts.size(); ++i)
+            {
+                const int64_t next = i + 1 < seg_starts.size() ? seg_starts[i + 1] : end_time;
+                const int64_t end = std::min(next, seg_starts[i] + SECOND_100NS);
+                if (end > seg_starts[i])
+                    audio_ranges.push_back({seg_starts[i], end, (int64_t)i * SECOND_100NS});
+            }
+        }
+        else if (exact_cap)
+            audio_ranges.push_back({trim_start, end_time, 0});
+        else
+            audio_ranges.push_back({first_pts, last_end, 0});
 
         const bool av1 = codec == CodecSel::Av1;
         const bool hevc = codec == CodecSel::Hevc;
@@ -4847,6 +4948,7 @@ namespace ir
             const uint8_t *data;
             size_t size;
             bool key;
+            int64_t duration;
         };
         struct AudioWrite
         {
@@ -4862,14 +4964,26 @@ namespace ir
         for (size_t i = start; i < pkts.size(); ++i)
         {
             const auto &p = *pkts[i];
-            const int64_t rel = std::max<int64_t>(0, p.pts100ns - first_pts);
-            int64_t pts = rel > previous ? rel : previous + 1;
+            int64_t pts = mapped_video_pts(p.pts100ns);
+            if (pts <= previous)
+                pts = previous + 1;
             previous = pts;
             const size_t pre_skip = av1 ? 0 : std::min(p.codec_data, p.payload.size());
             const size_t n = p.payload.size() - pre_skip;
             if (!n)
                 continue;
-            video_writes.push_back({pts, p.payload.data() + pre_skip, n, p.keyframe});
+            video_writes.push_back({pts, p.payload.data() + pre_skip, n, p.keyframe, frame_dur});
+        }
+        // The sink derives the MP4 sample table from these durations. Spreading
+        // the final partial interval across the last sample is what closes the
+        // requested X-second cap instead of rounding to a whole GOP.
+        for (size_t i = 0; i < video_writes.size(); ++i)
+        {
+            if (!exact_cap && !segmented)
+                continue;
+            const int64_t next = i + 1 < video_writes.size() ? video_writes[i + 1].pts : out_end;
+            video_writes[i].duration = std::clamp<int64_t>(next - video_writes[i].pts, 1,
+                                                           out_end - video_writes[i].pts);
         }
 
         std::vector<AudioWrite> audio_writes;
@@ -4878,30 +4992,44 @@ namespace ir
             // Half-second PCM chunks (24 000 frames at 48 kHz) keep the
             // interleaver fed without building one multi-megabyte sample.
             const int64_t chunk_frames = std::max<int64_t>(1, AUDIO_RATE / 2);
+            const int64_t frame_tick = SECOND_100NS / AUDIO_RATE;
+            auto ceil_frames = [&](int64_t delta) -> int64_t
+            {
+                return (delta * AUDIO_RATE + SECOND_100NS - 1) / SECOND_100NS;
+            };
+            const int64_t range_begin = audio_ranges.front().begin;
+            const int64_t range_end = audio_ranges.back().end;
             for (const auto &c : audio)
             {
-                const int64_t dur = (int64_t)c.frames * SECOND_100NS / AUDIO_RATE;
-                if (c.pts100ns + dur <= first_pts || c.pts100ns >= last_end)
+                if (!c.data || c.frames == 0)
                     continue;
-                int64_t skip = 0, keep = c.frames;
-                if (c.pts100ns < first_pts)
-                    skip = (first_pts - c.pts100ns) * AUDIO_RATE / SECOND_100NS;
-                const int64_t end_frame = (last_end - c.pts100ns) * AUDIO_RATE / SECOND_100NS;
-                if (end_frame < keep)
-                    keep = end_frame;
-                keep -= skip;
-                if (keep <= 0 || !c.data)
+                const int64_t chunk_end = c.pts100ns + (int64_t)c.frames * frame_tick;
+                if (chunk_end <= range_begin || c.pts100ns >= range_end)
                     continue;
-                const int64_t stop = skip + keep;
-                for (int64_t off = skip; off < stop; off += chunk_frames)
+                for (const auto &range : audio_ranges)
                 {
-                    const int64_t frames = std::min(chunk_frames, stop - off);
-                    const int64_t pts = std::max<int64_t>(
-                        0, c.pts100ns - first_pts + off * SECOND_100NS / AUDIO_RATE);
-                    audio_writes.push_back({pts,
-                                            c.data + off * AUDIO_CHANNELS * sizeof(int16_t),
-                                            (size_t)frames * AUDIO_CHANNELS * sizeof(int16_t),
-                                            frames * SECOND_100NS / AUDIO_RATE});
+                    const int64_t from = std::max(c.pts100ns, range.begin);
+                    const int64_t to = std::min(chunk_end, range.end);
+                    if (to <= from)
+                        continue;
+                    int64_t off = ceil_frames(from - c.pts100ns);
+                    int64_t stop = ceil_frames(to - c.pts100ns);
+                    off = std::clamp<int64_t>(off, 0, c.frames);
+                    stop = std::clamp<int64_t>(stop, 0, c.frames);
+                    const int64_t span = range.end - range.begin;
+                    for (int64_t at = off; at < stop; at += chunk_frames)
+                    {
+                        const int64_t frames = std::min(chunk_frames, stop - at);
+                        int64_t rel = c.pts100ns + at * frame_tick - range.begin;
+                        if (rel < 0)
+                            rel = 0;
+                        if (rel >= span)
+                            rel = span > frame_tick ? span - frame_tick : 0;
+                        audio_writes.push_back({range.out_base + rel,
+                                                c.data + (size_t)at * AUDIO_CHANNELS * sizeof(int16_t),
+                                                (size_t)frames * AUDIO_CHANNELS * sizeof(int16_t),
+                                                frames * frame_tick});
+                    }
                 }
             }
         }
@@ -4926,7 +5054,7 @@ namespace ir
             else
             {
                 const VideoWrite &v = video_writes[vi++];
-                hr = create_memory_sample(v.data, v.size, v.pts, frame_dur, v.key, &sample);
+                hr = create_memory_sample(v.data, v.size, v.pts, v.duration, v.key, &sample);
                 if (SUCCEEDED(hr) && sample)
                     hr = writer->WriteSample(video_stream, sample.Get());
                 if (FAILED(hr))
