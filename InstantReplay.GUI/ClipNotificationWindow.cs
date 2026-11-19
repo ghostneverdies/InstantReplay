@@ -26,8 +26,11 @@ public sealed class ClipNotificationWindow : Window
     private readonly TranslateTransform _textShift = new();
     private readonly Border _accent;
     private readonly Image _staticIcon;
-    private readonly MediaPlayerElement _animatedIcon;
-    private readonly Windows.Media.Playback.MediaPlayer _animationPlayer;
+    private readonly CompositeTransform _iconTransform = new();
+    private readonly Microsoft.UI.Xaml.Shapes.Ellipse _pulse;
+    private readonly CompositeTransform _pulseTransform = new();
+    private readonly Grid _checkBadge;
+    private readonly CompositeTransform _badgeTransform = new();
     private readonly Grid _progressTrack;
     private readonly Microsoft.UI.Xaml.Shapes.Rectangle _progressFill;
     private readonly DispatcherTimer _lifetime = new() { Interval = TimeSpan.FromMilliseconds(2700) };
@@ -35,7 +38,7 @@ public sealed class ClipNotificationWindow : Window
     private int _motionFrom, _motionTo, _motionDuration, _currentX, _shownX, _hiddenX, _y;
     private int _progressPercent;
     private bool _leaving, _animating, _visible;
-    private bool _animationReady, _playWhenOpened;
+    private Storyboard? _completionStoryboard;
     private State _state;
 
     private enum State { Idle, Encoding, Success, Failure }
@@ -78,7 +81,14 @@ public sealed class ClipNotificationWindow : Window
         var content = new Grid { ColumnSpacing = 16, Margin = new Thickness(22, 16, 20, 16) };
         content.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         content.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        _staticIcon = new Image { Width = 54, Height = 54, Stretch = Stretch.Uniform };
+        _staticIcon = new Image
+        {
+            Width = 54,
+            Height = 54,
+            Stretch = Stretch.Uniform,
+            RenderTransformOrigin = new Windows.Foundation.Point(0.5, 0.5),
+            RenderTransform = _iconTransform
+        };
         string[] iconPaths = {
             Path.Combine(AppContext.BaseDirectory, "assets", "icons", "clapperboard.png"),
             Path.Combine(AppContext.BaseDirectory, "assets", "icons", "icon.ico"),
@@ -88,47 +98,60 @@ public sealed class ClipNotificationWindow : Window
         string? iconPath = Array.Find(iconPaths, File.Exists);
         if (iconPath != null)
             _staticIcon.Source = new Microsoft.UI.Xaml.Media.Imaging.BitmapImage(new Uri(iconPath));
-        _animationPlayer = new Windows.Media.Playback.MediaPlayer
-        {
-            AutoPlay = false,
-            IsLoopingEnabled = true,
-            IsMuted = true
-        };
-        string animationPath = OverlayBridge.AnimationPath();
-        if (animationPath.Length > 0)
-            _animationPlayer.Source = Windows.Media.Core.MediaSource.CreateFromUri(new Uri(animationPath));
-        _animationPlayer.MediaOpened += (_, _) =>
-        {
-            _animationReady = true;
-            if (!_playWhenOpened) return;
-            _playWhenOpened = false;
-            DispatcherQueue.TryEnqueue(StartAnimationPlayback);
-        };
-        _animationPlayer.MediaFailed += (_, args) =>
-        {
-            _animationReady = false;
-            _playWhenOpened = false;
-            Logger.Warn($"Clip notification animation failed to play: {args.Error} 0x{args.ExtendedErrorCode?.HResult ?? 0:X8} {args.ErrorMessage}");
-            DispatcherQueue.TryEnqueue(ShowStaticIcon);
-        };
-        _animatedIcon = new MediaPlayerElement
+
+        _pulse = new Microsoft.UI.Xaml.Shapes.Ellipse
         {
             Width = 54,
             Height = 54,
-            AreTransportControlsEnabled = false,
-            Stretch = Stretch.Uniform,
-            Visibility = Visibility.Collapsed,
+            Stroke = new SolidColorBrush(SuccessAccent),
+            StrokeThickness = 2,
+            Opacity = 0,
+            RenderTransformOrigin = new Windows.Foundation.Point(0.5, 0.5),
+            RenderTransform = _pulseTransform,
             IsHitTestVisible = false
         };
-        _animatedIcon.SetMediaPlayer(_animationPlayer);
+
+        _checkBadge = new Grid
+        {
+            Width = 20,
+            Height = 20,
+            Margin = new Thickness(0, 0, -2, -2),
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Bottom,
+            Opacity = 0,
+            RenderTransformOrigin = new Windows.Foundation.Point(0.5, 0.5),
+            RenderTransform = _badgeTransform,
+            IsHitTestVisible = false
+        };
+        _checkBadge.Children.Add(new Microsoft.UI.Xaml.Shapes.Ellipse
+        {
+            Fill = new SolidColorBrush(SuccessAccent)
+        });
+        var checkStroke = new SolidColorBrush(Colors.White);
+        _checkBadge.Children.Add(new Microsoft.UI.Xaml.Shapes.Line
+        {
+            X1 = 4, Y1 = 10, X2 = 8, Y2 = 14,
+            Stroke = checkStroke,
+            StrokeThickness = 2.2,
+            StrokeLineJoin = PenLineJoin.Round
+        });
+        _checkBadge.Children.Add(new Microsoft.UI.Xaml.Shapes.Line
+        {
+            X1 = 8, Y1 = 14, X2 = 16, Y2 = 5,
+            Stroke = checkStroke,
+            StrokeThickness = 2.2,
+            StrokeLineJoin = PenLineJoin.Round
+        });
+
         var iconContent = new Grid
         {
             Width = 54,
             Height = 54,
             VerticalAlignment = VerticalAlignment.Center
         };
+        iconContent.Children.Add(_pulse);
         iconContent.Children.Add(_staticIcon);
-        iconContent.Children.Add(_animatedIcon);
+        iconContent.Children.Add(_checkBadge);
         content.Children.Add(iconContent);
         Grid.SetColumn(_textStack, 1);
         content.Children.Add(_textStack);
@@ -194,8 +217,8 @@ public sealed class ClipNotificationWindow : Window
         Closed += (_, _) =>
         {
             _lifetime.Stop();
+            _completionStoryboard?.Stop();
             StopFrames();
-            _animationPlayer.Dispose();
             _instance = null;
         };
     }
@@ -225,35 +248,12 @@ public sealed class ClipNotificationWindow : Window
         try
         {
             _instance = new ClipNotificationWindow();
-            _instance.PrimeAnimation();
-            Logger.Debug("Clip notification animation pre-cached and warmed up.");
+            Logger.Debug("Clip notification warmed up.");
         }
         catch (Exception ex)
         {
             Logger.Debug($"Clip notification warm-up failed: {ex.Message}");
             _instance = null;
-        }
-    }
-
-    private void PrimeAnimation()
-    {
-        if (_animationPlayer.Source == null)
-        {
-            string path = OverlayBridge.AnimationPath();
-            if (path.Length == 0) return;
-            _animationPlayer.Source = Windows.Media.Core.MediaSource.CreateFromUri(new Uri(path));
-        }
-        try
-        {
-            _animationPlayer.Play();
-            _animationPlayer.Pause();
-            var session = _animationPlayer.PlaybackSession;
-            if (session != null) session.Position = TimeSpan.Zero;
-        }
-        catch (Exception ex)
-        {
-            Logger.Debug($"Clip notification animation warm-up failed: {ex.Message}");
-            _animationReady = false;
         }
     }
 
@@ -311,7 +311,7 @@ public sealed class ClipNotificationWindow : Window
     {
         _state = State.Encoding;
         _lifetime.Stop();
-        ShowStaticIcon();
+        ResetCompletionAnimation();
         _progressPercent = 0;
         _progressFill.Width = 0;
         Morph("Clipping…", "Preparing clip…", SuccessAccent, showProgress: true);
@@ -344,59 +344,49 @@ public sealed class ClipNotificationWindow : Window
         _lifetime.Start();
     }
 
-    private void ShowStaticIcon()
+    private void ResetCompletionAnimation()
     {
-        _playWhenOpened = false;
-        try { _animationPlayer.Pause(); }
-        catch (Exception ex) { Logger.Debug($"Clip animation pause failed: {ex.Message}"); }
-        _staticIcon.Visibility = Visibility.Visible;
-        _animatedIcon.Visibility = Visibility.Collapsed;
+        _completionStoryboard?.Stop();
+        _completionStoryboard = null;
+        _iconTransform.ScaleX = _iconTransform.ScaleY = 1;
+        _pulseTransform.ScaleX = _pulseTransform.ScaleY = 1;
+        _pulse.Opacity = 0;
+        _badgeTransform.ScaleX = _badgeTransform.ScaleY = 1;
+        _checkBadge.Opacity = 0;
     }
 
     private void PlayCompletionAnimation()
     {
-        if (_animationPlayer.Source == null)
-        {
-            string path = OverlayBridge.AnimationPath();
-            if (path.Length == 0)
-            {
-                ShowStaticIcon();
-                return;
-            }
-            try
-            {
-                _animationReady = false;
-                _animationPlayer.Source = Windows.Media.Core.MediaSource.CreateFromUri(new Uri(path));
-            }
-            catch (Exception ex)
-            {
-                Logger.Warn($"Clip notification animation unavailable: {ex.Message}");
-                ShowStaticIcon();
-                return;
-            }
-        }
-        if (_animationReady)
-        {
-            DispatcherQueue.TryEnqueue(StartAnimationPlayback);
-            return;
-        }
-        _playWhenOpened = true;
+        ResetCompletionAnimation();
+        var storyboard = new Storyboard();
+        AddKeys(storyboard, _iconTransform, "ScaleX", (0, 1), (140, 1.12), (300, 0.96), (420, 1));
+        AddKeys(storyboard, _iconTransform, "ScaleY", (0, 1), (140, 1.12), (300, 0.96), (420, 1));
+        AddKeys(storyboard, _pulseTransform, "ScaleX", (0, 0.72), (620, 1.28));
+        AddKeys(storyboard, _pulseTransform, "ScaleY", (0, 0.72), (620, 1.28));
+        AddKeys(storyboard, _pulse, "Opacity", (0, 0), (80, 0.9), (620, 0));
+        AddKeys(storyboard, _badgeTransform, "ScaleX", (0, 0), (220, 1.14), (380, 1));
+        AddKeys(storyboard, _badgeTransform, "ScaleY", (0, 0), (220, 1.14), (380, 1));
+        AddKeys(storyboard, _checkBadge, "Opacity", (0, 0), (80, 1));
+        _completionStoryboard = storyboard;
+        storyboard.Begin();
     }
 
-    private void StartAnimationPlayback()
+    private static void AddKeys(Storyboard storyboard, DependencyObject target, string property,
+        params (int Ms, double Value)[] keys)
     {
-        try
+        var animation = new DoubleAnimationUsingKeyFrames();
+        foreach (var (ms, value) in keys)
         {
-            var session = _animationPlayer.PlaybackSession;
-            if (session != null) session.Position = TimeSpan.Zero;
-            _animatedIcon.Visibility = Visibility.Visible;
-            _animationPlayer.Play();
+            animation.KeyFrames.Add(new EasingDoubleKeyFrame
+            {
+                KeyTime = KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(ms)),
+                Value = value,
+                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+            });
         }
-        catch (Exception ex)
-        {
-            Logger.Warn($"Clip notification animation could not start: {ex.Message}");
-            ShowStaticIcon();
-        }
+        Storyboard.SetTarget(animation, target);
+        Storyboard.SetTargetProperty(animation, property);
+        storyboard.Children.Add(animation);
     }
 
     private void ApplyProgressWidth()
@@ -527,7 +517,7 @@ public sealed class ClipNotificationWindow : Window
     private void HideSafely()
     {
         _lifetime.Stop();
-        ShowStaticIcon();
+        ResetCompletionAnimation();
         StopFrames();
         _visible = false;
         try
