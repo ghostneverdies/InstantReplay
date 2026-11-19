@@ -1127,8 +1127,24 @@ namespace ir
             flush_audio_accumulator(false); // never bridge a pause boundary
             return;
         }
-        if (sys_acc_.frames && sys_acc_.pts >= 0 && pts < sys_acc_.pts)
-            flush_audio_accumulator(false);
+        if (sys_acc_.frames && sys_acc_.pts >= 0)
+        {
+            if (pts < sys_acc_.pts)
+                flush_audio_accumulator(false);
+            else
+            {
+                const int64_t end = sys_acc_.pts + sys_acc_.frames * SECOND_100NS / AUDIO_RATE;
+                const int64_t gap = pts - end;
+                if (gap >= 2 * SECOND_100NS)
+                    flush_audio_accumulator(false); // source restart: leave a real gap
+                else if (gap > SECOND_100NS / AUDIO_RATE)
+                {
+                    const uint32_t missing = (uint32_t)(gap * AUDIO_RATE / SECOND_100NS);
+                    sys_acc_.pcm.insert(sys_acc_.pcm.end(), (size_t)missing * AUDIO_CHANNELS, 0);
+                    sys_acc_.frames += missing;
+                }
+            }
+        }
         if (!sys_acc_.frames)
             sys_acc_.pts = pts;
         sys_acc_.pcm.insert(sys_acc_.pcm.end(), data, data + (size_t)frames * AUDIO_CHANNELS);
@@ -1145,8 +1161,24 @@ namespace ir
             flush_audio_accumulator(true);
             return;
         }
-        if (mic_acc_.frames && mic_acc_.pts >= 0 && pts < mic_acc_.pts)
-            flush_audio_accumulator(true);
+        if (mic_acc_.frames && mic_acc_.pts >= 0)
+        {
+            if (pts < mic_acc_.pts)
+                flush_audio_accumulator(true);
+            else
+            {
+                const int64_t end = mic_acc_.pts + mic_acc_.frames * SECOND_100NS / AUDIO_RATE;
+                const int64_t gap = pts - end;
+                if (gap >= 2 * SECOND_100NS)
+                    flush_audio_accumulator(true);
+                else if (gap > SECOND_100NS / AUDIO_RATE)
+                {
+                    const uint32_t missing = (uint32_t)(gap * AUDIO_RATE / SECOND_100NS);
+                    mic_acc_.pcm.insert(mic_acc_.pcm.end(), missing, 0); // mono
+                    mic_acc_.frames += missing;
+                }
+            }
+        }
         if (!mic_acc_.frames)
             mic_acc_.pts = pts;
         mic_acc_.pcm.insert(mic_acc_.pcm.end(), data, data + frames); // mono
@@ -1669,53 +1701,6 @@ namespace ir
         }
     }
 
-    // A source that stops and restarts can jump straight from a waveform to
-    // zero (or back), which decodes as a click. Fade a short ramp at the edges
-    // of sustained silence in the saved mix only; the live capture path is untouched.
-    static void fade_silence_edges(std::vector<int16_t> &pcm)
-    {
-        const size_t frames = pcm.size() / 2;
-        if (frames < 32)
-            return;
-        constexpr int threshold = 12;
-        constexpr size_t min_silence = 480; // 10 ms at 48 kHz
-        constexpr size_t fade = 240;        // 5 ms at 48 kHz
-        std::vector<uint16_t> amp(frames);
-        for (size_t i = 0; i < frames; ++i)
-        {
-            const int l = std::abs((int)pcm[i * 2]);
-            const int r = std::abs((int)pcm[i * 2 + 1]);
-            amp[i] = (uint16_t)std::max(l, r);
-        }
-        auto scale = [&](size_t frame, float factor)
-        {
-            pcm[frame * 2] = (int16_t)std::clamp((int)std::lround((int)pcm[frame * 2] * factor), -32768, 32767);
-            pcm[frame * 2 + 1] =
-                (int16_t)std::clamp((int)std::lround((int)pcm[frame * 2 + 1] * factor), -32768, 32767);
-        };
-        for (size_t s = 0; s < frames;)
-        {
-            if (amp[s] > threshold)
-            {
-                ++s;
-                continue;
-            }
-            size_t e = s;
-            while (e < frames && amp[e] <= threshold)
-                ++e;
-            if (e - s >= min_silence)
-            {
-                const size_t begin = s > fade ? s - fade : 0;
-                for (size_t i = begin; i < s; ++i)
-                    scale(i, (float)(s - i) / (float)fade);
-                const size_t end = std::min(frames, e + fade);
-                for (size_t i = e; i < end; ++i)
-                    scale(i, (float)(i - e + 1) / (float)fade);
-            }
-            s = e;
-        }
-    }
-
     static std::vector<int16_t> mix_range(int64_t t0, int64_t t1,
                                           const std::vector<Ref<AudioBlock>> &sys,
                                           const std::vector<Ref<AudioBlock>> &mic)
@@ -1749,7 +1734,6 @@ namespace ir
         std::vector<int16_t> out(acc.size());
         for (size_t i = 0; i < acc.size(); ++i)
             out[i] = (int16_t)std::clamp(acc[i], -32768, 32767);
-        fade_silence_edges(out);
         return out;
     }
 
