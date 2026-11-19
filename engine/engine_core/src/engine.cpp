@@ -345,7 +345,9 @@ namespace ir
         std::deque<Ref<AudioBlock>> sys_ring_, mic_ring_;
         AudioAccumulator sys_acc_, mic_acc_;
 
-        // Audio producers.
+        // Audio producers. Ownership is guarded because the video thread can
+        // restart system audio while stop() tears it down.
+        std::mutex audio_owner_mutex_;
         std::unique_ptr<AudioSource> sys_audio_, mic_audio_;
         AudioCounters sys_counters_, mic_counters_;
         bool want_audio_ = false;
@@ -557,7 +559,10 @@ namespace ir
 
     void Engine::restart_system_audio(HWND window)
     {
-        if (!want_audio_)
+        if (!want_audio_ || !running_.load())
+            return;
+        std::lock_guard<std::mutex> lock(audio_owner_mutex_);
+        if (!running_.load())
             return;
         if (sys_audio_)
             sys_audio_->stop();
@@ -644,7 +649,7 @@ namespace ir
         const auto try_create = [&](MfVendor vendor, std::string *why)
         {
             auto mf = MfEncoder::create(selection_.mf, vendor, &gpu_, (int)out_w_, (int)out_h_, fps_, bps_,
-                                        video_options_.rate, video_options_.preset, why);
+                                        video_options_.rate, video_options_.preset, &packet_pool_, why);
             if (!mf)
                 return false;
             selection_.mf_vendor = vendor;
@@ -1344,19 +1349,22 @@ namespace ir
             std::lock_guard<std::mutex> lock(config_mutex_);
             audio_target_ = (t.window && (t.options & CAP_PROCESS_AUDIO)) ? t.window : nullptr;
         }
-        if (audio)
         {
-            sys_audio_ = std::make_unique<AudioSource>(false, L"", audio_target_,
-                                                       [this](const int16_t *d, uint32_t n, int64_t q)
-                                                       { push_system(d, n, q); }, &sys_counters_);
-            sys_audio_->start();
-        }
-        if (mic)
-        {
-            mic_audio_ = std::make_unique<AudioSource>(true, mic_device_, nullptr,
-                                                       [this](const int16_t *d, uint32_t n, int64_t q)
-                                                       { push_mic(d, n, q); }, &mic_counters_);
-            mic_audio_->start();
+            std::lock_guard<std::mutex> lock(audio_owner_mutex_);
+            if (audio)
+            {
+                sys_audio_ = std::make_unique<AudioSource>(false, L"", audio_target_,
+                                                           [this](const int16_t *d, uint32_t n, int64_t q)
+                                                           { push_system(d, n, q); }, &sys_counters_);
+                sys_audio_->start();
+            }
+            if (mic)
+            {
+                mic_audio_ = std::make_unique<AudioSource>(true, mic_device_, nullptr,
+                                                           [this](const int16_t *d, uint32_t n, int64_t q)
+                                                           { push_mic(d, n, q); }, &mic_counters_);
+                mic_audio_->start();
+            }
         }
         return IR_OK;
     }
@@ -1392,15 +1400,18 @@ namespace ir
                 capture_.reset();
             }
         }
-        if (sys_audio_)
         {
-            sys_audio_->stop();
-            sys_audio_.reset();
-        }
-        if (mic_audio_)
-        {
-            mic_audio_->stop();
-            mic_audio_.reset();
+            std::lock_guard<std::mutex> lock(audio_owner_mutex_);
+            if (sys_audio_)
+            {
+                sys_audio_->stop();
+                sys_audio_.reset();
+            }
+            if (mic_audio_)
+            {
+                mic_audio_->stop();
+                mic_audio_.reset();
+            }
         }
         flush_audio_accumulator(false);
         flush_audio_accumulator(true);
