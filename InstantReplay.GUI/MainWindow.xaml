@@ -1011,9 +1011,13 @@
                                         <ComboBox x:Name="QualityCombo"
                                                   HorizontalAlignment="Stretch"
                                                   SelectionChanged="QualityCombo_SelectionChanged">
-                                            <ComboBoxItem Content="Low"/>
+                                            <ComboBoxItem Content="Ultra fast"/>
+                                            <ComboBoxItem Content="Very fast"/>
+                                            <ComboBoxItem Content="Fast"/>
                                             <ComboBoxItem Content="Balanced"/>
-                                            <ComboBoxItem Content="High"/>
+                                            <ComboBoxItem Content="Slow"/>
+                                            <ComboBoxItem Content="Slower"/>
+                                            <ComboBoxItem Content="Slowest"/>
                                         </ComboBox>
                                     </controls:SettingRow>
                                     <controls:SettingRow Label="Bitrate (calculated)"
@@ -1182,7 +1186,7 @@
                                              IsClosable="False"
                                              Severity="Warning"
                                              Title="Capture compatibility"
-                                             Message="DXGI remains the desktop capture method. Game capture support is being updated. Encoding uses FFmpeg."
+                                             Message="DXGI remains the desktop capture method. Game capture support is being updated. Encoding uses Media Foundation."
                                              Margin="0,0,0,12">
                                         <InfoBar.ActionButton>
                                             <Button Content="Dismiss"
@@ -1195,10 +1199,11 @@
                                                   HorizontalAlignment="Stretch"
                                                   SelectionChanged="EncoderCombo_SelectionChanged">
                                             <ComboBoxItem Content="Auto"/>
-                                            <ComboBoxItem Content="NVIDIA NVENC"/>
-                                            <ComboBoxItem Content="AMD AMF"/>
-                                            <ComboBoxItem Content="Intel Quick Sync"/>
-                                            <ComboBoxItem Content="x264 / H.264 (CPU)"/>
+                                            <ComboBoxItem Content="MF QSV (Intel)"/>
+                                            <ComboBoxItem Content="MF VP12 (Intel Gen12 / Arc)"/>
+                                            <ComboBoxItem Content="MF NVENC (NVIDIA)"/>
+                                            <ComboBoxItem Content="MF AMF (AMD)"/>
+                                            <ComboBoxItem Content="MF Software (CPU)"/>
                                         </ComboBox>
                                     </controls:SettingRow>
                                     <controls:SettingRow Label="Detected encoders"
@@ -1227,9 +1232,10 @@
                                         <ComboBox x:Name="CodecCombo"
                                                   HorizontalAlignment="Stretch"
                                                   SelectionChanged="CodecCombo_SelectionChanged">
-                                            <ComboBoxItem Content="Auto (H.264)"/>
+                                            <ComboBoxItem Content="Auto"/>
                                             <ComboBoxItem Content="HEVC / H.265"/>
                                             <ComboBoxItem Content="AVC / H.264"/>
+                                            <ComboBoxItem Content="AV1"/>
                                         </ComboBox>
                                     </controls:SettingRow>
                                     <controls:SettingRow Label="Rate control"
@@ -1246,21 +1252,23 @@
                                         <ComboBox x:Name="EncoderPresetCombo"
                                                   HorizontalAlignment="Stretch"
                                                   SelectionChanged="EncoderPresetCombo_SelectionChanged">
-                                            <ComboBoxItem Content="Speed"/>
+                                            <ComboBoxItem Content="Ultra fast"/>
+                                            <ComboBoxItem Content="Very fast"/>
+                                            <ComboBoxItem Content="Fast"/>
                                             <ComboBoxItem Content="Balanced"/>
-                                            <ComboBoxItem Content="Quality"/>
+                                            <ComboBoxItem Content="Slow"/>
+                                            <ComboBoxItem Content="Slower"/>
+                                            <ComboBoxItem Content="Slowest"/>
                                         </ComboBox>
                                     </controls:SettingRow>
                                     <controls:SettingRow Label="Video container"
                                                          Margin="0,0,0,8">
                                         <ComboBox x:Name="ContainerCombo"
                                                   HorizontalAlignment="Stretch"
+                                                  IsEnabled="False"
+                                                  ToolTipService.ToolTip="Media Foundation writes MP4 clips only"
                                                   SelectionChanged="ContainerCombo_SelectionChanged">
                                             <ComboBoxItem Content="MP4"/>
-                                            <ComboBoxItem Content="MKV"/>
-                                            <ComboBoxItem Content="MOV"/>
-                                            <ComboBoxItem Content="MPEG-TS"/>
-                                            <ComboBoxItem Content="FLV"/>
                                         </ComboBox>
                                     </controls:SettingRow>
                                     <controls:SettingRow Label="Capture method"

@@ -7,11 +7,11 @@ Newest entries go on top.
 
 ### New
 
-- **C++ engine.** `engine_core` is rewritten from scratch in C++17 and built with MSVC through `engine\engine_core\build.bat` (no CMake, no Rust toolchain for the engine). The `IR_*` ABI is unchanged apart from stricter pre-start semantics for `IR_SetCaptureTarget` and `IR_SetCanvasHint`. FFmpeg is linked through its own headers and import libraries and delay-loaded, so there are no generated bindings.
-- **OBS video pipeline.** Scaling and NV12 conversion now use shaders hand-translated from OBS Studio's `.effect` files (bicubic scale, `NV12_Y` and `NV12_UV`), rendered through a canvas, a scale pass and a staging ring read back one frame late. Output is limited-range BT.709 (BT.601 below 720p) like OBS, and the stream is tagged to match. The Media Foundation fallback now takes frames from the same pipeline through system memory rather than GPU textures.
-- **Encoder detection.** The first launch (and any launch where `settings.json` has no encoder data) probes every encoder by pushing real frames through it, while a blurred "Detecting Encoders" overlay covers the window and blocks input. The result is stored in `settings.json` under `encoders` as true/false per encoder (`h264_nvenc`, `hevc_nvenc`, `h264_amf`, `hevc_amf`, `h264_qsv`, `hevc_qsv`, `libx264`, `libx265`, `h264_mf`, `hevc_mf`). **Advanced > Refresh encoders** runs it again, and encoders that failed detection are greyed out in the encoder list.
-- **Auto fallback chain.** Auto uses only encoders that passed detection, in this order: NVIDIA NVENC, AMD AMF, Intel Quick Sync, the hardware Media Foundation encoder (needed for 13th-gen and later Intel graphics and Arc, which FFmpeg 5.1's Quick Sync cannot drive), then x264. An explicitly chosen encoder never falls back and is attempted regardless of the stored detection result.
-- **Media Foundation is no longer a choice.** It is driven directly through the Media Foundation API (not FFmpeg) and is used only as an Auto fallback. A saved `MediaFoundation` choice migrates to Auto.
+- **C++20 engine.** `engine_core` is built with MSVC through `engine\engine_core\build.bat` (no CMake, no external encoder SDK). The `IR_*` ABI is unchanged. Video and audio encoding, muxing and MP4 output all use Windows Media Foundation directly.
+- **GPU video pipeline.** Scaling and NV12 conversion use static compute-shader bytecode captured from the wcap pipeline, rendered through a video-thread-owned canvas, a scale pass and a staging ring read back one frame late. Output is limited-range BT.709 (BT.601 below 720p) and the stream is tagged to match. Hardware MFTs consume the NV12 textures directly; system-memory MFTs take frames from the same pipeline.
+- **Encoder detection.** The first launch (and any launch where `settings.json` has no encoder data) probes every Media Foundation MFT by pushing real frames through it, while a blurred "Detecting Encoders" overlay covers the window and blocks input. The result is stored in `settings.json` under `encoders` as true/false per codec and vendor (`h264_mf_qsv`, `hevc_mf_qsv`, `h264_mf_vp12`, `hevc_mf_vp12`, `h264_mf_nvenc`, `hevc_mf_nvenc`, `h264_mf_amf`, `hevc_mf_amf`, and the `av1_mf_*` / `*_mf_software` keys). **Advanced > Refresh encoders** runs it again, and encoders that failed detection are greyed out in the encoder list.
+- **Auto fallback chain.** Auto uses only MFTs that passed detection, in vendor order: Intel Quick Sync, Intel Gen12 / Arc (VP12), NVIDIA, AMD, then the system-memory software MFT. An explicitly chosen encoder never falls back.
+- **Media Foundation encoder options.** Rate control (CBR or peak-constrained VBR), mean and maximum bitrate, GOP size, B-frames and low-latency mode are configured through `ICodecAPI`.
 
 - **Reworked home page.** A single hero card now carries the status pill, the hotkey pill, the monitor/refresh artwork and the **Save Replay** / **Start Replay** actions. Live CPU and memory cards underneath adopt the system accent colour and keep a short sparkline history; the sparklines switch to the alert colour at 90% or above.
 
@@ -21,7 +21,8 @@ Newest entries go on top.
 
 ### Changed
 
-- **FFmpeg 5.1.2.** The engine now loads `avcodec-59`, `avformat-59`, `avutil-57` and `swresample-4` from the pinned gyan.dev 5.1.2 shared build (libmfx Quick Sync works on 4th- through 12th-gen Intel CPUs). `engine\encoder\fetch-ffmpeg.ps1` replaces old binaries with it, `ffmpeg_sys.rs` is generated from its headers, and the release workflow downloads and verifies it.
+- **MP4 output only.** A single `IMFSinkWriter` muxes compressed H.264/HEVC/AV1 video and AAC audio into MP4. Saved clips always use the `.mp4` extension; the Advanced container picker is fixed to MP4.
+- **MIT license.** The project is now licensed under the MIT License. The installer notice and documentation were updated to match.
 - **Installer keeps the install folder clean.** The whole publish payload now lives in `<install dir>\ship`, and the install root holds only an `InstantReplay.lnk` launcher and that folder; the uninstaller moved to `ship\Uninstall.exe`. Start Menu and desktop shortcuts launch `ship\InstantReplay.exe`, start with Windows and `.ir` associations use the same path, and updates keep the layout. The hook DLLs now ship and load from `engine\hooks\bin\`. Updating an older flat install migrates it into `ship` once and removes the old root files.
 - **Source layout.** Small related files were consolidated into cohesive files, each still using a single namespace:
   - `InstantReplay.Models/CaptureModels.cs` — `CaptureMethod`, `CaptureSource`, `WindowMode`, `CaptureSurface`, `CaptureWindow`, `WindowSnapshot`
@@ -37,7 +38,8 @@ Newest entries go on top.
 
 ### Notes
 
-- No settings-format or saved-file changes; existing `settings.json` files and replays are compatible.
+- Stored encoder preferences from older builds migrate to **Auto**, and saved probe results are discarded once so the new Media Foundation encoder set is detected fresh. Existing saved replays remain compatible.
+- Debug logs report the native capture buffer's memory usage, not process-wide memory usage.
 
 ## 1.6 - 2026-11-04
 
@@ -47,13 +49,10 @@ Newest entries go on top.
 - **Anti-cheat-aware injection.** Games protected by kernel-level or injection-detecting anti-cheat are never injected. The data-driven list lives in `assets/games/anticheat_games.json` (Vanguard, Easy Anti-Cheat, BattlEye, Ricochet, GameGuard, XignCode, Warden and similar); those titles stay on WGC. If the list cannot be loaded, injection is disabled and a warning is logged.
 - **In-game clip card.** `overlay_hook.dll` draws the same card as the WinUI popup (colors, icon, live encode percentage, morph to success/error, entrance and exit slides) directly into the game's back buffer after the frame has been read, so the card is never recorded. It installs no keyboard or mouse hooks and does not change game focus. Without the hook, the existing WinUI popup is used.
 - **Hook diagnostics.** When debug logging is enabled, both hooks append `[DEBUG]` lines to the app's debug log (load, hook enablement, frame-ring creation, capture size, card show/hide and errors).
-- **FFmpeg-based encoding and file writing.** Video encoding, audio compression and the final file are now handled by FFmpeg 8.1, loaded at runtime from the `encoder` folder next to the app (no static linking). The encoder is chosen automatically (NVIDIA NVENC, then AMD AMF, Intel Quick Sync, x264 and finally Media Foundation) and works on any GPU vendor.
-- **Advanced settings:** *Video encoder* (Auto, NVIDIA NVENC, AMD AMF, Intel Quick Sync, x264 CPU, Media Foundation), *Rate control* (CBR or VBR), *Encoder preset* (Speed, Balanced, Quality) and *Video container* (MP4, MOV, MKV, MPEG-TS or FLV). Encoder, rate control and preset apply when recording restarts; the container applies to the next saved replay.
-- **Per-encoder option mapping.** Every Advanced setting is translated to the private options each encoder actually exposes (for example NVENC `p1`–`p7` presets and dashed `forced-idr`, AMF `usage`/`quality`/`forced_idr`, QSV `low_delay_brc`, Media Foundation `quality`/`scenario`, x264 `nal-hrd`), so choosing an encoder produces a matching bitrate, latency and keyframe policy instead of silently ignored options.
-- **AAC audio.** Saved replays now contain AAC audio instead of uncompressed PCM, which makes files considerably smaller.
-- **Clear errors.** If the FFmpeg DLLs are missing, are the wrong version, or no H.264 encoder can be opened, recording does not start and the app says why. There is no silent fallback.
-- **FFmpeg license and acknowledgment** in the README, the installer terms and `encoder\FFMPEG-LICENSE.txt` (GPL build; source links included).
-- **Tag-driven releases.** `.github/workflows/release.yml` builds the portable ZIP and the installer on every version tag, stamps the tag version into the app and installer, verifies the pinned FFmpeg archive's SHA-256, and attaches both files to the GitHub Release.
+- **Advanced settings:** *Video encoder* (Auto plus hardware and software Media Foundation MFTs), *Rate control* (CBR or VBR) and *Encoder preset* (Speed, Balanced, Quality). Encoder, rate control and preset apply when recording restarts.
+- **AAC audio.** Saved replays contain AAC audio instead of uncompressed PCM, which makes files considerably smaller.
+- **Clear errors.** If no encodable Media Foundation MFT can be opened, recording does not start and the app says why. There is no silent fallback.
+- **Tag-driven releases.** `.github/workflows/release.yml` builds the portable ZIP and the installer on every version tag, stamps the tag version into the app and installer, and attaches both files to the GitHub Release.
 
 ### Fixed
 
@@ -64,10 +63,7 @@ Newest entries go on top.
 
 ### Notes
 
-- **FFmpeg DLLs are required.** Place `avcodec-62.dll`, `avformat-62.dll`, `avutil-60.dll` and `swresample-6.dll` from the pinned FFmpeg 8.1 GPL shared build in `engine\encoder\` before building (see README, *Build*). They are bundled as `encoder\*.dll`.
-- The previous Media Foundation encoder, the direct NVENC encoder and the built-in MP4 writer remain in the source but are unused. `IR_LEGACY_ENCODER=1` re-enables the Media Foundation path and MP4 writer for debugging.
 - Clips may begin up to one second (one keyframe interval) before the requested start, with audio covering the same span, so audio and video always stay in sync.
-- MKV playback depends on the system and the in-app player; MP4 is the safest choice for sharing.
 - Preset bitrates are unchanged, but because CBR now holds them as a target, clips can be somewhat larger than in 1.5 on simple scenes.
 
 ## 1.5 - 2026-11-01

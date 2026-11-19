@@ -153,20 +153,36 @@ public sealed class RecorderEngine : IDisposable
                      $"convFail={micConvertFailures} last={Hr(micFail)}");
     }
 
+    // Legacy external-encoder choices are intentionally absent: Settings.Load maps
+    // them to Auto, and any surviving value falls through to Auto here as well.
     private static EncoderPreference ResolveEncoder(string choice) => choice switch
     {
-        "Nvenc" => EncoderPreference.Nvenc,
-        "Amf" => EncoderPreference.Amf,
-        "Qsv" => EncoderPreference.Qsv,
-        "X265" or "X264" or "Software" => EncoderPreference.X264,
+        "MfQsv" => EncoderPreference.MfQsv,
+        "MfVp12" => EncoderPreference.MfVp12,
+        "MfNvenc" => EncoderPreference.MfNvenc,
+        "MfAmf" => EncoderPreference.MfAmf,
+        "MfSoftware" => EncoderPreference.MfSoftware,
         _ => EncoderPreference.Auto,
     };
 
-    private static int ResolveEncoderOptions(Settings s) =>
-        (s.RateControl == "Vbr" ? 1 << 8 : 0)
-        | ((s.EncoderPreset switch { "Speed" => 0, "Quality" => 2, _ => 1 }) << 10)
-        | ((s.VideoCodec switch { "Hevc" => 1, "H264" => 2, _ => 0 }) << 12)
-        | ((int)EncoderAvailabilityMap.FromDictionary(s.DetectedEncoders) << 16);
+    // Native pref layout (see options_from_pref in video.cpp):
+    //   bits  0..7  encoder ordinal
+    //   bit   8     rate control (0 CBR, 1 VBR)
+    //   bits 12..14 quality/speed preset 0..6
+    //   bits 15..16 codec (0 Auto, 1 HEVC, 2 H264, 3 AV1)
+    //   bits 24..31 compact per-codec availability byte
+    private static int ResolveEncoderOptions(Settings s)
+    {
+        string codec = s.VideoCodec;
+        int codecBits = codec switch { "Hevc" => 1, "H264" => 2, "Av1" => 3, _ => 0 };
+        int presetBits = VideoQualityProfile.PresetIndex(s.EncoderPreset);
+        uint compact = EncoderAvailabilityMap.Compact(
+            EncoderAvailabilityMap.FromDictionary(s.DetectedEncoders), codec);
+        return (s.RateControl == "Vbr" ? 1 << 8 : 0)
+             | (presetBits << 12)
+             | (codecBits << 15)
+             | (int)(compact << 24);
+    }
 
 
     public bool Start(string tempDir, bool wipeSegments = true)

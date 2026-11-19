@@ -6,7 +6,7 @@
 [![Latest release](https://img.shields.io/github/v/release/ghostneverdies/InstantReplay?style=flat-square)](https://github.com/ghostneverdies/InstantReplay/releases/latest)
 
 
-[![C++17](https://img.shields.io/static/v1?label=Engine&message=C%2B%2B17&color=00599c&style=flat-square)](engine/engine_core)
+[![C++ 0%](https://img.shields.io/static/v1?label=C%2B%2B&message=0%25&color=00599c&style=flat-square)](engine/engine_core)
 [![C# 47.58%](https://img.shields.io/static/v1?label=C%23&message=47.58%25&color=178600&style=flat-square)](https://api.github.com/repos/ghostneverdies/InstantReplay/languages)
 [![JavaScript 1.84%](https://img.shields.io/static/v1?label=JavaScript&message=1.84%25&color=f1e05a&style=flat-square)](https://api.github.com/repos/ghostneverdies/InstantReplay/languages)
 [![NSIS 0.99%](https://img.shields.io/static/v1?label=NSIS&message=0.99%25&color=8b5cf6&style=flat-square)](https://api.github.com/repos/ghostneverdies/InstantReplay/languages)
@@ -24,14 +24,15 @@
 - Two replay targets: Whole Desktop and Game Capture, with offline game detection and custom executable rules
 - Capture method: Windows Graphics Capture for games and windows, or DXGI Desktop Duplication for whole-desktop and exclusive-fullscreen capture
 - The clip card is drawn inside supported Direct3D 9/11/12 and OpenGL games (fullscreen and windowed); protected anti-cheat games are never injected and use the external popup
-- Video encoder (FFmpeg 5.1.2): Auto, NVIDIA NVENC, AMD AMF, Intel Quick Sync or x264 (CPU), with encoders detected by encoding real test frames at first launch (re-runnable under Advanced) and a Media Foundation hardware fallback used only by Auto, with CBR/VBR rate control, a speed/quality preset and MP4, MOV, MKV, MPEG-TS or FLV output (AAC audio)
+- Video encoder (Windows Media Foundation): Auto, Intel Quick Sync, Intel Gen12 / Arc (VP12), NVIDIA, AMD or the system-memory software MFT, with encoders detected by encoding real test frames at first launch (re-runnable under Advanced), CBR/VBR rate control and a speed/quality preset
+- MP4 output with AAC audio
 - Gallery with thumbnails, inline playback, optional fullscreen, seeking, volume and "show in folder"
 - Home page with a status/hotkey hero card, Save Replay / Start Replay actions, and live CPU and memory cards with sparkline history
 - System tray icon, animated clip popup, warning notifications, close-to-tray, single instance
 - Optional start with Windows (launches minimized to tray)
 - Updates page with manual checks, automatic checks every 24 hours, and verified full-installer downloads from GitHub Releases
 - Dark / light mode with a permanent Mica backdrop
-- Warns when the app's memory use stays unusually high
+- Warns when the native capture buffer's memory use stays unusually high
 
 ## Requirements
 
@@ -50,7 +51,6 @@ Program Files\Instant Replay\
    ├─ InstantReplay.exe
    ├─ Uninstall.exe
    ├─ engine\bin\engine.dll
-   ├─ engine\encoder\*.dll
    ├─ engine\hooks\bin\*.dll
    ├─ assets\  mediaplayer\
    └─ WinUI runtime, locales, meta\, symbols\
@@ -62,17 +62,16 @@ Updating an older flat install (app files directly in the install folder) migrat
 
 ## Build
 
-Requires a compatible .NET SDK and Visual Studio (or Build Tools) with the **Desktop development with C++** workload and the Windows 10/11 SDK in their default install location. There is no CMake: the engine is one batch file.
+Requires a compatible .NET SDK and Visual Studio (or Build Tools) with the **Desktop development with C++** workload and the Windows 10/11 SDK in their default install location. There is no CMake and no external encoder SDK: the engine is one batch file, and video scaling and NV12 conversion use compute-shader bytecode embedded in the C++ source.
 
 ```
-powershell -File engine\encoder\fetch-ffmpeg.ps1
 engine\engine_core\build.bat
 dotnet build -c Release -p:Platform=x64
 ```
 
-`engine\engine_core\build.bat` finds MSVC under `Program Files\Microsoft Visual Studio` (or uses the `cl.exe` already on PATH), compiles the shaders in `engine\engine_core\shaders` with the SDK's `fxc.exe` into byte arrays, builds the C++17 sources in `engine\engine_core\src` into `engine\bin\engine.dll`, and links the FFmpeg import libraries with delay loading. `build.bat debug` and `build.bat clean` are also available. The project runs it (and `engine\hooks\build.ps1` for the hook DLLs) as the `BuildNativeEngine` and `BuildHook` targets, so a normal `dotnet build` rebuilds them when their sources change.
+`engine\engine_core\build.bat` finds MSVC under `Program Files\Microsoft Visual Studio` (or uses the `cl.exe` already on PATH), builds the C++20 sources in `engine\engine_core\src` into `engine\bin\engine.dll`, and links only Windows SDK libraries. `build.bat debug` and `build.bat clean` are also available. The project runs it (and `engine\hooks\build.ps1` for the hook DLLs) as the `BuildNativeEngine` and `BuildHook` targets, so a normal `dotnet build` or `dotnet run` always rebuilds the native binaries.
 
-Encoding, audio compression and file writing use FFmpeg 5.1.2 shared libraries, loaded at runtime from `engine\encoder\` (the engine links only the import libraries and delay-loads the DLLs, so a missing library produces an error message instead of a failed launch). FFmpeg 5.1.x is pinned on purpose: its libmfx-based Quick Sync encoder covers 4th-gen Core through 12th-gen. `engine\encoder\fetch-ffmpeg.ps1` deletes any old binaries in that folder, downloads the pinned `ffmpeg-5.1.2-full_build-shared.zip` from [GyanD/codexffmpeg](https://github.com/GyanD/codexffmpeg/releases/tag/5.1.2), verifies its SHA-256, copies `avcodec-59.dll`, `avformat-59.dll`, `avutil-57.dll` and `swresample-4.dll` into `engine\encoder\` and installs the headers and import libraries into `engine\encoder\sdk` for `build.bat`. The .NET build bundles the DLLs with the app as `engine\encoder\*.dll`. Without them the app reports an error and does not record. The CI workflow verifies the same SHA-256. The engine includes FFmpeg's own headers, so there are no generated bindings to maintain.
+Encoding, AAC audio compression and MP4 muxing use Windows Media Foundation, which is part of Windows. Supported codecs are H.264, HEVC and AV1, with hardware MFTs (Intel Quick Sync, Intel Gen12 / Arc VP12, NVIDIA, AMD) and a system-memory software MFT fallback. No third-party encoder libraries are bundled or downloaded, and the release assets work offline.
 
 To package the app locally, install NSIS, publish into the directory used by the installer, and pass the version (the defaults are `1.6` / `1.6.0.0`):
 
@@ -89,12 +88,11 @@ InstantReplay.exe
 InstantReplay.dll, *.json, resources.pri, WinUI/WinAppSDK DLLs   (must sit next to the exe)
 <locale>\*.mui                                                   (must stay here, see below)
 engine\bin\engine.dll
-engine\encoder\avcodec-59.dll ...
 engine\hooks\bin\capture_hook.dll, overlay_hook.dll
 assets\  mediaplayer\  meta\*.winmd  symbols\*.pdb
 ```
 
-The WinUI and Windows App SDK DLLs, `resources.pri`, the `.deps.json`/`.runtimeconfig.json` files and the `<locale>` folders cannot move: Windows resolves the DLLs and the `.mui` resources from the executable's own directory before any app code runs, and relocating the locale folders makes `Microsoft.UI.Xaml.dll` fail at startup. Everything that is safe to group is grouped, and the engine finds its FFmpeg DLLs one level up in `engine\encoder\`.
+The WinUI and Windows App SDK DLLs, `resources.pri`, the `.deps.json`/`.runtimeconfig.json` files and the `<locale>` folders cannot move: Windows resolves the DLLs and the `.mui` resources from the executable's own directory before any app code runs, and relocating the locale folders makes `Microsoft.UI.Xaml.dll` fail at startup. Everything that is safe to group is grouped.
 
 This is the publish layout. The installer keeps it intact but nests it under `ship\` in the install root, which is why the app still finds every file relative to its own executable. The portable ZIP keeps the flat layout.
 
@@ -107,7 +105,7 @@ The source tree is grouped by responsibility, and small related types share one 
 | `InstantReplay.Models` | Settings and shared records/enums: `CaptureModels.cs`, `UpdateModels.cs`, `VideoSettings.cs`, `SaveReplayResult.cs`, `GameRule.cs` |
 | `InstantReplay.Services` | Windows integration (`WindowsTheme` + `StartupManager`), updates, update install, audio device watching, window detection and hook injection |
 | `InstantReplay.Native` | Engine P/Invoke and audio endpoint COM interop (`IrNative.cs`) |
-| `engine` | C++17 engine (`engine_core`), capture/overlay hook sources, FFmpeg shared libraries |
+| `engine` | C++20 engine (`engine_core`) and capture/overlay hook sources |
 | `installer` | NSIS script, license terms and installer assets |
 
 This creates `installer\InstantReplaySetup.exe`. The installer does not install .NET or WebView2 automatically.
@@ -122,9 +120,9 @@ gh workflow run release.yml -f version=1.6.0
 
 Run it from the default branch, because the workflow creates the release tag `v<version>` at the commit it was dispatched on. Nothing runs automatically: tag pushes and published releases do not trigger the workflow.
 
-The workflow downloads and checksums the pinned FFmpeg build, runs `engine\engine_core\build.bat`, runs `dotnet publish` with `-p:Version=<version>`, builds the installer with the same version, and attaches two assets to the GitHub Release:
+The workflow runs `engine\engine_core\build.bat`, runs `dotnet publish` with `-p:Version=<version>`, builds the installer with the same version, and attaches two assets to the GitHub Release:
 
-- `InstantReplay-<version>-win64-portable.zip` — the publish output, including `engine\encoder\*.dll`
+- `InstantReplay-<version>-win64-portable.zip` — the publish output
 - `InstantReplaySetup.exe` — the installer, stamped with the same version (the in-app updater looks for exactly this asset name on the latest release)
 
 Both files are also uploaded as workflow artifacts.
@@ -133,13 +131,13 @@ Both files are also uploaded as workflow artifacts.
 
 1. Open the app. Replay buffering starts automatically; **Start Replay** starts it again after stopping.
 2. Press the hotkey (or use **Save Replay**) to save the buffered footage.
-3. Replays are saved as `replay_YYYYMMDD_HHMMSS\replay.<ext>` in `Pictures\Instant Replay`, or in the save location you set. The extension follows the container chosen in Advanced settings (`.mp4`, `.mov`, `.mkv`, `.ts` or `.flv`).
+3. Replays are saved as `replay_YYYYMMDD_HHMMSS\replay.mp4` in `Pictures\Instant Replay`, or in the save location you set.
 
 Only one app instance owns the replay engine. Additional launches signal the running window and exit before creating another capture session. Startup handles rapid repeated launches and recovers an abandoned instance lock after a crash.
 
 Gallery thumbnails are cached in `%TEMP%\thumbnails`. If Windows cannot supply a thumbnail, the app extracts a frame directly from the replay; unreadable cached thumbnails are regenerated.
 
-Replay saves share immutable encoded video packets with the buffer instead of duplicating the entire recording. MP4 conversion uses one reusable frame buffer, and trimmed audio packets are borrowed while writing. Before saving, the engine checks Windows committed-memory headroom and refuses the save if there is less than a 512 MB reserve plus the estimated audio workspace. A refusal shows the normal failed-clip popup and logs the reason; the existing buffer is retained. This reduces save-time memory spikes but cannot prevent other applications from exhausting Windows memory. A system-managed page file is recommended on machines that encounter virtual-memory exhaustion.
+Replay saves share immutable encoded video packets with the buffer instead of duplicating the entire recording. MP4 muxing uses one reusable frame buffer, and trimmed audio packets are borrowed while writing. Before saving, the engine checks Windows committed-memory headroom and refuses the save if there is less than a 512 MB reserve plus the estimated audio workspace. A refusal shows the normal failed-clip popup and logs the reason; the existing buffer is retained. This reduces save-time memory spikes but cannot prevent other applications from exhausting Windows memory. A system-managed page file is recommended on machines that encounter virtual-memory exhaustion.
 
 ## Settings
 
@@ -163,7 +161,7 @@ These are bitrate targets, not fixed output file sizes; static scenes can use le
 
 **Whole Desktop** captures the selected monitor and system audio. It bypasses all game detection, focus switching and automatic pausing.
 
-**Show mouse cursor** enables or hides the recorded pointer for both WGC and DXGI. Apply changes to restart the buffer with the selected visibility. DXGI retains the last desktop image for cursor-only updates and composites the current pointer separately. The pointer is drawn with GDI onto the retained desktop image, which preserves color, masked-color and monochrome cursors. Frames are scaled and converted on the GPU with shaders translated from OBS Studio (see below) and read back through a staging ring one frame late, so mapping a frame never stalls the GPU.
+**Show mouse cursor** enables or hides the recorded pointer for both WGC and DXGI. Apply changes to restart the buffer with the selected visibility. DXGI retains the last desktop image for cursor-only updates and composites the current pointer separately. The pointer is drawn with GDI onto the retained desktop image, which preserves color, masked-color and monochrome cursors. Frames are scaled and converted on the GPU with the embedded compute-shader bytecode and read back through a staging ring one frame late, so mapping a frame never stalls the GPU.
 
 WGC polls its frame pool at 1 ms resolution and uses the frames' own system-relative timestamps; DXGI uses the duplication present time. Frames with duplicate or out-of-order timestamps are dropped, and after a stall capture resumes from fresh source frames instead of generating catch-up frames. The FPS setting remains a ceiling: source rendering, system load, and encoder throughput determine actual delivery. Static or paused scenes are not padded with artificial duplicate frames.
 
@@ -182,17 +180,17 @@ Games on the anti-cheat list in `assets/games/anticheat_games.json` are never in
 
 Minecraft Java runs inside `java.exe` or `javaw.exe`; its launcher executable is not the capture target. Built-in title rules cover vanilla Minecraft, Fast Client, Silent Client, Lunar Client, Badlion Client, Feather Client, TLauncher and Legacy Launcher, including compact client names where applicable. Built-in Minecraft Java rules also require an `LWJGL`, `GLFW30` or `SDL_app` game-window class so Java launcher/control windows are not selected. Games launched through TLauncher or Legacy Launcher that retain the ordinary Minecraft title use the vanilla rule. The recognized game must still be foreground to start or resume capture, and app audio follows the game process rather than its launcher. Explicit custom rules remain available for other Java applications.
 
-Capture follows the game window in real time. Windowed and borderless-fullscreen games are recorded with Windows Graphics Capture on the game window; exclusive fullscreen is recorded with DXGI desktop duplication of the display the game is running on (the display is detected, so multi-monitor setups work). Both sources feed one encoder through a fixed canvas at the highest resolution the game can show, and smaller sources are centred with black bars, so switching modes mid-game produces one seamless video. `engine\hooks\bin\capture_hook.dll` is no longer used to capture video: it is no longer injected. `engine\hooks\bin\overlay_hook.dll` is loaded when an in-game card can be drawn; it hooks the game's present calls itself (D3D9/11/12/OpenGL), never reads frames, and shows the in-game clip notification. The overlay is loaded with the same anti-cheat compatibility scheme as OBS (a `WH_GETMESSAGE` hook on the game's window thread, no remote threads), and never into games on the anti-cheat list; there the regular popup notification is used.
+Capture follows the game window in real time. Windowed and borderless-fullscreen games are recorded with Windows Graphics Capture on the game window; exclusive fullscreen is recorded with DXGI desktop duplication of the display the game is running on (the display is detected, so multi-monitor setups work). Both sources feed one encoder through a fixed canvas at the highest resolution the game can show, and smaller sources are centred with black bars, so switching modes mid-game produces one seamless video. `engine\hooks\bin\capture_hook.dll` is not injected for video capture. `engine\hooks\bin\overlay_hook.dll` is loaded when an in-game card can be drawn; it hooks the game's present calls itself (D3D9/11/12/OpenGL), never reads frames, and shows the in-game clip notification. The overlay is loaded through a `WH_GETMESSAGE` hook on the game's window thread (no remote threads), and never into games on the anti-cheat list; there the regular popup notification is used.
 
 Direct3D 9, Direct3D 11, Direct3D 12 and OpenGL additionally use `engine\hooks\bin\overlay_hook.dll` to draw the clip card after capture and before the real present, so the card is not recorded. The D3D12 overlay submits its own fenced command list on the tracked direct queue. Vulkan retains the external WinUI notification while its synchronized in-process renderer is unfinished. The overlay hook appends `[DEBUG]` lines to the app's debug log when debug logging is enabled.
 
-Game Capture uses Windows Graphics Capture and, for supported Direct3D 9/11/12 and OpenGL games, loads the overlay into the game process to draw the clip card. Both request square window corners regardless of the stored rounded-corner preference; the previous Windows corner preference is restored when capture stops. Selecting Game Capture with DXGI configured displays a WinUI compatibility dialog and switches to WGC; DXGI remains available for Whole Desktop and exclusive fullscreen. Auto encoding tries NVIDIA NVENC, AMD AMF and Intel Quick Sync, then x264, then Microsoft's Media Foundation H.264 encoder. Process audio requires Windows build 20348 or later (Windows 11 supported); a process-audio failure is reported rather than falling back to system audio.
+Game Capture uses Windows Graphics Capture and, for supported Direct3D 9/11/12 and OpenGL games, loads the overlay into the game process to draw the clip card. Both request square window corners regardless of the stored rounded-corner preference; the previous Windows corner preference is restored when capture stops. Selecting Game Capture with DXGI configured displays a WinUI compatibility dialog and switches to WGC; DXGI remains available for Whole Desktop and exclusive fullscreen. Auto tries Media Foundation MFTs in vendor order: Intel Quick Sync, Intel Gen12 / Arc VP12, NVIDIA, AMD, then the software MFT. Process audio requires Windows build 20348 or later (Windows 11 supported); a process-audio failure is reported rather than falling back to system audio.
 
 In hook mode, client-size, window-style, monitor and display-size changes rebuild only API-local readback and overlay resources. The shared frame ring, encoder, audio timeline and replay buffer stay alive, and each frame carries its current dimensions for scaling to the fixed output size. OpenGL context replacement is handled the same way, so games such as Minecraft can switch between windowed and fullscreen without restarting or discarding the buffer. The WGC path detects those changes, pauses while they settle for 600 ms, then recreates the window session and discards the previous buffer. WGC skips stale resize frames before rebuilding its frame pool and processes the newest available frame from its bounded pool after capture stalls, rather than encoding a backlog. Capture startup verifies that frames arrive and retries failed window sessions with a cooldown. Whole Desktop does not switch capture targets or add special recovery for individual games.
 
 **Fullscreen capture limitation:** Windowed and borderless games are captured with Windows Graphics Capture; exclusive fullscreen is captured with DXGI Desktop Duplication. WGC may be unable to capture exclusive fullscreen content when the game owns the display. Video may appear black or frozen while audio continues. Try **Whole Desktop** or use borderless/windowed mode. Protected content may remain unavailable.
 
-Capture follows fresh compositor/desktop timestamps, skips superseded frames and rejects duplicate or out-of-order timestamps. It does not create filler frames on a timer. During a stationary scene, the container holds the last valid image. The FPS setting is a maximum, so static scenes produce fewer encoded frames. Encoders come from FFmpeg, and GPU sample buffers are recycled only after the encoder releases them.
+Capture follows fresh compositor/desktop timestamps, skips superseded frames and rejects duplicate or out-of-order timestamps. It does not create filler frames on a timer. During a stationary scene, the container holds the last valid image. The FPS setting is a maximum, so static scenes produce fewer encoded frames. Encoders are Media Foundation MFTs, and GPU sample buffers are recycled only after the encoder releases them.
 
 Replay saves show a compact card at the top left with the app icon. Successful saves show **Clipped Last N Seconds**, using the saved duration; failed saves show **Failed To Clip** and **See debug log for more details**, with the reason recorded in the log. When a Direct3D 9, Direct3D 11, Direct3D 12 or OpenGL hook is active the card is drawn inside the game with the same colors, icon, live encode percentage and morph/slide transitions as the WinUI popup; otherwise the popup is a WinUI window over the foreground display. The card slides in from the left, remains visible for four seconds, then slides out without activating or stealing game focus. The WinUI popup requests capture exclusion and is raised above borderless/fullscreen windows on a best-effort basis; legacy exclusive fullscreen can prevent it from appearing, and a popup failure never invalidates the saved clip. Other warnings retain their existing notification path.
 
@@ -218,42 +216,25 @@ When preparing a release, keep the committed fallback versions in `InstantReplay
 | `%APPDATA%\InstantReplay\updates.json` | Last update check, last reminder time and cached release metadata |
 | `%APPDATA%\InstantReplay\update-result.json` | Installer result, consumed after reopening |
 | `%TEMP%\InstantReplay-Updates\<unique folder>` | Verified installer and temporary local update helper |
-| `Pictures\Instant Replay` (default) or your chosen folder | Saved replay folders and video files (MP4, MOV, MKV, MPEG-TS or FLV) |
+| `Pictures\Instant Replay` (default) or your chosen folder | Saved replay folders and MP4 video files |
 | `%TEMP%\thumbnails` | Cached replay preview images |
 | `%TEMP%\debug_<timestamp>.txt` | Log file |
 | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` | Start with Windows entry |
 
 ## Environment variables
 
-- `IR_FFMPEG_DIR=<path>` loads the FFmpeg DLLs from another folder instead of `engine\encoder\`
-- `IR_IMPROVED_CONVERT=1` uses the higher-quality two-pass GPU color conversion
-- `IR_LEGACY_ENCODER=1` bypasses FFmpeg and uses the previous built-in Media Foundation encoder and MP4 writer (debugging only). `IR_GPU` and `IR_ENCODER` only apply to that legacy path.
+- `IR_SCALER=bilinear` selects bilinear scaling instead of the default bicubic scaling.
 
-## Third-party code
+## Native interface
 
-The engine is written from scratch in C++17. Its video path follows OBS Studio's design: a fixed-aspect canvas, an optional scale pass (bicubic by default, bilinear selectable with `IR_SCALER=bilinear`), two render-target passes that convert to NV12 (a full-resolution luma pass and a half-resolution, left-sited chroma pass) and a staging ring read back one frame late. The shaders in `engine/engine_core/shaders` are hand-translated from OBS's `format_conversion.effect` (NV12), `bicubic_scale.effect` and `default.effect` into plain HLSL; libobs and OBS's effect parser are not used. They are compiled at build time with `fxc`, never at runtime. The colour matrices are the standard limited-range BT.709 (HD) and BT.601 values OBS uses, and the stream is tagged accordingly. OBS Studio is copyright its contributors and distributed under the GNU General Public License, version 2 or later; those files keep their copyright notices and are distributed here under the GPL-3.0-or-later terms of this project. The engine depends only on the Windows SDK, FFmpeg's public headers and the FFmpeg shared libraries (loaded at runtime).
+The engine is written from scratch in C++20 and depends only on the Windows SDK. Its video path uses a fixed-aspect canvas owned by the video thread, the embedded wcap compute-shader bytecode for scaling and NV12 conversion, and a staging ring read back one frame late. Capture only produces frames into a raw queue; it never touches the canvas. The colour matrices are the standard limited-range BT.709 (HD) and BT.601 values, and the stream is tagged accordingly.
 
-The DLL keeps the existing `IR_*` ABI. `IR_SetCaptureTarget` and `IR_SetCanvasHint` apply to the next `IR_Start` (HWND 0 means monitor capture) and fail while the engine runs; `IR_SetCaptureSource` switches the source live. Capture options are 1=client area, 2=cursor, 4=border, 8=keep rounded corners, 16=secondary windows, 32=reserved, 64=process audio for the supplied HWND, and 128=live switch. `IR_SetPaused` gates video and app audio; an enabled microphone keeps recording through a pause. `IR_ProbeEncoders` pushes real frames through every encoder and returns the availability bits stored in `settings.json`. Window-only options require the corresponding Windows capture APIs; unsupported optional flags are ignored.
-
-### FFmpeg
-
-Instant Replay uses [FFmpeg](https://ffmpeg.org/) for video/audio encoding and container writing. Release builds bundle the four required shared libraries (`avcodec`, `avformat`, `avutil` and `swresample`) under `engine\encoder\`; the engine loads them at runtime. They come from the pinned gyan.dev 5.1.2 GPL shared build described in [Build](#build), which includes libx264 and libx265. The portable archive and installer therefore work offline and do not download FFmpeg on first run. The FFmpeg license and source/build links are retained in [engine/encoder/FFMPEG-LICENSE.txt](engine/encoder/FFMPEG-LICENSE.txt).
-
-- FFmpeg source code: <https://ffmpeg.org/download.html>
-- Build scripts and configuration of the distributed DLLs: <https://www.gyan.dev/ffmpeg/builds/> (mirrored at <https://github.com/GyanD/codexffmpeg>)
-- x264 source code: <https://code.videolan.org/videolan/x264>
-
-### OBS Studio reference
-
-The in-process graphics interception design was independently implemented for Instant Replay after studying [OBS Studio's Windows graphics-hook sources](https://github.com/obsproject/obs-studio/tree/master/plugins/win-capture/graphics-hook). The Rust `cdylib` implementation of the hook is kept in `engine/hooks/capture_hook/src/capture_hook.rs`, uses Instant Replay's own shared-texture, fallback-ring and frame-pacing contracts, and is modified for this recorder rather than copied verbatim. Direct3D 11 and OpenGL use named D3D11 textures with keyed synchronization; OpenGL bridges through `WGL_NV_DX_interop2`. Direct3D 9 and Direct3D 12 retain guarded CPU fallback paths. Vulkan currently has present interception only and remains routed to WGC until its synchronized image/queue path is complete. OBS Studio is copyright its contributors and distributed under the GNU General Public License; see its repository for the authoritative notices and source.
-
-The DXGI path composites the pointer with GDI onto the retained desktop image, following the OBS monitor-capture strategy of keeping the desktop texture and drawing the current pointer separately.
+The DLL keeps the existing `IR_*` ABI. `IR_SetCaptureTarget` and `IR_SetCanvasHint` apply to the next `IR_Start` (HWND 0 means monitor capture) and fail while the engine runs; `IR_SetCaptureSource` switches the source live. Capture options are 1=client area, 2=cursor, 4=border, 8=keep rounded corners, 16=secondary windows, 32=reserved, 64=process audio for the supplied HWND, and 128=live switch. `IR_SetPaused` gates video and app audio; an enabled microphone keeps recording through a pause. `IR_ProbeEncoders` pushes real frames through every Media Foundation MFT and returns the availability bits stored in `settings.json`. Window-only options require the corresponding Windows capture APIs; unsupported optional flags are ignored.
 
 ## License
 
-Instant Replay is licensed under the **GNU General Public License version 3**; see [LICENSE](LICENSE). Bundled third-party components retain their respective upstream licenses and notices. FFmpeg distribution details are described [above](#ffmpeg), and the installer displays [installer/terms.txt](installer/terms.txt).
+Instant Replay is licensed under the [MIT License](LICENSE). Bundled third-party components retain their respective upstream licenses and notices, and the installer displays [installer/terms.txt](installer/terms.txt).
 
 ## Donations
 
 USDT (TRC-20): `TBLWg9dJtimMijGJtSKGX61DtmZbYaDbkD`
-

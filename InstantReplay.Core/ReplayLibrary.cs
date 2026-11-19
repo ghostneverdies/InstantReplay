@@ -120,13 +120,8 @@ public sealed class ReplayLibrary
             if (!Directory.Exists(dir)) return list;
             foreach (string folder in Directory.EnumerateDirectories(dir, "replay_*"))
             {
-                string? video = null;
-                foreach (string ext in new[] { "mp4", "mkv", "mov", "ts", "flv" })
-                {
-                    string candidate = Path.Combine(folder, "replay." + ext);
-                    if (File.Exists(candidate)) { video = candidate; break; }
-                }
-                if (video is null) continue;
+                string video = Path.Combine(folder, "replay.mp4");
+                if (!File.Exists(video)) continue;
 
                 var info = new FileInfo(video);
                 DateTime created = TryParseFolderDate(Path.GetFileName(folder)) ?? info.LastWriteTime;

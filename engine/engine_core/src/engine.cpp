@@ -7,6 +7,7 @@
 // control-plane job served by one save thread.
 #include "core.hpp"
 
+#include <cmath>
 #include <cwchar>
 #include <objbase.h>
 #include <unordered_map>
@@ -73,18 +74,33 @@ namespace ir
             }
         };
 
-        // Same committed-memory reserve the previous engine used before cloning
-        // the replay ring: keep the 512 MiB reserve plus three copies of audio.
-        bool save_memory_available(uint64_t audio_bytes)
+        // v4 does not clone the 512 MiB video ring: run_save() snapshots pooled
+        // references, then allocates the mixed PCM (2x int32 + 2x int16 per
+        // frame) plus AAC/muxer buffers. A 64 MiB fixed reserve with 4x the audio
+        // replay bytes covers that working set without the old engine's clone tax.
+        bool save_memory_available(uint64_t audio_bytes, std::string *detail = nullptr)
         {
+            constexpr uint64_t reserve = 64ull * 1024 * 1024;
+            constexpr uint64_t audio_factor = 4;
+            const uint64_t max = std::numeric_limits<uint64_t>::max();
+            const uint64_t workspace =
+                audio_bytes > (max - reserve) / audio_factor ? max : audio_bytes * audio_factor;
+            const uint64_t required = reserve + workspace;
+
             MEMORYSTATUSEX mem = {};
             mem.dwLength = sizeof(mem);
             if (!GlobalMemoryStatusEx(&mem))
+            {
+                if (detail)
+                    *detail = "GlobalMemoryStatusEx failed";
                 return false;
-            constexpr uint64_t reserve = RING_BUDGET_BYTES;
-            const uint64_t max = std::numeric_limits<uint64_t>::max();
-            const uint64_t workspace = audio_bytes > (max - reserve) / 3 ? max : audio_bytes * 3;
-            return mem.ullAvailPageFile >= reserve + workspace;
+            }
+            if (detail)
+            {
+                *detail = "available " + std::to_string(mem.ullAvailPageFile / (1024ull * 1024ull)) +
+                          " MiB, required " + std::to_string(required / (1024ull * 1024ull)) + " MiB";
+            }
+            return mem.ullAvailPageFile >= required;
         }
 
         Scaler scaler_from_env()
@@ -241,7 +257,7 @@ namespace ir
         bool ensure_canvas_size(uint32_t w, uint32_t h);
         bool recreate_canvas(uint32_t w, uint32_t h);
         bool ensure_pipeline();
-        bool create_video_encoders(const ObsVideoPipeline *pipe, bool allow_mf, std::string *err);
+        bool create_video_encoders(std::string *err);
         bool encoder_uses_textures() const;
         bool encode_slot(Pending &pending);
         bool flush_pending();
@@ -254,6 +270,7 @@ namespace ir
         bool video_init(const VideoInit &init);
         void video_loop();
         void video_exit();
+        void watchdog_loop();
 
         void ensure_save_thread();
         void stop_save();
@@ -270,6 +287,8 @@ namespace ir
         std::mutex lifecycle_mutex_;
         std::atomic<bool> running_{false};
         std::thread video_thread_;
+        std::thread watchdog_thread_;
+        std::atomic<bool> watchdog_stop_{false};
 
         // Single shared clock and stop-aware control bus.
         Clock clock_;
@@ -305,7 +324,7 @@ namespace ir
         bool need_clear_ = true;
         std::atomic<int64_t> latest_pts_{-1};
         uint64_t frame_seq_ = 0;
-        ObsVideoPipeline pipe_;
+        VideoPipeline pipe_;
         bool pipe_ready_ = false;
         uint64_t pipe_gen_ = ~0ull;
         ComPtr<ID3D11Texture2D> snap_;
@@ -316,6 +335,7 @@ namespace ir
         VideoSelection selection_;
         std::unique_ptr<MfEncoder> mf_;
         VideoOptions video_options_;
+        CodecSel active_codec_ = CodecSel::H264; // resolved from the encoder that actually opened
         Scaler scaler_ = Scaler::Bicubic;
 
         // Replay rings. Only intrusive leases are stored.
@@ -433,7 +453,7 @@ namespace ir
     }
 
     // -------------------------------------------------------------------------
-    // Capture lifecycle — capture threads only publish Ref<VideoFrame>.
+    // Capture lifecycle â€” capture threads only publish Ref<VideoFrame>.
     // -------------------------------------------------------------------------
     HRESULT Engine::open_capture(const CaptureTarget &target, CaptureMethod requested)
     {
@@ -610,7 +630,7 @@ namespace ir
         return ensure_pipeline();
     }
 
-    bool Engine::create_video_encoders(const ObsVideoPipeline *pipe, bool allow_mf, std::string *err)
+    bool Engine::create_video_encoders(std::string *err)
     {
         hw_init_hr_.store(0);
         mf_.reset();
@@ -618,33 +638,52 @@ namespace ir
         std::string local;
         std::string &message = err ? *err : local;
         message.clear();
-        if (!select_video(video_options_, allow_mf, &gpu_, pipe, &packet_pool_, &selection_, &message))
+        if (!select_video(video_options_, &selection_, &message))
             return false;
 
-        if (selection_.kind == VideoSelection::MediaFoundation)
+        const auto try_create = [&](MfVendor vendor, std::string *why)
         {
-            std::string mf_err;
-            auto mf = MfEncoder::create(selection_.mf, &gpu_, (int)out_w_, (int)out_h_, fps_, bps_,
-                                        video_options_.rate, video_options_.preset, &mf_err);
+            auto mf = MfEncoder::create(selection_.mf, vendor, &gpu_, (int)out_w_, (int)out_h_, fps_, bps_,
+                                        video_options_.rate, video_options_.preset, why);
             if (!mf)
-            {
-                hw_init_hr_.store((int)E_FAIL);
-                message = mf_err.empty() ? "Media Foundation encoder could not be created." : mf_err;
                 return false;
-            }
+            selection_.mf_vendor = vendor;
             mf_ = std::move(mf);
             active_encoder_.store(mf_->kind_code());
-        }
-        else
+            active_codec_ = selection_.mf == MfCodec::Av1   ? CodecSel::Av1
+                            : selection_.mf == MfCodec::Hevc ? CodecSel::Hevc
+                                                              : CodecSel::H264;
+            return true;
+        };
+
+        if (try_create(selection_.mf_vendor, &message))
+            return true;
+
+        // Auto may fall through to the remaining vendors when the first choice
+        // is enumerated but cannot actually be opened on this machine.
+        if (video_options_.enc == Enc::Auto)
         {
-            active_encoder_.store(selection_.video->kind_code());
+            const MfVendor order[] = {MfVendor::Qsv, MfVendor::Vp12, MfVendor::Nvenc, MfVendor::Amf,
+                                      MfVendor::Software};
+            for (MfVendor vendor : order)
+            {
+                if (vendor == selection_.mf_vendor)
+                    continue;
+                if (video_options_.avail && !(video_options_.avail & mf_availability_bit(selection_.mf, vendor)))
+                    continue;
+                std::string why;
+                if (try_create(vendor, &why))
+                    return true;
+            }
         }
-        return true;
+        hw_init_hr_.store((int)E_FAIL);
+        message = message.empty() ? "Media Foundation encoder could not be created." : message;
+        return false;
     }
 
     bool Engine::encoder_uses_textures() const
     {
-        return (mf_ && mf_->accepts_textures()) || (selection_.video && selection_.video->accepts_textures());
+        return mf_ && mf_->accepts_textures();
     }
 
     bool Engine::ensure_pipeline()
@@ -672,7 +711,7 @@ namespace ir
         if (SUCCEEDED(hr))
             hr = gpu_.dev->CreateShaderResourceView(snap.Get(), nullptr, &snap_srv);
 
-        ObsVideoPipeline fresh;
+        VideoPipeline fresh;
         if (SUCCEEDED(hr))
         {
             const bool hd = out_w_ >= 1280 || out_h_ > 576;
@@ -685,7 +724,7 @@ namespace ir
         }
         // The new encoder wraps these exact textures: create it before publishing.
         std::string err;
-        if (!create_video_encoders(&fresh, true, &err))
+        if (!create_video_encoders(&err))
         {
             fail(STAGE_ENCODER, E_FAIL, err.empty() ? "Could not recreate the video encoder." : err);
             return false;
@@ -756,10 +795,7 @@ namespace ir
                 ++dropped_;
                 return true;
             }
-            if (mf_)
-                ok = mf_->encode_texture(tex, pts, idr, out, &err);
-            else
-                ok = selection_.video->encode_texture(slot, pts, idr, out, &err);
+            ok = mf_->encode_texture(tex, pts, idr, out, &err);
             t_encode_ += qpc100ns() - t0;
             ++t_frames_;
         }
@@ -775,10 +811,7 @@ namespace ir
             }
             const auto y = mapped.y(), uv = mapped.uv();
             const size_t y_stride = mapped.y_stride(), uv_stride = mapped.uv_stride();
-            if (mf_)
-                ok = mf_->encode_memory(y.data(), y_stride, uv.data(), uv_stride, pts, idr, out, &err);
-            else
-                ok = selection_.video->encode_nv12(y.data(), y_stride, uv.data(), uv_stride, pts, idr, out, &err);
+            ok = mf_->encode_memory(y.data(), y_stride, uv.data(), uv_stride, pts, idr, out, &err);
             const int64_t t2 = qpc100ns();
             t_map_ += t1 - t0;
             t_encode_ += t2 - t1;
@@ -917,10 +950,10 @@ namespace ir
                 canvas_.snapshot_into(snap_.Get());
                 t_snapshot_ += qpc100ns() - p0;
                 const uint32_t slot = next_slot_;
-                next_slot_ = (next_slot_ + 1) % ObsVideoPipeline::kSlots;
+                next_slot_ = (next_slot_ + 1) % VideoPipeline::kSlots;
                 // GPU encoders already hold the six slot leases (returned by their
-                // AVBufferRef release callbacks). Only the CPU staging path needs an
-                // engine-held lease, released by MappedFrame after Map/Unmap.
+                // slot leases). Only the CPU staging path needs an engine-held lease,
+                // released by MappedFrame after Map/Unmap.
                 const bool gpu_path = encoder_uses_textures();
                 Ref<GpuFrame> lease;
                 if (!gpu_path)
@@ -935,8 +968,8 @@ namespace ir
                     pipe_.render(snap_srv_.Get(), slot, !gpu_path);
                     t_render_ += qpc100ns() - r0;
                     pending_.push_back(Pending{slot, pts, std::move(lease)});
-                    // Keep a couple of frames in flight like OBS's staging ring,
-                    // so Map() has less chance to stall a slow whole-screen capture.
+                    // Keep a couple of frames in flight so Map() has less chance
+                    // to stall a slow whole-screen capture.
                     while (pending_.size() > 2) // kPendingMax: at most 3 outstanding
                     {
                         Pending p = std::move(pending_.front());
@@ -977,13 +1010,13 @@ namespace ir
     {
         // Drain the one-frame-delayed staging slot and flush the active encoder
         // while every GPU texture is still alive.
-        if (mf_ || selection_.video)
+        if (mf_)
         {
             if (pipe_ready_)
                 flush_pending();
             std::vector<Ref<PacketRef>> out;
             std::string err;
-            const bool ok = mf_ ? mf_->flush(out, &err) : selection_.video->flush(out, &err);
+            const bool ok = mf_->flush(out, &err);
             if (ok)
             {
                 for (auto &packet : out)
@@ -997,11 +1030,47 @@ namespace ir
         mf_.reset();
         selection_ = VideoSelection();
         pending_.clear();
-        pipe_ = ObsVideoPipeline();
+        pipe_ = VideoPipeline();
         pipe_ready_ = false;
         snap_.Reset();
         snap_srv_.Reset();
         canvas_ = GpuCanvas();
+    }
+
+    void Engine::watchdog_loop()
+    {
+        // The video thread's heartbeat only advances while that lane is live.
+        // If it stops for three seconds, the capture queue will fill and the
+        // engine would otherwise keep reporting a healthy, growing replay ring.
+        int64_t last = heartbeat_.load();
+        int64_t stamp = qpc100ns();
+        while (!watchdog_stop_.load())
+        {
+            Sleep(250);
+            if (!running_.load())
+            {
+                last = heartbeat_.load();
+                stamp = qpc100ns();
+                continue;
+            }
+            const int64_t now = qpc100ns();
+            const int64_t hb = heartbeat_.load();
+            if (hb != last)
+            {
+                last = hb;
+                stamp = now;
+                continue;
+            }
+            if (now - stamp > 3 * SECOND_100NS)
+            {
+                fail(STAGE_ENCODER, E_FAIL,
+                     "Video pipeline stopped responding. Capturing was stopped; restart buffering to recover.");
+                running_.store(false);
+                q_raw_wgc_.stop();
+                q_raw_dxgi_.stop();
+                return;
+            }
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -1103,11 +1172,6 @@ namespace ir
         captured_.store(0);
 
         ComGuard com;
-        if (!ff_load())
-        {
-            fail(STAGE_FFMPEG, E_FAIL, "");
-            return IR_FFMPEG_UNAVAILABLE;
-        }
 
         auto mons = enumerate_monitors();
         if (mons.empty())
@@ -1123,6 +1187,12 @@ namespace ir
         const uint32_t bps = (uint32_t)std::max(250, bitrate_kbps) * 1000u;
         const auto [out_w, out_h] = fit_resolution(mon.w, mon.h, cap_w, cap_h);
         video_options_ = options_from_pref(pref, (int)out_w, (int)out_h, resolved_fps, bps);
+        std::string selection_error;
+        if (!validate_video_selection(video_options_, &selection_error))
+        {
+            fail(STAGE_ENCODER, E_FAIL, selection_error);
+            return IR_FAIL;
+        }
 
         {
             std::lock_guard<std::mutex> lock(config_mutex_);
@@ -1268,6 +1338,8 @@ namespace ir
         }
 
         ensure_save_thread();
+        watchdog_stop_.store(false);
+        watchdog_thread_ = std::thread([this] { watchdog_loop(); });
         {
             std::lock_guard<std::mutex> lock(config_mutex_);
             audio_target_ = (t.window && (t.options & CAP_PROCESS_AUDIO)) ? t.window : nullptr;
@@ -1292,6 +1364,9 @@ namespace ir
     void Engine::stop()
     {
         std::lock_guard<std::mutex> life(lifecycle_mutex_);
+        watchdog_stop_.store(true);
+        if (watchdog_thread_.joinable())
+            watchdog_thread_.join();
         const bool was_running = running_.load();
 
         // Stop capture producers first. Stopping the queues first guarantees no
@@ -1507,10 +1582,11 @@ namespace ir
         *job_id = 0;
         try
         {
-            if (!save_memory_available(audio_bytes_snapshot()))
+            std::string mem_detail;
+            if (!save_memory_available(audio_bytes_snapshot(), &mem_detail))
             {
                 clear_last_job(-1);
-                set_last_error("Not enough committed memory to save the clip.");
+                set_last_error("Not enough committed memory to save the clip (" + mem_detail + ").");
                 return IR_LOW_MEMORY;
             }
             if (!has_video_frames())
@@ -1582,6 +1658,53 @@ namespace ir
         }
     }
 
+    // A source that stops and restarts can jump straight from a waveform to
+    // zero (or back), which decodes as a click. Fade a short ramp at the edges
+    // of sustained silence in the saved mix only; the live capture path is untouched.
+    static void fade_silence_edges(std::vector<int16_t> &pcm)
+    {
+        const size_t frames = pcm.size() / 2;
+        if (frames < 32)
+            return;
+        constexpr int threshold = 12;
+        constexpr size_t min_silence = 480; // 10 ms at 48 kHz
+        constexpr size_t fade = 240;        // 5 ms at 48 kHz
+        std::vector<uint16_t> amp(frames);
+        for (size_t i = 0; i < frames; ++i)
+        {
+            const int l = std::abs((int)pcm[i * 2]);
+            const int r = std::abs((int)pcm[i * 2 + 1]);
+            amp[i] = (uint16_t)std::max(l, r);
+        }
+        auto scale = [&](size_t frame, float factor)
+        {
+            pcm[frame * 2] = (int16_t)std::clamp((int)std::lround((int)pcm[frame * 2] * factor), -32768, 32767);
+            pcm[frame * 2 + 1] =
+                (int16_t)std::clamp((int)std::lround((int)pcm[frame * 2 + 1] * factor), -32768, 32767);
+        };
+        for (size_t s = 0; s < frames;)
+        {
+            if (amp[s] > threshold)
+            {
+                ++s;
+                continue;
+            }
+            size_t e = s;
+            while (e < frames && amp[e] <= threshold)
+                ++e;
+            if (e - s >= min_silence)
+            {
+                const size_t begin = s > fade ? s - fade : 0;
+                for (size_t i = begin; i < s; ++i)
+                    scale(i, (float)(s - i) / (float)fade);
+                const size_t end = std::min(frames, e + fade);
+                for (size_t i = e; i < end; ++i)
+                    scale(i, (float)(i - e + 1) / (float)fade);
+            }
+            s = e;
+        }
+    }
+
     static std::vector<int16_t> mix_range(int64_t t0, int64_t t1,
                                           const std::vector<Ref<AudioBlock>> &sys,
                                           const std::vector<Ref<AudioBlock>> &mic)
@@ -1615,12 +1738,12 @@ namespace ir
         std::vector<int16_t> out(acc.size());
         for (size_t i = 0; i < acc.size(); ++i)
             out[i] = (int16_t)std::clamp(acc[i], -32768, 32767);
+        fade_silence_edges(out);
         return out;
     }
 
     int Engine::run_save(const std::shared_ptr<SaveJob> &job)
     {
-        const std::string utf8_path = wide_to_utf8(job->path.data(), job->path.size());
         std::vector<Ref<PacketRef>> frames;
         std::vector<Ref<AudioBlock>> sys, mic;
         {
@@ -1648,7 +1771,8 @@ namespace ir
             audio.push_back({reinterpret_cast<const uint8_t *>(mixed.data()), (uint32_t)(mixed.size() / 2), t0});
         }
         publish_last_progress(job, 30);
-        return mux_until(utf8_path, frames, audio, fps_, (int)out_w_, (int)out_h_, job->secondsBack, end);
+        return write_mf_file(job->path, frames, audio, active_codec_, fps_, (int)out_w_, (int)out_h_,
+                             job->secondsBack, end);
     }
 
     // -------------------------------------------------------------------------
@@ -1781,45 +1905,23 @@ namespace ir
         constexpr int W = 1280, H = 720, FPS = 30;
         constexpr uint32_t BPS = 4'000'000;
         uint32_t mask = 0;
-        struct Item
+        const MfVendor vendors[] = {MfVendor::Qsv, MfVendor::Vp12, MfVendor::Nvenc, MfVendor::Amf,
+                                    MfVendor::Software};
+        const MfCodec codecs[] = {MfCodec::H264, MfCodec::Hevc, MfCodec::Av1};
+        for (MfVendor vendor : vendors)
         {
-            const char *name;
-            uint32_t bit;
-        };
-        static const Item items[] = {
-            {"h264_nvenc", ENC_H264_NVENC},
-            {"hevc_nvenc", ENC_HEVC_NVENC},
-            {"h264_amf", ENC_H264_AMF},
-            {"hevc_amf", ENC_HEVC_AMF},
-            {"h264_qsv", ENC_H264_QSV},
-            {"hevc_qsv", ENC_HEVC_QSV},
-            {"libx264", ENC_H264_X264},
-            {"libx265", ENC_HEVC_X265},
-        };
-        if (ff_load())
-        {
-            for (const Item &it : items)
+            for (MfCodec codec : codecs)
             {
                 try
                 {
-                    if (probe_ffmpeg_encoder(it.name, W, H, FPS, BPS))
-                        mask |= it.bit;
+                    HRESULT hr = S_OK;
+                    if (probe_mf_encoder(codec, vendor, W, H, FPS, BPS, &hr))
+                        mask |= mf_availability_bit(codec, vendor);
                 }
                 catch (...)
                 {
                 }
             }
-        }
-        try
-        {
-            HRESULT hr;
-            if (probe_mf_encoder(MfCodec::H264, W, H, FPS, BPS, &hr))
-                mask |= ENC_H264_MF;
-            if (probe_mf_encoder(MfCodec::Hevc, W, H, FPS, BPS, &hr))
-                mask |= ENC_HEVC_MF;
-        }
-        catch (...)
-        {
         }
         return mask;
     }

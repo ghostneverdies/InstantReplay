@@ -33,17 +33,17 @@ public sealed class Settings
 
     /// <summary>
     /// Result of the last encoder probe (frames were actually pushed through each encoder), keyed
-    /// by FFmpeg encoder name, e.g. "h264_nvenc": true. Null or incomplete means detection has not
-    /// run yet and the app runs it before recording starts.
+    /// by Media Foundation encoder key, e.g. "h264_mf_qsv": true. Null or incomplete means detection
+    /// has not run yet and the app runs it before recording starts.
     /// </summary>
     [JsonPropertyName("encoders")]
     public Dictionary<string, bool>? DetectedEncoders { get; set; }
 
     /// <summary>
-    /// Bumped whenever the FFmpeg build or the probe logic changes. A stored result from an older
-    /// version is discarded so a stale "NVENC available" entry can never survive an upgrade.
+    /// Bumped whenever the Media Foundation encoder set or the probe logic changes. A stored result
+    /// from an older version is discarded so a stale availability entry can never survive an upgrade.
     /// </summary>
-    public const int CurrentEncoderProbeVersion = 2;
+    public const int CurrentEncoderProbeVersion = 4;
 
     [JsonPropertyName("encoders_probe_version")]
     public int EncoderProbeVersion { get; set; }
@@ -56,14 +56,8 @@ public sealed class Settings
 
     public string Container { get; set; } = "Mp4";
 
-    public static string ContainerExtension(string container) => container switch
-    {
-        "Mkv" => "mkv",
-        "Mov" => "mov",
-        "Ts" => "ts",
-        "Flv" => "flv",
-        _ => "mp4",
-    };
+    // Media Foundation writes MP4 only. Legacy container choices map to .mp4.
+    public static string ContainerExtension(string container) => "mp4";
 
     public string CaptureMethod { get; set; } = "Dxgi";
     public string CaptureTarget { get; set; } = "Display";
@@ -90,6 +84,21 @@ public sealed class Settings
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
         "InstantReplay", "settings.json");
 
+    /// <summary>Maps a stored preset (including legacy names) to a valid seven-level name.</summary>
+    private static string MigratePreset(string stored, string fallback, bool speedScale)
+    {
+        if (VideoQualityProfile.PresetNames.Contains(stored)) return stored;
+        int idx = stored switch
+        {
+            "Low" => speedScale ? 2 : 0,
+            "Speed" => 2,
+            "Quality" => 4,
+            "High" => speedScale ? 4 : 6,
+            _ => VideoQualityProfile.PresetIndex(fallback),
+        };
+        return VideoQualityProfile.PresetNames[idx];
+    }
+
     public static Settings Load()
     {
         try
@@ -103,8 +112,20 @@ public sealed class Settings
                 {
                     if (loaded.CaptureTarget is "Window" or "ActiveWindow") loaded.CaptureTarget = "SpecificWindows";
                     loaded.SpecificWindows ??= [];
-                    if (loaded.EncoderChoice is not ("Auto" or "Nvenc" or "Amf" or "Qsv" or "X264" or "X265" or "Software"))
+
+                    // Legacy encoder choices from the retired external encoder stack
+                    // migrate to Auto; only Media Foundation choices remain valid.
+                    if (loaded.EncoderChoice is not ("Auto" or "MfQsv" or "MfVp12" or "MfNvenc" or "MfAmf" or
+                                                     "MfSoftware"))
                         loaded.EncoderChoice = "Auto";
+                    if (loaded.VideoCodec is not ("Auto" or "Hevc" or "H264" or "Av1")) loaded.VideoCodec = "H264";
+                    if (loaded.Container != "Mp4") loaded.Container = "Mp4";
+
+                    // Migrate the old Speed/Balanced/Quality presets onto the
+                    // seven-level ultra-fast -> slowest scale.
+                    loaded.EncoderPreset = MigratePreset(loaded.EncoderPreset, "Balanced", speedScale: true);
+                    loaded.QualityPreset = MigratePreset(loaded.QualityPreset, "Balanced", speedScale: false);
+
                     if (loaded.FrameRate is not (30 or 60 or 120)) loaded.FrameRate = 60;
                     loaded.RateControl = string.Equals(loaded.RateControl, "Vbr", StringComparison.OrdinalIgnoreCase)
                         ? "Vbr" : "Cbr";

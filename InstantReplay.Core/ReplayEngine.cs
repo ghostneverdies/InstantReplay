@@ -122,23 +122,25 @@ public sealed class ReplayEngine : IDisposable
             int hwHr = IrNative.IR_HwInitHr(_engine);
             string encName = active switch
             {
-                20 => "FFmpeg hevc_mf (Media Foundation)",
-                19 => "FFmpeg libx265 (software)",
-                18 => "FFmpeg hevc_qsv (Intel Quick Sync)",
-                17 => "FFmpeg hevc_amf (AMD)",
-                16 => "FFmpeg hevc_nvenc (NVIDIA)",
-                30 => "FFmpeg h264_mf (Media Foundation fallback)",
-                29 => "FFmpeg libx264 (CPU final fallback)",
-                28 => "FFmpeg h264_qsv (Intel Quick Sync fallback)",
-                27 => "FFmpeg h264_amf (AMD fallback)",
-                26 => "FFmpeg h264_nvenc (NVIDIA fallback)",
-                8 => "hardware (NVENC, GPU shaders, zero-copy)",
-                4 => "hardware (Media Foundation, GPU shaders, zero-copy)",
-                2 => "hardware (Media Foundation, CPU upload)",
-                1 => "software (Microsoft H.264 MFT)",
+                // Media Foundation MFTs, split by codec and vendor.
+                20 => "MF HEVC (Intel Quick Sync)",
+                21 => "MF HEVC (Intel Gen12 / Arc, VP12)",
+                22 => "MF HEVC (NVIDIA NVENC)",
+                23 => "MF HEVC (AMD AMF)",
+                24 => "MF HEVC (software)",
+                30 => "MF H.264 (Intel Quick Sync)",
+                31 => "MF H.264 (Intel Gen12 / Arc, VP12)",
+                32 => "MF H.264 (NVIDIA NVENC)",
+                33 => "MF H.264 (AMD AMF)",
+                34 => "MF H.264 (software)",
+                40 => "MF AV1 (Intel Quick Sync)",
+                41 => "MF AV1 (Intel Gen12 / Arc, VP12)",
+                42 => "MF AV1 (NVIDIA NVENC)",
+                43 => "MF AV1 (AMD AMF)",
+                44 => "MF AV1 (software)",
                 _ => "unknown",
             };
-            Logger.Info($"[Engine] Encoder: {encName} (requested {preference}){(hwHr != 0 && active != 8 ? $", NVENC/GPU hardware path unavailable: code 0x{hwHr:X8}" : "")}");
+            Logger.Info($"[Engine] Encoder: {encName} (requested {preference}){(hwHr != 0 ? $", hardware path unavailable: code 0x{hwHr:X8}" : "")}");
 
             int activeCap = IrNative.IR_ActiveCaptureMethod(_engine);
             string capName = activeCap switch
@@ -211,7 +213,8 @@ public sealed class ReplayEngine : IDisposable
             try
             {
                 int rc = IrNative.IR_BeginSave(_engine, outPath, Math.Max(secondsBack, 1), out jobId);
-                Logger.Info($"[Engine] IR_BeginSave('{outPath}', {secondsBack}s, job {jobId}) -> rc={rc}");
+                string detail = rc == SaveOk ? "" : $"; {GetLastErrorMessage()}";
+                Logger.Info($"[Engine] IR_BeginSave('{outPath}', {secondsBack}s, job {jobId}) -> rc={rc}{detail}");
                 return rc;
             }
             catch (Exception ex)

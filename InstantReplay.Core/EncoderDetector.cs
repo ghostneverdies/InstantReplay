@@ -5,15 +5,15 @@ using InstantReplay.Services;
 namespace InstantReplay.Core;
 
 /// <summary>
-/// Runs the engine's encoder probe. The probe opens every FFmpeg hardware/software encoder and the
-/// manual Media Foundation hardware path and pushes real frames through each one, so an encoder is
-/// only reported as available when it actually produced output on this machine.
+/// Runs the engine's encoder probe. The probe opens every Media Foundation hardware and software
+/// MFT and pushes real frames through each one, so an encoder is only reported as available when it
+/// actually produced output on this machine.
 /// </summary>
 public static class EncoderDetector
 {
     private static readonly SemaphoreSlim Gate = new(1, 1);
 
-    /// <summary>Returns the per-encoder result keyed by FFmpeg name, or null if the probe could not run.</summary>
+    /// <summary>Returns the per-encoder result keyed by Media Foundation encoder key, or null if the probe could not run.</summary>
     public static async Task<Dictionary<string, bool>?> DetectAsync()
     {
         await Gate.WaitAsync().ConfigureAwait(false);
@@ -50,13 +50,15 @@ public static class EncoderDetector
     public static bool IsSelectable(EncoderPreference preference, IReadOnlyDictionary<string, bool>? detected)
     {
         if (preference == EncoderPreference.Auto || !EncoderAvailabilityMap.IsComplete(detected)) return true;
-        bool Has(string a, string b) => (detected!.TryGetValue(a, out bool x) && x) || (detected.TryGetValue(b, out bool y) && y);
+        bool On(string key) => detected!.TryGetValue(key, out bool v) && v;
+        bool Has(string a, string b) => On(a) || On(b);
         return preference switch
         {
-            EncoderPreference.Nvenc => Has("h264_nvenc", "hevc_nvenc"),
-            EncoderPreference.Amf => Has("h264_amf", "hevc_amf"),
-            EncoderPreference.Qsv => Has("h264_qsv", "hevc_qsv"),
-            EncoderPreference.X264 => Has("libx264", "libx265"),
+            EncoderPreference.MfQsv => Has("h264_mf_qsv", "hevc_mf_qsv"),
+            EncoderPreference.MfVp12 => Has("h264_mf_vp12", "hevc_mf_vp12"),
+            EncoderPreference.MfNvenc => Has("h264_mf_nvenc", "hevc_mf_nvenc"),
+            EncoderPreference.MfAmf => Has("h264_mf_amf", "hevc_mf_amf"),
+            EncoderPreference.MfSoftware => Has("h264_mf_software", "hevc_mf_software"),
             _ => true,
         };
     }

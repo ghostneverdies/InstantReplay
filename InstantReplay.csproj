@@ -73,41 +73,25 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Native payload is always refreshed: an incremental MSBuild + PreserveNewest
+         could leave a stale engine.dll in the output after a separate native build. -->
     <None Include="engine\bin\engine.dll" Link="engine\bin\engine.dll">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
-    </None>
-    <None Include="engine\encoder\*.dll" Link="engine\encoder\%(Filename)%(Extension)">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
-    </None>
-    <None Include="engine\encoder\FFMPEG-LICENSE.txt" Link="engine\encoder\FFMPEG-LICENSE.txt">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+      <CopyToPublishDirectory>Always</CopyToPublishDirectory>
     </None>
     <None Include="engine\hooks\bin\capture_hook.dll" Link="engine\hooks\bin\capture_hook.dll">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+      <CopyToPublishDirectory>Always</CopyToPublishDirectory>
     </None>
     <None Include="engine\hooks\bin\overlay_hook.dll" Link="engine\hooks\bin\overlay_hook.dll">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+      <CopyToPublishDirectory>Always</CopyToPublishDirectory>
     </None>
   </ItemGroup>
 
-  <ItemGroup>
-    <_NativeEngineSource Include="engine\engine_core\src\**\*.cpp;engine\engine_core\src\**\*.h" />
-    <_NativeEngineSource Include="engine\engine_core\shaders\*.hlsl;engine\engine_core\build.bat" />
-    <_HookSource Include="engine\hooks\capture_hook\src\*.rs;engine\hooks\capture_hook\Cargo.toml;engine\hooks\capture_hook\Cargo.lock;engine\hooks\capture_hook\build.rs" />
-    <_HookSource Include="engine\hooks\overlay_hook\overlay_hook.cpp;engine\hooks\build.ps1;engine\hooks\third_party\minhook\src\*.c;engine\hooks\third_party\minhook\src\hde\*.c;engine\hooks\third_party\minhook\include\MinHook.h" />
-    <_RequiredFfmpegDll Include="engine\encoder\avcodec-59.dll" />
-    <_RequiredFfmpegDll Include="engine\encoder\avformat-59.dll" />
-    <_RequiredFfmpegDll Include="engine\encoder\avutil-57.dll" />
-    <_RequiredFfmpegDll Include="engine\encoder\swresample-4.dll" />
-  </ItemGroup>
-
-  <Target Name="BuildNativeEngine" BeforeTargets="PrepareForBuild" Inputs="@(_NativeEngineSource)"
-    Outputs="engine\bin\engine.dll">
+  <!-- No Inputs/Outputs: always rebuild so dotnet build/run can never skip the
+       native engine and leave a stale engine.dll behind the C++ sources. -->
+  <Target Name="BuildNativeEngine" BeforeTargets="PrepareForBuild">
     <MakeDir Directories="engine\bin" />
     <Exec Command="call &quot;$(MSBuildProjectDirectory)\engine\engine_core\build.bat&quot;" />
   </Target>
@@ -116,12 +100,11 @@
     DependsOnTargets="BuildNativeEngine">
     <Error Condition="!Exists('engine\bin\engine.dll')"
       Text="Native engine is missing: engine\bin\engine.dll" />
-    <Error Condition="!Exists('%(_RequiredFfmpegDll.Identity)')"
-      Text="Required FFmpeg library is missing: %(_RequiredFfmpegDll.Identity)" />
   </Target>
 
-  <Target Name="BuildHook" BeforeTargets="PrepareForBuild" Inputs="@(_HookSource)"
-    Outputs="engine\hooks\bin\capture_hook.dll;engine\hooks\bin\overlay_hook.dll">
+  <!-- No Inputs/Outputs: always rebuild the injected hooks too, so every native
+       DLL in the output matches its source on each build/run. -->
+  <Target Name="BuildHook" BeforeTargets="PrepareForBuild">
     <Exec
       Command="powershell -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\engine\hooks\build.ps1&quot;" />
   </Target>

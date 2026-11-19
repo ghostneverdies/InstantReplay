@@ -47,8 +47,6 @@
 #include <utility>
 #include <vector>
 
-struct AVBufferRef;
-
 namespace ir
 {
 
@@ -61,7 +59,7 @@ namespace ir
     constexpr int IR_FAIL = -1;
     constexpr int IR_NOT_ENOUGH_DATA = -30;
     constexpr int IR_LOW_MEMORY = -31;
-    constexpr int IR_FFMPEG_UNAVAILABLE = -40;
+    // -40 is retired with the old external encoder stack; do not reuse it.
     constexpr int IR_PENDING = -999;
 
     constexpr int STAGE_CREATE_DEVICE = 1;
@@ -71,7 +69,7 @@ namespace ir
     constexpr int STAGE_ENCODER = 5;
     constexpr int STAGE_AUDIO = 6;
     constexpr int STAGE_MUX = 7;
-    constexpr int STAGE_FFMPEG = 8;
+    // 8 is retired with the old external encoder stack; do not renumber 1..7.
 
     constexpr int64_t SECOND_100NS = 10'000'000;
     constexpr uint32_t AUDIO_RATE = 48000;
@@ -89,22 +87,38 @@ namespace ir
 
     constexpr int KIND_UNKNOWN = 0;
 
-    constexpr uint32_t ENC_H264_NVENC = 1u << 0;
-    constexpr uint32_t ENC_HEVC_NVENC = 1u << 1;
-    constexpr uint32_t ENC_H264_AMF = 1u << 2;
-    constexpr uint32_t ENC_HEVC_AMF = 1u << 3;
-    constexpr uint32_t ENC_H264_QSV = 1u << 4;
-    constexpr uint32_t ENC_HEVC_QSV = 1u << 5;
-    constexpr uint32_t ENC_H264_X264 = 1u << 6;
-    constexpr uint32_t ENC_HEVC_X265 = 1u << 7;
-    constexpr uint32_t ENC_H264_MF = 1u << 8;
-    constexpr uint32_t ENC_HEVC_MF = 1u << 9;
-    constexpr uint32_t ENC_ALL = (1u << 10) - 1;
+    // Bits 0..7 are retired with the old external encoder stack.
+    // Media Foundation hardware MFTs, split by vendor. "VP12" is the Intel
+    // Gen12 / Arc / Core Ultra family; it still encodes H.264 or HEVC.
+    constexpr uint32_t ENC_H264_MF_QSV = 1u << 8;
+    constexpr uint32_t ENC_HEVC_MF_QSV = 1u << 9;
+    constexpr uint32_t ENC_H264_MF_VP12 = 1u << 10;
+    constexpr uint32_t ENC_HEVC_MF_VP12 = 1u << 11;
+    constexpr uint32_t ENC_H264_MF_NVENC = 1u << 12;
+    constexpr uint32_t ENC_HEVC_MF_NVENC = 1u << 13;
+    constexpr uint32_t ENC_H264_MF_AMF = 1u << 14;
+    constexpr uint32_t ENC_HEVC_MF_AMF = 1u << 15;
+    constexpr uint32_t ENC_AV1_MF_QSV = 1u << 16;
+    constexpr uint32_t ENC_AV1_MF_VP12 = 1u << 17;
+    constexpr uint32_t ENC_AV1_MF_NVENC = 1u << 18;
+    constexpr uint32_t ENC_AV1_MF_AMF = 1u << 19;
+    constexpr uint32_t ENC_H264_MF_SOFTWARE = 1u << 20;
+    constexpr uint32_t ENC_HEVC_MF_SOFTWARE = 1u << 21;
+    constexpr uint32_t ENC_AV1_MF_SOFTWARE = 1u << 22;
+    constexpr uint32_t ENC_ALL = (1u << 23) - 1;
+
+    // Compact per-codec availability packed into IR_Start's pref bits 24..31.
+    // Managed code derives this byte from the full probe mask for the selected
+    // codec only, so 8 bits are enough for every encoder variant.
+    constexpr uint32_t AVAIL_MF_QSV = 1u << 4;
+    constexpr uint32_t AVAIL_MF_VP12 = 1u << 5;
+    constexpr uint32_t AVAIL_MF_NVENC = 1u << 6;
+    constexpr uint32_t AVAIL_MF_AMF = 1u << 7;
 
     // -------------------------------------------------------------------------
     // Locked v4 limits. These are invariants, not tuning knobs.
     // -------------------------------------------------------------------------
-    constexpr int kVideoSlots = 6;        // ObsVideoPipeline::kSlots
+    constexpr int kVideoSlots = 6;        // VideoPipeline::kSlots
     constexpr int kSurfaces = 6;          // encoder surfaces
     constexpr int kAsyncDepth = 5;        // <= kVideoSlots - 1; 7 caused corruption
     constexpr size_t kPendingMax = 3;     // encode when pending_.size() > 2
@@ -209,11 +223,12 @@ namespace ir
 
     enum class Enc
     {
-        Auto,
-        Nvenc,
-        Amf,
-        Qsv,
-        X264
+        Auto = 0,
+        MfQsv = 5,
+        MfVp12 = 6,
+        MfNvenc = 7,
+        MfAmf = 8,
+        MfSoftware = 11
     };
 
     enum class Rate
@@ -226,20 +241,37 @@ namespace ir
     {
         Auto,
         Hevc,
-        H264
+        H264,
+        Av1
     };
 
+    // Seven user-facing quality/speed levels, ultra fast -> slowest. The
+    // ordinal is the value passed through IR_Start's pref bits 12..14.
     enum class Preset
     {
-        Speed,
+        UltraFast = 0,
+        VeryFast,
+        Fast,
         Balanced,
-        Quality
+        Slow,
+        Slower,
+        Slowest
     };
 
     enum class MfCodec
     {
         H264,
-        Hevc
+        Hevc,
+        Av1
+    };
+
+    enum class MfVendor
+    {
+        Qsv,      // Intel Quick Sync MFT
+        Vp12,     // Intel Gen12 / Arc / Core Ultra MFT
+        Nvenc,    // NVIDIA MFT
+        Amf,      // AMD MFT
+        Software  // Microsoft system-memory MFT
     };
 
     enum class SaveState : int
@@ -356,21 +388,32 @@ namespace ir
     {
     public:
         explicit ObjectPool(size_t count, size_t reserve_bytes = 0)
+            : batch_(std::max<size_t>(1, count)), reserve_bytes_(reserve_bytes)
         {
             storage_.reserve(count);
             free_.reserve(count);
-            for (size_t i = 0; i < count; ++i)
-            {
-                auto obj = std::make_unique<T>(reserve_bytes);
-                obj->attach_pool(this);
-                free_.push_back(obj.get());
-                storage_.push_back(std::move(obj));
-            }
+            grow(batch_);
         }
 
         Ref<T> acquire()
         {
             std::lock_guard<std::mutex> lock(mutex_);
+            if (free_.empty())
+            {
+                // A replay ring legitimately holds ring_seconds * fps packets:
+                // up to 120s * 120fps = 14400, far more than the initial batch.
+                // Grow on demand rather than stalling the video thread when the
+                // pool runs dry. On allocation failure, return an empty Ref so
+                // the caller can report the error instead of crashing.
+                try
+                {
+                    grow(batch_);
+                }
+                catch (...)
+                {
+                    return {};
+                }
+            }
             if (free_.empty())
                 return {};
             T *obj = free_.back();
@@ -394,8 +437,21 @@ namespace ir
         }
 
     private:
+        void grow(size_t count)
+        {
+            for (size_t i = 0; i < count; ++i)
+            {
+                auto obj = std::make_unique<T>(reserve_bytes_);
+                obj->attach_pool(this);
+                free_.push_back(obj.get());
+                storage_.push_back(std::move(obj));
+            }
+        }
+
         std::vector<std::unique_ptr<T>> storage_;
         std::vector<T *> free_;
+        size_t batch_ = 1;
+        size_t reserve_bytes_ = 0;
         mutable std::mutex mutex_;
     };
 
@@ -466,7 +522,7 @@ namespace ir
     };
 
     // A GpuFrame keeps the exact pipeline slot it was acquired for. The slot is
-    // returned by the AVBufferRef release callback on the GPU path and by the
+    // returned by the encoder's slot lease on the GPU path and by the
     // MappedFrame destructor on the CPU path; it is never renumbered.
     struct GpuFrame : RefCounted
     {
@@ -568,10 +624,7 @@ namespace ir
         size_t uv_stride_ = 0;
     };
 
-    using AvBufferFreeFn = void (*)(void *, uint8_t *);
-
-    // One contiguous muxer sample. Keyframes contain [extradata][picture] in a
-    // single buffer, exactly as the current engine does.
+    // One contiguous muxer sample. The byte span always points into owned_.
     struct PacketRef : RefCounted
     {
         explicit PacketRef(size_t reserve = 0)
@@ -579,30 +632,26 @@ namespace ir
             if (reserve)
                 owned_.reserve(reserve);
         }
-        AVBufferRef *native = nullptr;
-        AvBufferFreeFn native_free = nullptr;
         std::vector<uint8_t> owned_;
         std::span<const uint8_t> payload;
+        // Number of leading payload bytes that are codec configuration rather
+        // than sample data. The writer consumes these when configuring streams.
+        size_t codec_data = 0;
         bool keyframe = false;
         int64_t pts100ns = 0;
 
-        void set(AVBufferRef *buf, AvBufferFreeFn free_fn, std::span<const uint8_t> bytes,
-                 bool key, int64_t pts) noexcept
+        void set(std::span<const uint8_t> bytes, bool key, int64_t pts, size_t config_bytes = 0) noexcept
         {
-            native = buf;
-            native_free = free_fn;
             payload = bytes;
+            codec_data = config_bytes;
             keyframe = key;
             pts100ns = pts;
         }
         void on_recycle() noexcept override
         {
-            if (native && native_free)
-                native_free(nullptr, reinterpret_cast<uint8_t *>(native));
-            native = nullptr;
-            native_free = nullptr;
             owned_.clear();
             payload = {};
+            codec_data = 0;
             keyframe = false;
             pts100ns = 0;
         }
@@ -961,17 +1010,17 @@ namespace ir
         std::unique_ptr<Impl> p_;
     };
 
-    class ObsVideoPipeline
+    class VideoPipeline
     {
     public:
         static constexpr int kSlots = kVideoSlots;
 
-        ObsVideoPipeline();
-        ~ObsVideoPipeline();
-        ObsVideoPipeline(ObsVideoPipeline &&) noexcept;
-        ObsVideoPipeline &operator=(ObsVideoPipeline &&) noexcept;
-        ObsVideoPipeline(const ObsVideoPipeline &) = delete;
-        ObsVideoPipeline &operator=(const ObsVideoPipeline &) = delete;
+        VideoPipeline();
+        ~VideoPipeline();
+        VideoPipeline(VideoPipeline &&) noexcept;
+        VideoPipeline &operator=(VideoPipeline &&) noexcept;
+        VideoPipeline(const VideoPipeline &) = delete;
+        VideoPipeline &operator=(const VideoPipeline &) = delete;
 
         HRESULT create(const GpuContext &gpu, uint32_t canvas_w, uint32_t canvas_h,
                        uint32_t out_w, uint32_t out_h, bool hd, Scaler scaler);
@@ -993,50 +1042,15 @@ namespace ir
         std::unique_ptr<Impl> p_;
     };
 
-    static_assert(ObsVideoPipeline::kSlots == 6, "slot count is frozen at 6");
-
-    void obs_color_vectors(bool hd, float vec[3][4]);
+    static_assert(VideoPipeline::kSlots == 6, "slot count is frozen at 6");
 
     // -------------------------------------------------------------------------
     // Encoder interfaces. Implementations live in video.cpp.
     // -------------------------------------------------------------------------
     struct VideoSelection
     {
-        enum Kind
-        {
-            Ffmpeg,
-            MediaFoundation
-        } kind = Ffmpeg;
-        std::unique_ptr<class FfVideo> video;
         MfCodec mf = MfCodec::H264;
-    };
-
-    class FfVideo
-    {
-    public:
-        ~FfVideo();
-        FfVideo(FfVideo &&) noexcept;
-        FfVideo &operator=(FfVideo &&) noexcept;
-        FfVideo(const FfVideo &) = delete;
-        FfVideo &operator=(const FfVideo &) = delete;
-
-        static std::unique_ptr<FfVideo> open(const std::string &name, const VideoOptions &o, std::string *err);
-        static std::unique_ptr<FfVideo> open(const std::string &name, const VideoOptions &o,
-                                             const GpuContext *gpu, const ObsVideoPipeline *pipe,
-                                             ObjectPool<PacketRef> *packets, std::string *err);
-        bool encode_nv12(const uint8_t *y, size_t y_stride, const uint8_t *uv, size_t uv_stride,
-                         int64_t pts100ns, bool idr, std::vector<Ref<PacketRef>> &out, std::string *err);
-        bool encode_texture(uint32_t slot, int64_t pts100ns, bool idr,
-                            std::vector<Ref<PacketRef>> &out, std::string *err);
-        bool accepts_textures() const noexcept;
-        bool flush(std::vector<Ref<PacketRef>> &out, std::string *err);
-        int kind_code() const noexcept;
-        const std::string &name() const noexcept;
-
-    private:
-        FfVideo() = default;
-        struct Impl;
-        std::unique_ptr<Impl> p_;
+        MfVendor mf_vendor = MfVendor::Qsv;
     };
 
     class MfEncoder
@@ -1048,7 +1062,7 @@ namespace ir
         MfEncoder(const MfEncoder &) = delete;
         MfEncoder &operator=(const MfEncoder &) = delete;
 
-        static std::unique_ptr<MfEncoder> create(MfCodec codec, const GpuContext *gpu, int w, int h, int fps,
+        static std::unique_ptr<MfEncoder> create(MfCodec codec, MfVendor vendor, const GpuContext *gpu, int w, int h, int fps,
                                                  uint32_t bps, Rate rate, Preset preset, std::string *err);
         bool encode_texture(ID3D11Texture2D *nv12, int64_t pts100ns, bool idr,
                             std::vector<Ref<PacketRef>> &out, std::string *err);
@@ -1065,15 +1079,12 @@ namespace ir
         std::unique_ptr<Impl> p_;
     };
 
-    bool annexb_has_param_sets(const uint8_t *data, size_t size);
-    bool ff_load();
     VideoOptions options_from_pref(int pref, int w, int h, int fps, uint32_t bps);
-    bool select_video(const VideoOptions &o, bool allow_mf, VideoSelection *out, std::string *err);
-    bool select_video(const VideoOptions &o, bool allow_mf, const GpuContext *gpu, const ObsVideoPipeline *pipe,
-                      ObjectPool<PacketRef> *packets, VideoSelection *out, std::string *err);
-    bool probe_ffmpeg_encoder(const char *name, int w, int h, int fps, uint32_t bps, std::string *err = nullptr);
-    bool probe_mf_encoder(MfCodec codec, int w, int h, int fps, uint32_t bps, HRESULT *hr_out,
+    bool select_video(const VideoOptions &o, VideoSelection *out, std::string *err);
+    bool probe_mf_encoder(MfCodec codec, MfVendor vendor, int w, int h, int fps, uint32_t bps, HRESULT *hr_out,
                           std::string *err = nullptr);
+    uint32_t mf_availability_bit(MfCodec codec, MfVendor vendor);
+    const char *mf_vendor_label(MfVendor vendor);
 
     bool convert_audio_to_s16_interleaved(const uint8_t *src, int src_rate, int src_channels,
                                           bool src_float, uint32_t frames,
@@ -1083,6 +1094,7 @@ namespace ir
     {
         const uint8_t *data;
         size_t size;
+        size_t codec_data; // leading configuration bytes (see PacketRef)
         bool keyframe;
         int64_t pts100ns;
     };
@@ -1093,10 +1105,12 @@ namespace ir
         int64_t pts100ns;
     };
 
-    int mux_until(const std::string &utf8_path, const std::vector<VideoSample> &video,
-                  const std::vector<AudioChunk> &audio, int fps, int w, int h, int seconds_back, int64_t end_time);
-    int mux_until(const std::string &utf8_path, const std::vector<Ref<PacketRef>> &video,
-                  const std::vector<AudioChunk> &audio, int fps, int w, int h, int seconds_back, int64_t end_time);
+    int write_mf_file(const std::wstring &path, const std::vector<Ref<PacketRef>> &video,
+                      const std::vector<AudioChunk> &audio, CodecSel codec, int fps, int w, int h, int seconds_back,
+                      int64_t end_time);
+
+    // Rejects unsupported encoder/codec/preset combinations before capture starts.
+    bool validate_video_selection(const VideoOptions &o, std::string *err);
 
     // -------------------------------------------------------------------------
     // Capture interfaces. Whole-screen and window capture stay separate paths.

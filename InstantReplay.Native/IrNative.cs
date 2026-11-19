@@ -1,7 +1,6 @@
 ﻿using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
-using System.Threading;
 
 namespace InstantReplay.Native;
 
@@ -26,36 +25,11 @@ internal static class IrNative
         }
     }
 
-    private static readonly string[] FfmpegDlls =
-    [
-        "avutil-57.dll", "swresample-4.dll", "avcodec-59.dll", "avformat-59.dll",
-    ];
-    private static int _ffmpegPreloaded;
-
-    // engine.dll imports FFmpeg directly from engine\encoder. Preload them by full path first:
-    // Windows reuses an already-loaded module by name, so this makes the hard imports resolve
-    // without changing the process-wide DLL search directory. (The /DELAYLOAD flags in build.bat
-    // are ignored by the linker for the SDK's import libs.)
-    private static void PreloadFfmpeg(string baseDir)
-    {
-        if (Interlocked.Exchange(ref _ffmpegPreloaded, 1) != 0) return;
-        string dir = Environment.GetEnvironmentVariable("IR_FFMPEG_DIR") ?? "";
-        if (dir.Length == 0 || !Directory.Exists(dir)) dir = Path.Combine(baseDir, "engine", "encoder");
-        foreach (string dll in FfmpegDlls)
-        {
-            string full = Path.Combine(dir, dll);
-            if (!File.Exists(full)) continue;
-            try { NativeLibrary.Load(full); }
-            catch { /* let loading engine.dll report the real failure */ }
-        }
-    }
-
     private static IntPtr ResolveEngine(string name, Assembly assembly, DllImportSearchPath? path)
     {
         if (!string.Equals(name, Dll, StringComparison.OrdinalIgnoreCase)) return IntPtr.Zero;
 
         string baseDir = AppContext.BaseDirectory;
-        PreloadFfmpeg(baseDir);
         foreach (string candidate in new[]
         {
             Path.Combine(baseDir, "engine", "bin", "engine.dll"),

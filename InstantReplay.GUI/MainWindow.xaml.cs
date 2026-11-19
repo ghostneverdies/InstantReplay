@@ -2338,7 +2338,7 @@ public partial class MainWindow : Window
 
     private void InitQualitySegments()
     {
-        QualityCombo.SelectedIndex = _settings.QualityPreset switch { "Balanced" => 1, "Quality" or "High" => 2, _ => 0 };
+        QualityCombo.SelectedIndex = VideoQualityProfile.PresetIndex(_settings.QualityPreset);
         RefreshQualityDetails();
     }
 
@@ -2364,8 +2364,8 @@ public partial class MainWindow : Window
 
     private void RefreshQualityDetails()
     {
-        string[] presets = ["Fast", "Balanced", "Quality"];
-        for (int i = 0; i < presets.Length; i++)
+        string[] presets = VideoQualityProfile.PresetNames;
+        for (int i = 0; i < presets.Length && i < QualityCombo.Items.Count; i++)
             if (QualityCombo.Items[i] is ComboBoxItem item)
                 item.Content = VideoQualityProfile.FromPreset(presets[i], _settings.FrameRate).Label;
         RefreshBitrateDisplay();
@@ -2374,8 +2374,8 @@ public partial class MainWindow : Window
     private void QualityCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_initializing) return;
-        string preset = QualityCombo.SelectedIndex switch { 1 => "Balanced", 2 => "Quality", _ => "Fast" };
-        _settings.QualityPreset = preset;
+        _settings.QualityPreset = VideoQualityProfile.PresetNames[
+            Math.Clamp(QualityCombo.SelectedIndex, 0, VideoQualityProfile.PresetNames.Length - 1)];
         RefreshBitrateDisplay();
         CheckDirty();
     }
@@ -2388,42 +2388,28 @@ public partial class MainWindow : Window
         _syncingAudioToggles = false;
     }
 
+    // Combo indices map straight to these arrays (keep in sync with MainWindow.xaml).
+    // Keep in sync with EncoderCombo in MainWindow.xaml (Media Foundation MFTs only).
+    private static readonly string[] EncoderChoices =
+        ["Auto", "MfQsv", "MfVp12", "MfNvenc", "MfAmf", "MfSoftware"];
+    private static readonly string[] CodecChoices = ["Auto", "Hevc", "H264", "Av1"];
+
     private void InitEncoderSegments()
     {
-        EncoderCombo.SelectedIndex = _settings.EncoderChoice switch
-        {
-            "Nvenc" => 1,
-            "Amf" => 2,
-            "Qsv" => 3,
-            "X265" or "X264" or "Software" => 4,
-            _ => 0,
-        };
+        EncoderCombo.SelectedIndex = Math.Max(0, Array.IndexOf(EncoderChoices, _settings.EncoderChoice));
         RateControlCombo.SelectedIndex = _settings.RateControl == "Vbr" ? 1 : 0;
         RefreshBitrateDisplay();
-        CodecCombo.SelectedIndex = _settings.VideoCodec switch { "Hevc" => 1, "H264" => 2, _ => 0 };
-        EncoderPresetCombo.SelectedIndex = _settings.EncoderPreset switch { "Speed" => 0, "Quality" => 2, _ => 1 };
-        ContainerCombo.SelectedIndex = _settings.Container switch
-        {
-            "Mkv" => 1,
-            "Mov" => 2,
-            "Ts" => 3,
-            "Flv" => 4,
-            _ => 0,
-        };
+        CodecCombo.SelectedIndex = Math.Max(0, Array.IndexOf(CodecChoices, _settings.VideoCodec));
+        EncoderPresetCombo.SelectedIndex = VideoQualityProfile.PresetIndex(_settings.EncoderPreset);
+        // The writer is MP4-only; Settings.Load migrates every legacy container to Mp4.
+        ContainerCombo.SelectedIndex = 0;
     }
 
     private void EncoderCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_initializing) return;
-        string choice = EncoderCombo.SelectedIndex switch
-        {
-            1 => "Nvenc",
-            2 => "Amf",
-            3 => "Qsv",
-            4 => "X264",
-            _ => "Auto",
-        };
-        _settings.EncoderChoice = choice;
+        int i = EncoderCombo.SelectedIndex;
+        _settings.EncoderChoice = i >= 0 && i < EncoderChoices.Length ? EncoderChoices[i] : "Auto";
         CheckDirty();
     }
 
@@ -2437,28 +2423,23 @@ public partial class MainWindow : Window
     private void CodecCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_initializing) return;
-        _settings.VideoCodec = CodecCombo.SelectedIndex switch { 1 => "Hevc", 2 => "H264", _ => "Auto" };
+        int i = CodecCombo.SelectedIndex;
+        _settings.VideoCodec = i >= 0 && i < CodecChoices.Length ? CodecChoices[i] : "Auto";
         CheckDirty();
     }
 
     private void EncoderPresetCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_initializing) return;
-        _settings.EncoderPreset = EncoderPresetCombo.SelectedIndex switch { 0 => "Speed", 2 => "Quality", _ => "Balanced" };
+        _settings.EncoderPreset = VideoQualityProfile.PresetNames[
+            Math.Clamp(EncoderPresetCombo.SelectedIndex, 0, VideoQualityProfile.PresetNames.Length - 1)];
         CheckDirty();
     }
 
     private void ContainerCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_initializing) return;
-        _settings.Container = ContainerCombo.SelectedIndex switch
-        {
-            1 => "Mkv",
-            2 => "Mov",
-            3 => "Ts",
-            4 => "Flv",
-            _ => "Mp4",
-        };
+        _settings.Container = "Mp4";
         CheckDirty();
     }
 
@@ -2826,10 +2807,11 @@ public partial class MainWindow : Window
             {
                 EncoderPreference? preference = _settings.EncoderChoice switch
                 {
-                    "Nvenc" => EncoderPreference.Nvenc,
-                    "Amf" => EncoderPreference.Amf,
-                    "Qsv" => EncoderPreference.Qsv,
-                    "X264" or "X265" or "Software" => EncoderPreference.X264,
+                    "MfQsv" => EncoderPreference.MfQsv,
+                    "MfVp12" => EncoderPreference.MfVp12,
+                    "MfNvenc" => EncoderPreference.MfNvenc,
+                    "MfAmf" => EncoderPreference.MfAmf,
+                    "MfSoftware" => EncoderPreference.MfSoftware,
                     _ => null,
                 };
                 if (preference is null || !EncoderDetector.IsSelectable(preference.Value, map))
@@ -2947,8 +2929,8 @@ public partial class MainWindow : Window
     {
         var detected = _settings.DetectedEncoders;
         bool known = EncoderAvailabilityMap.IsComplete(detected);
-        EncoderPreference[] order = [EncoderPreference.Auto, EncoderPreference.Nvenc, EncoderPreference.Amf,
-                                     EncoderPreference.Qsv, EncoderPreference.X264];
+        EncoderPreference[] order = [EncoderPreference.Auto, EncoderPreference.MfQsv, EncoderPreference.MfVp12,
+                                     EncoderPreference.MfNvenc, EncoderPreference.MfAmf, EncoderPreference.MfSoftware];
         for (int i = 0; i < order.Length && i < EncoderCombo.Items.Count; i++)
         {
             if (EncoderCombo.Items[i] is ComboBoxItem item)
@@ -2968,11 +2950,14 @@ public partial class MainWindow : Window
         }
         var lines = new List<string>
         {
-            "NVIDIA NVENC: " + Names(("h264_nvenc", "H.264"), ("hevc_nvenc", "HEVC")),
-            "AMD AMF: " + Names(("h264_amf", "H.264"), ("hevc_amf", "HEVC")),
-            "Intel Quick Sync: " + Names(("h264_qsv", "H.264"), ("hevc_qsv", "HEVC")),
-            "Media Foundation (fallback): " + Names(("h264_mf", "H.264"), ("hevc_mf", "HEVC")),
-            "Software: " + Names(("libx264", "x264"), ("libx265", "x265")),
+            "MF QSV (Intel): " + Names(("h264_mf_qsv", "H.264"), ("hevc_mf_qsv", "HEVC"), ("av1_mf_qsv", "AV1")),
+            "MF VP12 (Intel Gen12 / Arc): " + Names(("h264_mf_vp12", "H.264"), ("hevc_mf_vp12", "HEVC"),
+                                                    ("av1_mf_vp12", "AV1")),
+            "MF NVENC (NVIDIA): " + Names(("h264_mf_nvenc", "H.264"), ("hevc_mf_nvenc", "HEVC"),
+                                          ("av1_mf_nvenc", "AV1")),
+            "MF AMF (AMD): " + Names(("h264_mf_amf", "H.264"), ("hevc_mf_amf", "HEVC"), ("av1_mf_amf", "AV1")),
+            "MF Software (CPU): " + Names(("h264_mf_software", "H.264"), ("hevc_mf_software", "HEVC"),
+                                          ("av1_mf_software", "AV1")),
         };
         DetectedEncodersText.Text = string.Join("\n", lines);
     }
