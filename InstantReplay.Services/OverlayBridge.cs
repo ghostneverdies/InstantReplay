@@ -24,14 +24,12 @@ internal static class OverlayBridge
     private const int OffDetail = 168;
     private const int OffIcon = 424;
     private const int OffLogPath = 944;
-    private const int OffAnimation = 1464;
 
     private static readonly object Gate = new();
     private static MemoryMappedFile? _file;
     private static MemoryMappedViewAccessor? _view;
     private static Timer? _lifetime;
     private static uint _seq;
-    private static string _animationPathWritten = "";
     private static bool _overlayOnly;
     private static int _overlayFps;
 
@@ -101,7 +99,6 @@ internal static class OverlayBridge
             if (!EnsureOpenLocked()) return;
             _lifetime?.Dispose();
             _lifetime = null;
-            EnsureAnimationPathLocked();
             _view!.Write(OffVisible, 1u);
             _view.Write(OffState, 1u);
             _view.Write(OffProgress, 0);
@@ -130,7 +127,6 @@ internal static class OverlayBridge
         {
             if (!EnsureOpenLocked()) return;
             int value = Math.Max(1, seconds);
-            EnsureAnimationPathLocked();
             _view!.Write(OffVisible, 1u);
             _view.Write(OffState, 2u);
             _view.Write(OffProgress, 100);
@@ -230,7 +226,6 @@ internal static class OverlayBridge
             WriteStringLocked(OffTitle, 64, "");
             WriteStringLocked(OffDetail, 128, "");
             WriteStringLocked(OffIcon, 260, IconPath());
-            EnsureAnimationPathLocked();
             RefreshDiagnosticsLocked();
             return true;
         }
@@ -258,69 +253,6 @@ internal static class OverlayBridge
             if (File.Exists(candidate)) return candidate;
         }
         return "";
-    }
-
-    public static string AnimationPath()
-    {
-        string bundled = BundledAnimationPath();
-        if (bundled.Length == 0) return "";
-        try
-        {
-            string dir = Path.Combine(Path.GetTempPath(), "InstantReplay", "cache");
-            string cached = Path.Combine(dir, "clapboard.mp4");
-            var source = new FileInfo(bundled);
-            var target = new FileInfo(cached);
-            if (!target.Exists || target.Length != source.Length ||
-                target.LastWriteTimeUtc < source.LastWriteTimeUtc)
-            {
-                Directory.CreateDirectory(dir);
-                File.Copy(bundled, cached, overwrite: true);
-                Logger.Debug("Completion animation cached under %TEMP%.");
-            }
-            return cached;
-        }
-        catch (Exception ex)
-        {
-            Logger.Debug($"Completion animation cache unavailable: {ex.Message}");
-            return bundled;
-        }
-    }
-
-    private static string BundledAnimationPath()
-    {
-        string folder = Path.Combine(AppContext.BaseDirectory, "assets", "animations");
-        string[] candidates =
-        [
-            Path.Combine(folder, "clapperboard.mp4"),
-            Path.Combine(folder, "clapboard.mp4"),
-        ];
-        foreach (string candidate in candidates)
-        {
-            if (File.Exists(candidate)) return candidate;
-        }
-        try
-        {
-            if (Directory.Exists(folder))
-            {
-                foreach (string candidate in Directory.EnumerateFiles(folder, "*.mp4"))
-                {
-                    if (File.Exists(candidate)) return candidate;
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            Logger.Debug($"Completion animation lookup failed: {ex.Message}");
-        }
-        return "";
-    }
-
-    private static void EnsureAnimationPathLocked()
-    {
-        string path = AnimationPath();
-        if (path.Length == 0 || path == _animationPathWritten) return;
-        WriteStringLocked(OffAnimation, 260, path);
-        _animationPathWritten = path;
     }
 
     private static void WriteStringLocked(int offset, int capacity, string value)
