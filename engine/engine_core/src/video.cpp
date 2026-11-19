@@ -4760,13 +4760,37 @@ namespace ir
             return fail(m);
         }
 
-        // PCM audio stream; the sink writer encodes it to AAC for MP4.
+        // PCM audio stream. AddStream takes the target (AAC) type and
+        // SetInputMediaType takes the PCM we actually write; that is what makes
+        // the sink writer insert the AAC encoder. Passing PCM to AddStream
+        // makes the sink accept raw PCM and fail at Finalize with
+        // MF_E_SINK_HEADERS_NOT_FOUND.
         DWORD audio_stream = 0;
         bool have_audio = false;
         if (!audio.empty())
         {
+            ComPtr<IMFMediaType> aac_type;
+            hr = MFCreateMediaType(&aac_type);
+            if (SUCCEEDED(hr))
+                hr = aac_type->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio);
+            if (SUCCEEDED(hr))
+                hr = aac_type->SetGUID(MF_MT_SUBTYPE, MFAudioFormat_AAC);
+            if (SUCCEEDED(hr))
+                hr = aac_type->SetUINT32(MF_MT_AUDIO_BITS_PER_SAMPLE, 16);
+            if (SUCCEEDED(hr))
+                hr = aac_type->SetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, (UINT32)AUDIO_RATE);
+            if (SUCCEEDED(hr))
+                hr = aac_type->SetUINT32(MF_MT_AUDIO_NUM_CHANNELS, (UINT32)AUDIO_CHANNELS);
+            if (SUCCEEDED(hr))
+                hr = aac_type->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, 24000);
+            if (SUCCEEDED(hr))
+                hr = aac_type->SetUINT32(MF_MT_AAC_PAYLOAD_TYPE, 0);
+            if (SUCCEEDED(hr))
+                hr = writer->AddStream(aac_type.Get(), &audio_stream);
+
             ComPtr<IMFMediaType> atype;
-            hr = MFCreateMediaType(&atype);
+            if (SUCCEEDED(hr))
+                hr = MFCreateMediaType(&atype);
             if (SUCCEEDED(hr))
                 hr = atype->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio);
             if (SUCCEEDED(hr))
@@ -4784,8 +4808,6 @@ namespace ir
                                       (UINT32)((int64_t)AUDIO_RATE * AUDIO_CHANNELS * 2));
             if (SUCCEEDED(hr))
                 hr = atype->SetUINT32(MF_MT_ALL_SAMPLES_INDEPENDENT, TRUE);
-            if (SUCCEEDED(hr))
-                hr = writer->AddStream(atype.Get(), &audio_stream);
             if (SUCCEEDED(hr))
                 hr = writer->SetInputMediaType(audio_stream, atype.Get(), nullptr);
             if (FAILED(hr))
@@ -4807,9 +4829,30 @@ namespace ir
             return fail(m);
         }
 
-        int result = IR_OK;
+        // The MP4 sink interleaves its streams. It will not drain video
+        // samples while the audio stream has no data for the same time range,
+        // so writing every video sample first and the audio afterwards stalls
+        // once the sink's queue fills. Build both queues up front and submit
+        // them in ascending PTS order, splitting audio into short chunks.
+        struct VideoWrite
+        {
+            int64_t pts;
+            const uint8_t *data;
+            size_t size;
+            bool key;
+        };
+        struct AudioWrite
+        {
+            int64_t pts;
+            const uint8_t *data;
+            size_t bytes;
+            int64_t duration;
+        };
+
+        std::vector<VideoWrite> video_writes;
+        video_writes.reserve(count);
         int64_t previous = -1;
-        for (size_t i = start; i < pkts.size() && result == IR_OK; ++i)
+        for (size_t i = start; i < pkts.size(); ++i)
         {
             const auto &p = *pkts[i];
             const int64_t rel = std::max<int64_t>(0, p.pts100ns - first_pts);
@@ -4819,17 +4862,15 @@ namespace ir
             const size_t n = p.payload.size() - pre_skip;
             if (!n)
                 continue;
-            ComPtr<IMFSample> sample;
-            hr = create_memory_sample(p.payload.data() + pre_skip, n, pts, frame_dur, p.keyframe, &sample);
-            if (SUCCEEDED(hr) && sample)
-                hr = writer->WriteSample(video_stream, sample.Get());
-            if (FAILED(hr))
-                result = fail("Writing a video sample failed.");
+            video_writes.push_back({pts, p.payload.data() + pre_skip, n, p.keyframe});
         }
 
-        if (have_audio && result == IR_OK)
+        std::vector<AudioWrite> audio_writes;
+        if (have_audio)
         {
-            int64_t audio_first = -1;
+            // Half-second PCM chunks (24 000 frames at 48 kHz) keep the
+            // interleaver fed without building one multi-megabyte sample.
+            const int64_t chunk_frames = std::max<int64_t>(1, AUDIO_RATE / 2);
             for (const auto &c : audio)
             {
                 const int64_t dur = (int64_t)c.frames * SECOND_100NS / AUDIO_RATE;
@@ -4842,25 +4883,47 @@ namespace ir
                 if (end_frame < keep)
                     keep = end_frame;
                 keep -= skip;
-                if (keep <= 0)
+                if (keep <= 0 || !c.data)
                     continue;
-                if (audio_first < 0)
-                    audio_first = c.pts100ns + skip * SECOND_100NS / AUDIO_RATE;
-                if (!c.data)
-                    continue;
-                const size_t bytes = (size_t)keep * AUDIO_CHANNELS * sizeof(int16_t);
-                const int64_t pts = std::max<int64_t>(0, c.pts100ns - first_pts +
-                                                       skip * SECOND_100NS / AUDIO_RATE);
-                ComPtr<IMFSample> sample;
-                hr = create_memory_sample(c.data + skip * AUDIO_CHANNELS * sizeof(int16_t), bytes, pts,
-                                          (int64_t)keep * SECOND_100NS / AUDIO_RATE, false, &sample);
+                const int64_t stop = skip + keep;
+                for (int64_t off = skip; off < stop; off += chunk_frames)
+                {
+                    const int64_t frames = std::min(chunk_frames, stop - off);
+                    const int64_t pts = std::max<int64_t>(
+                        0, c.pts100ns - first_pts + off * SECOND_100NS / AUDIO_RATE);
+                    audio_writes.push_back({pts,
+                                            c.data + off * AUDIO_CHANNELS * sizeof(int16_t),
+                                            (size_t)frames * AUDIO_CHANNELS * sizeof(int16_t),
+                                            frames * SECOND_100NS / AUDIO_RATE});
+                }
+            }
+        }
+
+        int result = IR_OK;
+        size_t vi = 0, ai = 0;
+        while (result == IR_OK && (vi < video_writes.size() || ai < audio_writes.size()))
+        {
+            const bool audio_next =
+                ai < audio_writes.size() &&
+                (vi >= video_writes.size() || audio_writes[ai].pts < video_writes[vi].pts);
+            ComPtr<IMFSample> sample;
+            if (audio_next)
+            {
+                const AudioWrite &a = audio_writes[ai++];
+                hr = create_memory_sample(a.data, a.bytes, a.pts, a.duration, false, &sample);
                 if (SUCCEEDED(hr) && sample)
                     hr = writer->WriteSample(audio_stream, sample.Get());
                 if (FAILED(hr))
-                {
                     result = fail("Writing an audio sample failed.");
-                    break;
-                }
+            }
+            else
+            {
+                const VideoWrite &v = video_writes[vi++];
+                hr = create_memory_sample(v.data, v.size, v.pts, frame_dur, v.key, &sample);
+                if (SUCCEEDED(hr) && sample)
+                    hr = writer->WriteSample(video_stream, sample.Get());
+                if (FAILED(hr))
+                    result = fail("Writing a video sample failed.");
             }
         }
 
