@@ -332,6 +332,7 @@ namespace ir
         std::deque<Pending> pending_;
         uint32_t next_slot_ = 0;
         bool first_frame_ = true;
+        int64_t next_segment_pts_ = 0;
         VideoSelection selection_;
         std::unique_ptr<MfEncoder> mf_;
         VideoOptions video_options_;
@@ -753,7 +754,12 @@ namespace ir
         vbytes_ += bytes;
         const int64_t newest = frame->pts100ns;
         vring_.push_back(std::move(frame));
-        const int64_t cutoff = newest - (int64_t)ring_seconds_.load() * SECOND_100NS;
+        // Retain one extra GOP beyond the requested replay window. The save
+        // path needs a keyframe at or before its trim point; without slack a
+        // full-length save can start late and come out one or two seconds short.
+        constexpr int64_t SAVE_PREROLL_SLACK = 2 * SECOND_100NS;
+        const int64_t cutoff = newest - (int64_t)ring_seconds_.load() * SECOND_100NS - SAVE_PREROLL_SLACK;
+        const int64_t required_start = cutoff;
         // Keep the last keyframe at or before the cutoff so a save can start on one.
         long k = -1;
         for (size_t i = 0; i < vring_.size(); ++i)
@@ -775,6 +781,9 @@ namespace ir
                 ++next_key;
             if (next_key >= vring_.size())
                 break;
+            // Budget trimming must not discard the save pre-roll we just kept.
+            if (vring_[next_key]->pts100ns > required_start)
+                break;
             for (size_t i = 0; i < next_key; ++i)
             {
                 vbytes_ -= (int64_t)vring_.front()->payload.size();
@@ -787,7 +796,12 @@ namespace ir
     {
         const uint32_t slot = pending.slot;
         const int64_t pts = pending.pts;
-        const bool idr = first_frame_;
+        bool idr = first_frame_;
+        if (video_options_.segmented && (idr || pts >= next_segment_pts_))
+        {
+            idr = true;
+            next_segment_pts_ = pts + SECOND_100NS;
+        }
         std::vector<Ref<PacketRef>> out;
         std::string err;
         bool ok = false;
@@ -914,6 +928,7 @@ namespace ir
         pending_.clear();
         next_slot_ = 0;
         first_frame_ = true;
+        next_segment_pts_ = 0;
         need_clear_ = true;
         latest_pts_.store(-1);
         frame_seq_ = 0;
@@ -1643,6 +1658,7 @@ namespace ir
             job->id = next_job_id_.fetch_add(1) + 1;
             job->path = path;
             job->secondsBack = seconds_back;
+            job->segmented = video_options_.segmented;
             job->progress.store(0, std::memory_order_relaxed);
             job->result.store(IR_PENDING, std::memory_order_relaxed);
             job->state.store(SaveState::Queued, std::memory_order_relaxed);
@@ -1762,12 +1778,17 @@ namespace ir
             int64_t t0 = first;
             if (job->secondsBack > 0)
                 t0 = std::max(first, end - (int64_t)job->secondsBack * SECOND_100NS - 6 * SECOND_100NS);
-            mixed = mix_range(t0, end, sys, mic);
+            // Round the generated PCM up to a whole 48 kHz frame so the writer
+            // always has a sample covering the last partial 100 ns interval.
+            const int64_t audio_tick = SECOND_100NS / AUDIO_RATE;
+            const int64_t audio_frames = (end - t0 + audio_tick - 1) / audio_tick;
+            const int64_t audio_end = t0 + audio_frames * audio_tick;
+            mixed = mix_range(t0, audio_end, sys, mic);
             audio.push_back({reinterpret_cast<const uint8_t *>(mixed.data()), (uint32_t)(mixed.size() / 2), t0});
         }
         publish_last_progress(job, 30);
         return write_mf_file(job->path, frames, audio, active_codec_, fps_, (int)out_w_, (int)out_h_,
-                             job->secondsBack, end);
+                             job->secondsBack, end, job->segmented);
     }
 
     // -------------------------------------------------------------------------
