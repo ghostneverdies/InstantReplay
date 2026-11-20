@@ -272,9 +272,11 @@ public sealed class RecorderEngine : IDisposable
         Logger.Debug($"[Encoder] Target bitrate {bitrateKbps} kbps " +
                      $"from {_captureSettings.QualityPreset} preset at {_captureSettings.FrameRate} fps, " +
                      $"source {srcW}x{srcH} ({(_captureSettings.RateControl == "Vbr" ? "VBR" : "CBR")}).");
-        CaptureMethod method = snap != null && snap.Source == CaptureSource.Wgc && !forceDxgi
-            ? CaptureMethod.Wgc
-            : CaptureMethod.Dxgi;
+        // Game Capture is hybrid and overrides the stored recording method.
+        // Whole Desktop still honours the user's preference.
+        CaptureMethod method = snap == null
+            ? (_captureSettings.CaptureMethod == "Wgc" ? CaptureMethod.Wgc : CaptureMethod.Dxgi)
+            : (snap.Source == CaptureSource.Wgc && !forceDxgi ? CaptureMethod.Wgc : CaptureMethod.Dxgi);
         return _engine.StartBuffering(
             monitorIndex: monitor,
             ringSeconds: Math.Max(_captureSettings.ReplayDurationSeconds, 1),
