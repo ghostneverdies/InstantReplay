@@ -4987,6 +4987,7 @@ namespace ir
         }
 
         std::vector<AudioWrite> audio_writes;
+        std::vector<int16_t> audio_silence; // backs inserted silence writes through the write loop
         if (have_audio)
         {
             // Half-second PCM chunks (24 000 frames at 48 kHz) keep the
@@ -5032,6 +5033,55 @@ namespace ir
                     }
                 }
             }
+
+            // Keyframe spacing or a short WASAPI outage can leave holes in the
+            // selected audio timeline. Fill them with real silence samples so the
+            // AAC encoder never sees an abrupt start/stop at a range boundary.
+            std::sort(audio_writes.begin(), audio_writes.end(),
+                      [](const AudioWrite &a, const AudioWrite &b) { return a.pts < b.pts; });
+            audio_silence.assign((size_t)chunk_frames * AUDIO_CHANNELS, 0);
+            std::vector<AudioWrite> filled;
+            filled.reserve(audio_writes.size() + (size_t)(out_end / SECOND_100NS) * 2 + 2);
+            int64_t cursor = 0;
+            auto add_silence = [&](int64_t from, int64_t to)
+            {
+                // Keep the existing "real gap" rule for source restarts; only
+                // bridge short holes that are jitter or a missed packet.
+                if (to <= from || to - from > SECOND_100NS) return;
+                for (int64_t at = from; at < to;)
+                {
+                    const int64_t remaining = to - at;
+                    int64_t frames = std::min<int64_t>(chunk_frames,
+                        (remaining + frame_tick - 1) / frame_tick);
+                    if (frames <= 0) break;
+                    int64_t duration = std::min<int64_t>(remaining, frames * frame_tick);
+                    filled.push_back({at, reinterpret_cast<const uint8_t *>(audio_silence.data()),
+                                      (size_t)frames * AUDIO_CHANNELS * sizeof(int16_t), duration});
+                    at += duration;
+                }
+            };
+            for (const auto &a : audio_writes)
+            {
+                if (a.bytes == 0 || a.duration <= 0) continue;
+                int64_t start = std::max<int64_t>(0, a.pts);
+                if (start >= out_end) continue;
+                int64_t stop = std::min<int64_t>(out_end, start + a.duration);
+                if (stop <= start) continue;
+                add_silence(cursor, start);
+
+                AudioWrite write = a;
+                if (stop < start + a.duration)
+                {
+                    const int64_t frames = (stop - start) / frame_tick;
+                    write.bytes = (size_t)frames * AUDIO_CHANNELS * sizeof(int16_t);
+                    write.duration = frames * frame_tick;
+                }
+                if (write.bytes)
+                    filled.push_back(write);
+                cursor = std::max(cursor, start + write.duration);
+            }
+            add_silence(cursor, out_end);
+            audio_writes.swap(filled);
         }
 
         int result = IR_OK;
