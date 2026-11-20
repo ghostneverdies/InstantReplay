@@ -20,6 +20,12 @@
     <Platforms>x64</Platforms>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <UseRidGraph>true</UseRidGraph>
+
+    <!-- VS Code's C# extension runs design-time builds in a loop. They must not
+         launch cl.exe or copy native DLLs: overlapping native builds lock
+         engine.obj and break the real build with C1083. Real dotnet build/run
+         still rebuild and copy every native payload on every invocation. -->
+    <SkipNativePayload Condition="'$(DesignTimeBuild)' == 'true' or '$(BuildingProject)' == 'false'">true</SkipNativePayload>
   </PropertyGroup>
 
   <ItemGroup>
@@ -68,9 +74,9 @@
     </Content>
   </ItemGroup>
 
-  <ItemGroup>
-    <!-- Native payload is always refreshed: an incremental MSBuild + PreserveNewest
-         could leave a stale engine.dll in the output after a separate native build. -->
+  <ItemGroup Condition="'$(SkipNativePayload)' != 'true'">
+    <!-- Native payload is always refreshed on real builds: an incremental MSBuild
+         + PreserveNewest could leave a stale engine.dll after a native rebuild. -->
     <None Include="engine\bin\engine.dll" Link="engine\bin\engine.dll">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
       <CopyToPublishDirectory>Always</CopyToPublishDirectory>
@@ -85,22 +91,24 @@
     </None>
   </ItemGroup>
 
-  <!-- No Inputs/Outputs: always rebuild so dotnet build/run can never skip the
+  <!-- No Inputs/Outputs on real builds: dotnet build/run can never skip the
        native engine and leave a stale engine.dll behind the C++ sources. -->
-  <Target Name="BuildNativeEngine" BeforeTargets="PrepareForBuild">
+  <Target Name="BuildNativeEngine" BeforeTargets="PrepareForBuild"
+    Condition="'$(SkipNativePayload)' != 'true'">
     <MakeDir Directories="engine\bin" />
     <Exec Command="call &quot;$(MSBuildProjectDirectory)\engine\engine_core\build.bat&quot;" />
   </Target>
 
   <Target Name="ValidateNativePayload" BeforeTargets="PrepareForBuild"
-    DependsOnTargets="BuildNativeEngine">
+    DependsOnTargets="BuildNativeEngine" Condition="'$(SkipNativePayload)' != 'true'">
     <Error Condition="!Exists('engine\bin\engine.dll')"
       Text="Native engine is missing: engine\bin\engine.dll" />
   </Target>
 
-  <!-- No Inputs/Outputs: always rebuild the injected hooks too, so every native
-       DLL in the output matches its source on each build/run. -->
-  <Target Name="BuildHook" BeforeTargets="PrepareForBuild">
+  <!-- No Inputs/Outputs on real builds: always rebuild the injected hooks too,
+       so every native DLL in the output matches its source on each build/run. -->
+  <Target Name="BuildHook" BeforeTargets="PrepareForBuild"
+    Condition="'$(SkipNativePayload)' != 'true'">
     <Exec
       Command="powershell -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\engine\hooks\build.ps1&quot;" />
   </Target>
