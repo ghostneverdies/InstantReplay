@@ -449,6 +449,23 @@ namespace ir
             return false;
         }
 
+        // One converter for the whole stream. The old code built (and drained)
+        // an MF resampler per WASAPI packet, which reset filter state at every
+        // packet boundary and left an audible click there.
+        PcmToS16Converter converter;
+        std::string conv_init_err;
+        bool converter_ok = converter.initialize(src_rate, src_channels, src_float, src_bits, &conv_init_err);
+        if (!converter_ok)
+        {
+            ++counters_->convert_failures;
+            counters_->fail_hr = E_FAIL;
+        }
+        auto output_frames_for = [&](uint32_t frames) -> uint32_t
+        {
+            if (src_rate <= 0) return 0;
+            return (uint32_t)(((int64_t)frames * AUDIO_RATE + src_rate / 2) / src_rate);
+        };
+
         Silence silence;
         bool have_silence = !mic_ && device && silence.start(device.Get());
         const bool process_loopback = process_audio;
@@ -479,6 +496,8 @@ namespace ir
                 }
                 const bool silent = (bflags & AUDCLNT_BUFFERFLAGS_SILENT) || !data;
                 const bool discontinuity = (bflags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY) != 0;
+                if (discontinuity)
+                    converter.reset();
                 uint32_t out_frames = 0;
                 bool got_audio = !silent;
                 if (silent)
@@ -486,9 +505,7 @@ namespace ir
                     // WASAPI reports silent packets in the device's format. Convert the
                     // frame count too, otherwise a 44.1 kHz device would write 48 kHz
                     // silence for too long and the next real packet would jump.
-                    out_frames = src_rate > 0
-                        ? (uint32_t)(((int64_t)frames * AUDIO_RATE + src_rate / 2) / src_rate)
-                        : 0;
+                    out_frames = output_frames_for(frames);
                     packet.assign((size_t)out_frames * (mic_ ? 1u : AUDIO_CHANNELS), 0);
                 }
                 else
@@ -496,21 +513,14 @@ namespace ir
                     packet.assign((size_t)frames * (mic_ ? 1u : AUDIO_CHANNELS), 0);
                     if (mic_)
                     {
-                        // Microphone input is still requested as 16-bit mono; Windows resamples it.
+                        // Microphone is captured as 16-bit mono and stays mono.
                         std::memcpy(packet.data(), data, (size_t)frames * 2);
                     }
-                    else if (src_rate == AUDIO_RATE && src_channels == AUDIO_CHANNELS &&
-                             src_bits == 16 && !src_float)
-                    {
-                        std::memcpy(packet.data(), data, (size_t)frames * AUDIO_CHANNELS * 2);
-                    }
-                    else if ((src_float && src_bits == 32) || (!src_float && src_bits == 16))
+                    else if (converter_ok)
                     {
                         std::vector<int16_t> converted;
                         std::string conv_err;
-                        if (convert_audio_to_s16_interleaved(data, src_rate, src_channels, src_float, frames,
-                                                             &converted, &conv_err) &&
-                            !converted.empty())
+                        if (converter.convert(data, frames, &converted, &conv_err) && !converted.empty())
                         {
                             out_frames = (uint32_t)(converted.size() / AUDIO_CHANNELS);
                             packet = converted;
@@ -519,8 +529,8 @@ namespace ir
                         {
                             // Never reinterpret unknown bytes as int16 - that is audible static.
                             got_audio = false;
-                            out_frames = 0;
-                            packet.clear();
+                            out_frames = output_frames_for(frames);
+                            packet.assign((size_t)out_frames * AUDIO_CHANNELS, 0);
                             ++counters_->convert_failures;
                             counters_->fail_hr = E_FAIL;
                         }
@@ -529,8 +539,8 @@ namespace ir
                     {
                         // Unsupported PCM width (for example 24-bit): emit silence instead of static.
                         got_audio = false;
-                        out_frames = 0;
-                        packet.clear();
+                        out_frames = output_frames_for(frames);
+                        packet.assign((size_t)out_frames * AUDIO_CHANNELS, 0);
                         ++counters_->convert_failures;
                         counters_->fail_hr = E_FAIL;
                     }
