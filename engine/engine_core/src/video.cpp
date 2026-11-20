@@ -4855,8 +4855,7 @@ namespace ir
         {
             for (size_t i = 0; i < seg_starts.size(); ++i)
             {
-                const int64_t next = i + 1 < seg_starts.size() ? seg_starts[i + 1] : end_time;
-                const int64_t end = std::min(next, seg_starts[i] + SECOND_100NS);
+                const int64_t end = i + 1 < seg_starts.size() ? seg_starts[i + 1] : end_time;
                 if (end > seg_starts[i])
                     audio_ranges.push_back({seg_starts[i], end, (int64_t)i * SECOND_100NS});
             }
