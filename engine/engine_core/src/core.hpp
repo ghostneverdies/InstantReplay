@@ -1088,9 +1088,23 @@ namespace ir
     uint32_t mf_availability_bit(MfCodec codec, MfVendor vendor);
     const char *mf_vendor_label(MfVendor vendor);
 
-    bool convert_audio_to_s16_interleaved(const uint8_t *src, int src_rate, int src_channels,
-                                          bool src_float, uint32_t frames,
-                                          std::vector<int16_t> *out, std::string *err = nullptr);
+    // Stateful PCM -> 48 kHz stereo s16 conversion. One instance lives for the
+    // whole WASAPI stream; recreating an MF resampler per packet caused clicks.
+    class PcmToS16Converter
+    {
+    public:
+        PcmToS16Converter();
+        ~PcmToS16Converter();
+
+        bool initialize(int src_rate, int src_channels, bool src_float, int src_bits, std::string *err = nullptr);
+        bool convert(const uint8_t *src, uint32_t frames, std::vector<int16_t> *out,
+                     std::string *err = nullptr);
+        void reset(); // discard resampler state after a WASAPI discontinuity
+
+    private:
+        struct Impl;
+        std::unique_ptr<Impl> impl_;
+    };
 
     struct VideoSample
     {
