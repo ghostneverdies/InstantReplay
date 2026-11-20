@@ -1154,7 +1154,7 @@ namespace ir
                 const int64_t gap = pts - end;
                 if (gap >= 2 * SECOND_100NS)
                     flush_audio_accumulator(false); // source restart: leave a real gap
-                else if (gap > SECOND_100NS / AUDIO_RATE)
+                else if (gap * AUDIO_RATE > SECOND_100NS)
                 {
                     const uint32_t missing = (uint32_t)(gap * AUDIO_RATE / SECOND_100NS);
                     sys_acc_.pcm.insert(sys_acc_.pcm.end(), (size_t)missing * AUDIO_CHANNELS, 0);
@@ -1190,7 +1190,7 @@ namespace ir
                 const int64_t gap = pts - end;
                 if (gap >= 2 * SECOND_100NS)
                     flush_audio_accumulator(true);
-                else if (gap > SECOND_100NS / AUDIO_RATE)
+                else if (gap * AUDIO_RATE > SECOND_100NS)
                 {
                     const uint32_t missing = (uint32_t)(gap * AUDIO_RATE / SECOND_100NS);
                     mic_acc_.pcm.insert(mic_acc_.pcm.end(), missing, 0); // mono
@@ -1799,9 +1799,11 @@ namespace ir
                 t0 = std::max(first, end - (int64_t)job->secondsBack * SECOND_100NS - 6 * SECOND_100NS);
             // Round the generated PCM up to a whole 48 kHz frame so the writer
             // always has a sample covering the last partial 100 ns interval.
-            const int64_t audio_tick = SECOND_100NS / AUDIO_RATE;
-            const int64_t audio_frames = (end - t0 + audio_tick - 1) / audio_tick;
-            const int64_t audio_end = t0 + audio_frames * audio_tick;
+            // Use the exact 100 ns / 48 kHz ratio. Truncating it to 208 drifts
+            // ~0.16% and makes the AAC writer see tiny repeated gaps/overlaps.
+            const int64_t audio_frames =
+                ((end - t0) * AUDIO_RATE + SECOND_100NS - 1) / SECOND_100NS;
+            const int64_t audio_end = t0 + audio_frames * SECOND_100NS / AUDIO_RATE;
             mixed = mix_range(t0, audio_end, sys, mic);
             audio.push_back({reinterpret_cast<const uint8_t *>(mixed.data()), (uint32_t)(mixed.size() / 2), t0});
         }
