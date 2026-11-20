@@ -4,7 +4,7 @@
 // textures and PCM blocks into bounded replay rings.  Save jobs re-encode a
 // snapshot of the selected time window through the Media Foundation pipeline.
 #define WINDOWS_FOUNDATION_UNIVERSALAPICONTRACT_VERSION 0x130000
-#include "core.h"
+#include "engine.h"
 
 #include <objbase.h>
 #include <propkey.h>
