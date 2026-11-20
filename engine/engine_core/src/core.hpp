@@ -1208,7 +1208,7 @@ namespace ir
         std::wstring active_name;
     };
 
-    using AudioPush = std::function<void(const int16_t *, uint32_t, int64_t)>;
+    using AudioPush = std::function<void(const int16_t *, uint32_t, int64_t, bool)>;
 
     class AudioSource
     {
