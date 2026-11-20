@@ -478,11 +478,22 @@ namespace ir
                     break;
                 }
                 const bool silent = (bflags & AUDCLNT_BUFFERFLAGS_SILENT) || !data;
-                uint32_t out_frames = frames;
+                const bool discontinuity = (bflags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY) != 0;
+                uint32_t out_frames = 0;
                 bool got_audio = !silent;
-                packet.assign((size_t)frames * (mic_ ? 1u : AUDIO_CHANNELS), 0);
-                if (!silent)
+                if (silent)
                 {
+                    // WASAPI reports silent packets in the device's format. Convert the
+                    // frame count too, otherwise a 44.1 kHz device would write 48 kHz
+                    // silence for too long and the next real packet would jump.
+                    out_frames = src_rate > 0
+                        ? (uint32_t)(((int64_t)frames * AUDIO_RATE + src_rate / 2) / src_rate)
+                        : 0;
+                    packet.assign((size_t)out_frames * (mic_ ? 1u : AUDIO_CHANNELS), 0);
+                }
+                else
+                {
+                    packet.assign((size_t)frames * (mic_ ? 1u : AUDIO_CHANNELS), 0);
                     if (mic_)
                     {
                         // Microphone input is still requested as 16-bit mono; Windows resamples it.
@@ -541,16 +552,22 @@ namespace ir
                     last_good_qpc = t;
                     last_good_frames = out_frames;
                 }
-                else if (last_good_qpc)
+                else if (!discontinuity && last_good_qpc)
                 {
                     t = last_good_qpc + (int64_t)last_good_frames * SECOND_100NS / AUDIO_RATE;
                     last_good_qpc = t;
                     last_good_frames = out_frames;
                 }
                 else
+                {
+                    // A discontinuity with a bad timestamp must not be extrapolated
+                    // from the previous stream segment.
                     t = qpc100ns();
+                    last_good_qpc = t;
+                    last_good_frames = out_frames;
+                }
                 if (out_frames)
-                    push_(packet.data(), out_frames, t);
+                    push_(packet.data(), out_frames, t, discontinuity);
             }
             if (received)
                 last_packet = qpc100ns();
