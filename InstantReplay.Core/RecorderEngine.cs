@@ -165,7 +165,7 @@ public sealed class RecorderEngine : IDisposable
         _ => EncoderPreference.Auto,
     };
 
-    // Native pref layout (see options_from_pref in video.cpp):
+    // Native pref layout (see options_from_pref in engine.c):
     //   bits  0..7  encoder ordinal
     //   bit   8     rate control (0 CBR, 1 VBR)
     //   bit   9     buffer method (0 continuous, 1 segmented)
