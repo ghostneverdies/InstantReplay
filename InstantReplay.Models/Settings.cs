@@ -97,6 +97,8 @@ public sealed class Settings
                 if (loaded != null)
                 {
                     if (loaded.CaptureTarget is "Window" or "ActiveWindow") loaded.CaptureTarget = "SpecificWindows";
+                    if (loaded.CaptureTarget is not ("Display" or "SpecificWindows")) loaded.CaptureTarget = "Display";
+                    if (loaded.CaptureMethod is not ("Wgc" or "Dxgi")) loaded.CaptureMethod = "Dxgi";
                     loaded.SpecificWindows ??= [];
 
                     // Legacy encoder choices from the retired external encoder stack
