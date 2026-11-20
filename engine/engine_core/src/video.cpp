@@ -4272,24 +4272,42 @@ namespace ir
         return o;
     }
 
-    bool convert_audio_to_s16_interleaved(const uint8_t *src, int src_rate, int src_channels,
-                                          bool src_float, uint32_t frames,
-                                          std::vector<int16_t> *out, std::string *err)
+    struct PcmToS16Converter::Impl
     {
-        if (!out)
-        {
-            if (err)
-                *err = "audio conversion output is null";
-            return false;
-        }
-        out->clear();
-        if (!frames)
-            return true;
-        if (!src || src_rate <= 0 || src_channels <= 0)
+        int rate = 0, channels = 0, bits = 0;
+        bool floating = false, direct = false, copy = false, ready = false;
+        ComPtr<IMFTransform> resampler;
+    };
+
+    PcmToS16Converter::PcmToS16Converter() : impl_(std::make_unique<Impl>()) {}
+    PcmToS16Converter::~PcmToS16Converter() = default;
+
+    bool PcmToS16Converter::initialize(int src_rate, int src_channels, bool src_float, int src_bits,
+                                       std::string *err)
+    {
+        if (!impl_ || src_rate <= 0 || src_channels <= 0 || src_bits <= 0)
         {
             if (err)
                 *err = "audio conversion input is invalid";
             return false;
+        }
+
+        impl_->rate = src_rate;
+        impl_->channels = src_channels;
+        impl_->floating = src_float;
+        impl_->bits = src_bits;
+        impl_->direct = src_rate == (int)AUDIO_RATE && src_channels == (int)AUDIO_CHANNELS &&
+                        (src_bits == 16 || (src_float && src_bits == 32));
+        impl_->copy = impl_->direct && !src_float && src_bits == 16;
+        impl_->resampler.Reset();
+        impl_->ready = false;
+
+        // The common device-mix case is 48 kHz stereo float or s16. Convert it
+        // directly: no resampler latency, no per-packet MFT setup, no phase resets.
+        if (impl_->direct)
+        {
+            impl_->ready = true;
+            return true;
         }
 
         MfRuntime &rt = mf_runtime();
@@ -4297,16 +4315,6 @@ namespace ir
         {
             if (err)
                 *err = "Media Foundation is unavailable for audio conversion";
-            return false;
-        }
-
-        ComPtr<IMFTransform> resampler;
-        HRESULT hr = CoCreateInstance(CLSID_CResamplerMediaObject, nullptr, CLSCTX_INPROC_SERVER,
-                                      IID_PPV_ARGS(&resampler));
-        if (FAILED(hr) || !resampler)
-        {
-            if (err)
-                *err = "the Media Foundation audio resampler is not available";
             return false;
         }
 
@@ -4332,9 +4340,13 @@ namespace ir
             return S_OK;
         };
 
+        ComPtr<IMFTransform> resampler;
+        HRESULT hr = CoCreateInstance(CLSID_CResamplerMediaObject, nullptr, CLSCTX_INPROC_SERVER,
+                                      IID_PPV_ARGS(&resampler));
         ComPtr<IMFMediaType> in_t, out_t;
-        hr = make_type(src_float ? MFAudioFormat_Float : MFAudioFormat_PCM, src_channels, src_rate,
-                       src_float ? 32 : 16, src_float, &in_t);
+        if (SUCCEEDED(hr))
+            hr = make_type(src_float ? MFAudioFormat_Float : MFAudioFormat_PCM, src_channels, src_rate,
+                           src_float ? 32 : 16, src_float, &in_t);
         if (SUCCEEDED(hr))
             hr = make_type(MFAudioFormat_PCM, (int)AUDIO_CHANNELS, (int)AUDIO_RATE, 16, false, &out_t);
         if (SUCCEEDED(hr))
@@ -4352,12 +4364,71 @@ namespace ir
             return false;
         }
 
-        const size_t sample_bytes = src_float ? 4 : 2;
-        const DWORD input_bytes = (DWORD)((size_t)frames * src_channels * sample_bytes);
+        resampler->ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0);
+        resampler->ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0);
+        impl_->resampler = resampler;
+        impl_->ready = true;
+        return true;
+    }
+
+    void PcmToS16Converter::reset()
+    {
+        if (!impl_ || !impl_->resampler)
+            return;
+        impl_->resampler->ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, 0);
+        impl_->resampler->ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0);
+    }
+
+    bool PcmToS16Converter::convert(const uint8_t *src, uint32_t frames, std::vector<int16_t> *out,
+                                    std::string *err)
+    {
+        if (!impl_ || !out || !impl_->ready)
+        {
+            if (err)
+                *err = "audio converter is not initialized";
+            return false;
+        }
+        out->clear();
+        if (!frames)
+            return true;
+        if (!src)
+        {
+            if (err)
+                *err = "audio conversion input is invalid";
+            return false;
+        }
+
+        if (impl_->direct)
+        {
+            out->resize((size_t)frames * AUDIO_CHANNELS);
+            if (impl_->copy)
+            {
+                std::memcpy(out->data(), src, (size_t)frames * AUDIO_CHANNELS * sizeof(int16_t));
+                return true;
+            }
+            const float *f = reinterpret_cast<const float *>(src);
+            for (uint32_t frame = 0; frame < frames; ++frame)
+            {
+                for (uint32_t ch = 0; ch < AUDIO_CHANNELS; ++ch)
+                {
+                    float v = f[(size_t)frame * impl_->channels + ch];
+                    if (!std::isfinite(v))
+                        v = 0.0f;
+                    v = std::clamp(v, -1.0f, 1.0f);
+                    long long q = std::llround((double)v * 32767.0);
+                    (*out)[(size_t)frame * AUDIO_CHANNELS + ch] =
+                        (int16_t)std::clamp(q, -32768LL, 32767LL);
+                }
+            }
+            return true;
+        }
+
+        const size_t sample_bytes = impl_->floating ? 4 : 2;
+        const DWORD input_bytes = (DWORD)((size_t)frames * impl_->channels * sample_bytes);
         ComPtr<IMFMediaBuffer> in_buf;
         ComPtr<IMFSample> in_sample;
         BYTE *dst = nullptr;
-        hr = MFCreateMemoryBuffer(input_bytes, &in_buf);
+        HRESULT hr = MFCreateMemoryBuffer(input_bytes, &in_buf);
         if (SUCCEEDED(hr))
             hr = in_buf->Lock(&dst, nullptr, nullptr);
         if (FAILED(hr) || !dst)
@@ -4382,9 +4453,7 @@ namespace ir
             return false;
         }
 
-        resampler->ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0);
-        resampler->ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0);
-        hr = resampler->ProcessInput(0, in_sample.Get(), 0);
+        hr = impl_->resampler->ProcessInput(0, in_sample.Get(), 0);
         if (FAILED(hr))
         {
             if (err)
@@ -4395,8 +4464,6 @@ namespace ir
             }
             return false;
         }
-        resampler->ProcessMessage(MFT_MESSAGE_NOTIFY_END_OF_STREAM, 0);
-        resampler->ProcessMessage(MFT_MESSAGE_COMMAND_DRAIN, 0);
 
         std::vector<uint8_t> pcm;
         for (;;)
@@ -4409,7 +4476,7 @@ namespace ir
             own->AddBuffer(mb.Get());
             ob.pSample = own.Get();
             DWORD status = 0;
-            hr = resampler->ProcessOutput(0, 1, &ob, &status);
+            hr = impl_->resampler->ProcessOutput(0, 1, &ob, &status);
             if (hr == MF_E_TRANSFORM_NEED_MORE_INPUT || FAILED(hr))
                 break;
             ComPtr<IMFMediaBuffer> data;
@@ -4993,7 +5060,14 @@ namespace ir
             // Half-second PCM chunks (24 000 frames at 48 kHz) keep the
             // interleaver fed without building one multi-megabyte sample.
             const int64_t chunk_frames = std::max<int64_t>(1, AUDIO_RATE / 2);
-            const int64_t frame_tick = SECOND_100NS / AUDIO_RATE;
+            auto ticks_from_frames = [](int64_t frames) -> int64_t
+            {
+                return frames * SECOND_100NS / AUDIO_RATE;
+            };
+            auto frames_from_ticks = [](int64_t ticks) -> int64_t
+            {
+                return ticks * AUDIO_RATE / SECOND_100NS;
+            };
             auto ceil_frames = [&](int64_t delta) -> int64_t
             {
                 return (delta * AUDIO_RATE + SECOND_100NS - 1) / SECOND_100NS;
@@ -5004,7 +5078,7 @@ namespace ir
             {
                 if (!c.data || c.frames == 0)
                     continue;
-                const int64_t chunk_end = c.pts100ns + (int64_t)c.frames * frame_tick;
+                const int64_t chunk_end = c.pts100ns + ticks_from_frames(c.frames);
                 if (chunk_end <= range_begin || c.pts100ns >= range_end)
                     continue;
                 for (const auto &range : audio_ranges)
@@ -5021,15 +5095,15 @@ namespace ir
                     for (int64_t at = off; at < stop; at += chunk_frames)
                     {
                         const int64_t frames = std::min(chunk_frames, stop - at);
-                        int64_t rel = c.pts100ns + at * frame_tick - range.begin;
-                        if (rel < 0)
-                            rel = 0;
-                        if (rel >= span)
-                            rel = span > frame_tick ? span - frame_tick : 0;
-                        audio_writes.push_back({range.out_base + rel,
+                        int64_t rel_frames = frames_from_ticks(
+                            std::max<int64_t>(0, c.pts100ns + ticks_from_frames(at) - range.begin));
+                        const int64_t span_frames = frames_from_ticks(span);
+                        if (rel_frames >= span_frames)
+                            rel_frames = span_frames > 1 ? span_frames - 1 : 0;
+                        audio_writes.push_back({range.out_base + ticks_from_frames(rel_frames),
                                                 c.data + (size_t)at * AUDIO_CHANNELS * sizeof(int16_t),
                                                 (size_t)frames * AUDIO_CHANNELS * sizeof(int16_t),
-                                                frames * frame_tick});
+                                                ticks_from_frames(frames)});
                     }
                 }
             }
@@ -5051,10 +5125,9 @@ namespace ir
                 for (int64_t at = from; at < to;)
                 {
                     const int64_t remaining = to - at;
-                    int64_t frames = std::min<int64_t>(chunk_frames,
-                        (remaining + frame_tick - 1) / frame_tick);
+                    int64_t frames = std::min<int64_t>(chunk_frames, ceil_frames(remaining));
                     if (frames <= 0) break;
-                    int64_t duration = std::min<int64_t>(remaining, frames * frame_tick);
+                    int64_t duration = std::min<int64_t>(remaining, ticks_from_frames(frames));
                     filled.push_back({at, reinterpret_cast<const uint8_t *>(audio_silence.data()),
                                       (size_t)frames * AUDIO_CHANNELS * sizeof(int16_t), duration});
                     at += duration;
@@ -5072,9 +5145,9 @@ namespace ir
                 AudioWrite write = a;
                 if (stop < start + a.duration)
                 {
-                    const int64_t frames = (stop - start) / frame_tick;
+                    const int64_t frames = frames_from_ticks(stop - start);
                     write.bytes = (size_t)frames * AUDIO_CHANNELS * sizeof(int16_t);
-                    write.duration = frames * frame_tick;
+                    write.duration = ticks_from_frames(frames);
                 }
                 if (write.bytes)
                     filled.push_back(write);
