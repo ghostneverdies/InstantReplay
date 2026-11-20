@@ -14,7 +14,7 @@ public enum EncoderPreference
 
 /// <summary>
 /// Bits returned by the engine's encoder probe. Keep in sync with the ENC_* constants in
-/// engine/engine_core/src/core.h. All encoders are Media Foundation MFTs.
+/// engine/engine_core/src/engine.h. All encoders are Media Foundation MFTs.
 /// </summary>
 [Flags]
 public enum EncoderAvailability : uint
