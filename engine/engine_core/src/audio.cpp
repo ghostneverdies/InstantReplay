@@ -14,6 +14,8 @@
 #include "core.hpp"
 
 #include <algorithm>
+#include <cstdio>
+#include <string>
 #include <audioclient.h>
 #include <propkeydef.h>
 #include <functiondiscoverykeys_devpkey.h>
@@ -245,6 +247,33 @@ namespace ir
             return std::min(p, 32767);
         }
 
+        // Diagnostic only: IR_DUMP_WASAPI=<file> writes the s16 packets exactly
+        // as they leave the WASAPI converter, before the engine accumulator.
+        struct RawPacketDump
+        {
+            FILE *file = nullptr;
+
+            RawPacketDump()
+            {
+                const DWORD length = GetEnvironmentVariableW(L"IR_DUMP_WASAPI", nullptr, 0);
+                if (!length)
+                    return;
+                std::wstring path(length, L'\0');
+                GetEnvironmentVariableW(L"IR_DUMP_WASAPI", &path[0], length);
+                _wfopen_s(&file, path.c_str(), L"wb");
+            }
+            ~RawPacketDump()
+            {
+                if (file)
+                    fclose(file);
+            }
+            void write(const int16_t *data, size_t frames, size_t channels)
+            {
+                if (file && data && frames && channels)
+                    fwrite(data, sizeof(int16_t), frames * channels, file);
+            }
+        };
+
     } // namespace
 
     std::vector<std::wstring> mic_devices()
@@ -474,6 +503,7 @@ namespace ir
         uint32_t last_good_frames = 0;
         bool ok = true;
         std::vector<int16_t> packet;
+        RawPacketDump raw_dump;
 
         while (running_ && ok)
         {
@@ -577,7 +607,10 @@ namespace ir
                     last_good_frames = out_frames;
                 }
                 if (out_frames)
+                {
+                    raw_dump.write(packet.data(), out_frames, mic_ ? 1u : AUDIO_CHANNELS);
                     push_(packet.data(), out_frames, t, discontinuity);
+                }
             }
             if (received)
                 last_packet = qpc100ns();

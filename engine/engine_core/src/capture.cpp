@@ -9,7 +9,6 @@
 // GPU resources (no CPU readback / Map anywhere in this file).
 
 #include "core.hpp"
-
 #include <dwmapi.h>
 #include <future>
 #include <psapi.h>
@@ -17,11 +16,8 @@
 #include <windows.foundation.h>
 #include <windows.graphics.directx.direct3d11.h>
 #include <winstring.h>
-#ifdef __MINGW32__
-#else
 #include <windows.graphics.capture.h>
 #include <windows.graphics.h>
-#endif
 #include <d3dcompiler.h> // types + D3DCompile signature only; loaded dynamically
 
 namespace ir

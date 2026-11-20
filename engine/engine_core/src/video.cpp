@@ -14,6 +14,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cwctype>
 
 #include <codecapi.h>
@@ -4959,8 +4960,17 @@ namespace ir
                 hr = aac_type->SetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, (UINT32)AUDIO_RATE);
             if (SUCCEEDED(hr))
                 hr = aac_type->SetUINT32(MF_MT_AUDIO_NUM_CHANNELS, (UINT32)AUDIO_CHANNELS);
+            UINT32 aac_bytes_per_second = 24000; // 192 kbps at 48 kHz
+            if (const DWORD kbps_len = GetEnvironmentVariableW(L"IR_AAC_KBPS", nullptr, 0))
+            {
+                std::wstring kbps(kbps_len, L'\0');
+                GetEnvironmentVariableW(L"IR_AAC_KBPS", &kbps[0], kbps_len);
+                const long value = std::wcstol(kbps.c_str(), nullptr, 10);
+                if (value > 0 && value <= 10000)
+                    aac_bytes_per_second = (UINT32)(value * 1000 / 8);
+            }
             if (SUCCEEDED(hr))
-                hr = aac_type->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, 24000);
+                hr = aac_type->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, aac_bytes_per_second);
             if (SUCCEEDED(hr))
                 hr = aac_type->SetUINT32(MF_MT_AAC_PAYLOAD_TYPE, 0);
             if (SUCCEEDED(hr))
@@ -5118,6 +5128,22 @@ namespace ir
                     }
                 }
             }
+
+            // Diagnostic only: IR_DUMP_PCM=<file> writes the exact interleaved
+            // 48 kHz stereo s16 buffer handed to the AAC encoder.
+            if (const DWORD dump_len = GetEnvironmentVariableW(L"IR_DUMP_PCM", nullptr, 0))
+            {
+                std::wstring dump_path(dump_len, L'\0');
+                GetEnvironmentVariableW(L"IR_DUMP_PCM", &dump_path[0], dump_len);
+                FILE *dump = nullptr;
+                if (_wfopen_s(&dump, dump_path.c_str(), L"wb") == 0 && dump)
+                {
+                    if (!audio_pcm.empty())
+                        fwrite(audio_pcm.data(), sizeof(int16_t), audio_pcm.size(), dump);
+                    fclose(dump);
+                }
+            }
+
             audio_writes.push_back({0, reinterpret_cast<const uint8_t *>(audio_pcm.data()),
                                     audio_pcm.size() * sizeof(int16_t),
                                     ticks_from_frames(aligned_frames)});
