@@ -4840,6 +4840,32 @@ namespace ir
             }
             return std::max<int64_t>(0, pts - first_pts);
         };
+        // Audio follows the same timeline as the video. In segmented mode each
+        // keyframe interval is compressed/expanded into exactly one second, so
+        // the PCM buffer is assembled from these ranges instead of one linear
+        // source-to-output mapping.
+        struct TimeRange
+        {
+            int64_t begin;
+            int64_t end;
+            int64_t out_base;
+        };
+        std::vector<TimeRange> audio_ranges;
+        if (segmented)
+        {
+            for (size_t i = 0; i < seg_starts.size(); ++i)
+            {
+                const int64_t next = i + 1 < seg_starts.size() ? seg_starts[i + 1] : end_time;
+                const int64_t end = std::min(next, seg_starts[i] + SECOND_100NS);
+                if (end > seg_starts[i])
+                    audio_ranges.push_back({seg_starts[i], end, (int64_t)i * SECOND_100NS});
+            }
+        }
+        else if (exact_cap)
+            audio_ranges.push_back({trim_start, end_time, 0});
+        else
+            audio_ranges.push_back({first_pts, last_end, 0});
+
         const bool av1 = codec == CodecSel::Av1;
         const bool hevc = codec == CodecSel::Hevc;
         const GUID subtype = mf_codec_subtype(av1 ? MfCodec::Av1 : (hevc ? MfCodec::Hevc : MfCodec::H264));
@@ -5047,32 +5073,51 @@ namespace ir
             {
                 return ticks * AUDIO_RATE / SECOND_100NS;
             };
-            // Integer division truncates toward zero; PCM offsets before the
-            // trimmed start need a real floor so no frame is shifted by one.
-            auto floor_frames = [](int64_t ticks) -> int64_t
+            auto ceil_frames = [](int64_t ticks) -> int64_t
             {
                 if (ticks >= 0)
-                    return ticks * AUDIO_RATE / SECOND_100NS;
-                return -(((-ticks) * AUDIO_RATE + SECOND_100NS - 1) / SECOND_100NS);
+                    return (ticks * AUDIO_RATE + SECOND_100NS - 1) / SECOND_100NS;
+                return -(((-ticks) * AUDIO_RATE) / SECOND_100NS);
             };
             constexpr int64_t aac_frame = 1024; // one AAC-LC frame is 1024 PCM samples
-            const int64_t audio_start = exact_cap ? trim_start
-                                                  : (segmented ? seg_starts.front() : first_pts);
             const int64_t total_frames = frames_from_ticks(out_end);
             const int64_t aligned_frames = ((total_frames + aac_frame - 1) / aac_frame) * aac_frame;
             audio_pcm.assign((size_t)aligned_frames * AUDIO_CHANNELS, 0);
-            for (const auto &c : audio)
+            for (const auto &range : audio_ranges)
             {
-                if (!c.data || !c.frames)
+                const int64_t out_span = segmented
+                    ? std::max<int64_t>(0, std::min(range.out_base + SECOND_100NS, out_end) - range.out_base)
+                    : std::max<int64_t>(0, out_end - range.out_base);
+                const int64_t out_frames = frames_from_ticks(out_span);
+                const int64_t out_base_frames = frames_from_ticks(range.out_base);
+                if (out_frames <= 0)
                     continue;
-                const int64_t off = floor_frames(c.pts100ns - audio_start);
-                const int64_t from = std::max<int64_t>(0, -off);
-                const int64_t to = std::min<int64_t>(c.frames, aligned_frames - off);
-                if (to <= from)
-                    continue;
-                std::memcpy(audio_pcm.data() + (size_t)(off + from) * AUDIO_CHANNELS,
-                            c.data + (size_t)from * AUDIO_CHANNELS * sizeof(int16_t),
-                            (size_t)(to - from) * AUDIO_CHANNELS * sizeof(int16_t));
+                for (const auto &c : audio)
+                {
+                    if (!c.data || !c.frames)
+                        continue;
+                    const int64_t from = std::clamp<int64_t>(ceil_frames(range.begin - c.pts100ns),
+                                                             0, c.frames);
+                    const int64_t to = std::clamp<int64_t>(ceil_frames(range.end - c.pts100ns),
+                                                            0, c.frames);
+                    if (to <= from)
+                        continue;
+                    const int64_t src_frames = to - from;
+                    for (int64_t at = from; at < to; ++at)
+                    {
+                        // Stretch/compress this source range to the exact video
+                        // segment length so segmented audio stays in sync.
+                        const int64_t dst = ((at - from) * out_frames + src_frames / 2) / src_frames;
+                        if (dst < 0 || dst >= out_frames)
+                            continue;
+                        const int64_t d = out_base_frames + dst;
+                        if (d < 0 || d >= aligned_frames)
+                            continue;
+                        std::memcpy(audio_pcm.data() + (size_t)d * AUDIO_CHANNELS,
+                                    c.data + (size_t)at * AUDIO_CHANNELS * sizeof(int16_t),
+                                    AUDIO_CHANNELS * sizeof(int16_t));
+                    }
+                }
             }
             audio_writes.push_back({0, reinterpret_cast<const uint8_t *>(audio_pcm.data()),
                                     audio_pcm.size() * sizeof(int16_t),
