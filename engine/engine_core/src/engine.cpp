@@ -263,8 +263,8 @@ namespace ir
         bool flush_pending();
         void push_video(Ref<PacketRef> frame);
 
-        void push_system(const int16_t *data, uint32_t frames, int64_t qpc);
-        void push_mic(const int16_t *data, uint32_t frames, int64_t qpc);
+        void push_system(const int16_t *data, uint32_t frames, int64_t qpc, bool discontinuity = false);
+        void push_mic(const int16_t *data, uint32_t frames, int64_t qpc, bool discontinuity = false);
         void flush_audio_accumulator(bool mic);
 
         bool video_init(const VideoInit &init);
@@ -568,8 +568,8 @@ namespace ir
         if (sys_audio_)
             sys_audio_->stop();
         sys_audio_ = std::make_unique<AudioSource>(false, L"", window,
-                                                   [this](const int16_t *d, uint32_t n, int64_t q)
-                                                   { push_system(d, n, q); }, &sys_counters_);
+                                                   [this](const int16_t *d, uint32_t n, int64_t q, bool disc)
+                                                   { push_system(d, n, q, disc); }, &sys_counters_);
         sys_audio_->start();
     }
 
@@ -1134,9 +1134,11 @@ namespace ir
         acc.clear();
     }
 
-    void Engine::push_system(const int16_t *data, uint32_t frames, int64_t qpc)
+    void Engine::push_system(const int16_t *data, uint32_t frames, int64_t qpc, bool discontinuity)
     {
         const int64_t pts = clock_.timeline(qpc);
+        if (discontinuity)
+            flush_audio_accumulator(false); // WASAPI reported a broken stream: never bridge it
         if (pts < 0 || !running_.load())
         {
             flush_audio_accumulator(false); // never bridge a pause boundary
@@ -1168,9 +1170,11 @@ namespace ir
             flush_audio_accumulator(false);
     }
 
-    void Engine::push_mic(const int16_t *data, uint32_t frames, int64_t qpc)
+    void Engine::push_mic(const int16_t *data, uint32_t frames, int64_t qpc, bool discontinuity)
     {
         const int64_t pts = clock_.mic_timeline(qpc);
+        if (discontinuity)
+            flush_audio_accumulator(true); // WASAPI reported a broken stream: never bridge it
         if (pts < 0 || !running_.load())
         {
             flush_audio_accumulator(true);
@@ -1401,15 +1405,15 @@ namespace ir
             if (audio)
             {
                 sys_audio_ = std::make_unique<AudioSource>(false, L"", audio_target_,
-                                                           [this](const int16_t *d, uint32_t n, int64_t q)
-                                                           { push_system(d, n, q); }, &sys_counters_);
+                                                           [this](const int16_t *d, uint32_t n, int64_t q, bool disc)
+                                                           { push_system(d, n, q, disc); }, &sys_counters_);
                 sys_audio_->start();
             }
             if (mic)
             {
                 mic_audio_ = std::make_unique<AudioSource>(true, mic_device_, nullptr,
-                                                           [this](const int16_t *d, uint32_t n, int64_t q)
-                                                           { push_mic(d, n, q); }, &mic_counters_);
+                                                           [this](const int16_t *d, uint32_t n, int64_t q, bool disc)
+                                                           { push_mic(d, n, q, disc); }, &mic_counters_);
                 mic_audio_->start();
             }
         }
@@ -1723,7 +1727,8 @@ namespace ir
     {
         const int64_t n = (t1 - t0) * AUDIO_RATE / SECOND_100NS;
         std::vector<int32_t> acc((size_t)n * 2, 0);
-        auto place = [&](const AudioBlock &b, bool mono)
+        bool have_sys = false, have_mic = false;
+        auto place = [&](const AudioBlock &b, bool mono, bool &seen)
         {
             const int64_t first = (b.pts100ns - t0) * AUDIO_RATE / SECOND_100NS;
             for (uint32_t i = 0; i < b.frames; ++i)
@@ -1731,6 +1736,7 @@ namespace ir
                 const int64_t at = first + i;
                 if (at < 0 || at >= n)
                     continue;
+                seen = true;
                 if (mono)
                 {
                     acc[(size_t)at * 2] += b.pcm[i];
@@ -1744,12 +1750,25 @@ namespace ir
             }
         };
         for (const auto &b : sys)
-            place(*b, false);
+            place(*b, false, have_sys);
         for (const auto &b : mic)
-            place(*b, true);
+            place(*b, true, have_mic);
+
+        // Leave headroom when both sources overlap. Scaling the whole chunk only
+        // when it would clip keeps ordinary single-source audio byte-identical
+        // while avoiding the hard-corner click of two clipped waveforms.
+        int peak = 0;
+        for (int v : acc)
+            peak = std::max(peak, std::abs(v));
+        const int limit = (have_sys && have_mic) ? 30000 : 32767;
+        const double gain = peak > limit ? (double)limit / (double)peak : 1.0;
+
         std::vector<int16_t> out(acc.size());
         for (size_t i = 0; i < acc.size(); ++i)
-            out[i] = (int16_t)std::clamp(acc[i], -32768, 32767);
+        {
+            long long v = gain < 1.0 ? std::llround((double)acc[i] * gain) : acc[i];
+            out[i] = (int16_t)std::clamp(v, -32768LL, 32767LL);
+        }
         return out;
     }
 
