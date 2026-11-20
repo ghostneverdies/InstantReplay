@@ -905,7 +905,8 @@ public partial class MainWindow : Window
         if (!fadeOnly) PlayPageEntrance(newPage);
         if (ReferenceEquals(newPage, GalleryPage)) RefreshGalleryIfStale();
 
-        FitWindowToPage(newPage);
+        if (ReferenceEquals(newPage, ViewerPage)) FitViewerWindowToAspect();
+        else FitWindowToPage(newPage);
 
         TransitionOut(oldPage);
     }
@@ -941,6 +942,68 @@ public partial class MainWindow : Window
             catch (Exception ex)
             {
                 Logger.Warn($"FitWindowToPage failed: {ex.Message}");
+            }
+        });
+    }
+
+    private void FitViewerWindowToAspect()
+    {
+        _dq.TryEnqueue(() =>
+        {
+            if (_appWindow.Presenter is not OverlappedPresenter) return;
+
+            try
+            {
+                double scale = GetDpiForWindow(_hwnd) / 96.0;
+                if (scale <= 0) scale = 1.0;
+
+                RectInt32 work = DisplayArea.GetFromWindowId(_appWindow.Id, DisplayAreaFallback.Nearest).WorkArea;
+                double maxClientW = Math.Min(DefaultWindowWidthDips * scale, work.Width * 0.94);
+                double maxClientH = Math.Min(DefaultWindowHeightDips * scale, work.Height * 0.94);
+
+                SizeInt32 client = _appWindow.ClientSize;
+                double chromeW = client.Width - PlayerViewport.ActualWidth * scale;
+                double chromeH = client.Height - PlayerViewport.ActualHeight * scale;
+                if (chromeW < 160 * scale || chromeH < 80 * scale)
+                {
+                    // First viewer open (or an unexpected layout): use the measured
+                    // navigation/title/back-button allowance instead of a bad delta.
+                    chromeW = 260 * scale;
+                    chromeH = 104 * scale;
+                }
+
+                double availW = Math.Max(320 * scale, maxClientW - chromeW);
+                double availH = Math.Max(240 * scale, maxClientH - chromeH);
+                double aspect = _playerAspect > 0 ? _playerAspect : 16.0 / 9.0;
+
+                double viewportW = Math.Min(availW, availH * aspect);
+                double viewportH = viewportW / aspect;
+                if (viewportH > availH)
+                {
+                    viewportH = availH;
+                    viewportW = viewportH * aspect;
+                }
+
+                int w = (int)Math.Round(Math.Min(maxClientW, viewportW + chromeW));
+                int h = (int)Math.Round(Math.Min(maxClientH, viewportH + chromeH));
+                w = (int)Math.Clamp((double)w, Math.Min(480 * scale, maxClientW), maxClientW);
+                h = (int)Math.Clamp((double)h, Math.Min(360 * scale, maxClientH), maxClientH);
+
+                if (Math.Abs(client.Width - w) > 2 || Math.Abs(client.Height - h) > 2)
+                    _appWindow.ResizeClient(new SizeInt32(w, h));
+
+                if (!_windowPlaced)
+                {
+                    _windowPlaced = true;
+                    SizeInt32 outer = _appWindow.Size;
+                    _appWindow.Move(new PointInt32(
+                        work.X + Math.Max(0, (work.Width - outer.Width) / 2),
+                        work.Y + Math.Max(0, (work.Height - outer.Height) / 2)));
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn($"FitViewerWindowToAspect failed: {ex.Message}");
             }
         });
     }
@@ -1332,6 +1395,7 @@ public partial class MainWindow : Window
         if (generation != _viewerGeneration || !ReferenceEquals(_currentPage, ViewerPage)) return;
         _playerAspect = item.VideoWidth > 0 && item.VideoHeight > 0 ? (double)item.VideoWidth / item.VideoHeight : 16.0 / 9.0;
         UpdateInlinePlayerBounds();
+        FitViewerWindowToAspect();
         await OpenInlinePlayerAsync(item, generation);
     }
 
@@ -1406,7 +1470,12 @@ public partial class MainWindow : Window
             && width.TryGetInt32(out int w) && height.TryGetInt32(out int h) && w > 0 && h > 0)
         {
             double aspect = (double)w / h;
-            if (Math.Abs(aspect - _playerAspect) > 0.001) { _playerAspect = aspect; UpdateInlinePlayerBounds(); }
+            if (Math.Abs(aspect - _playerAspect) > 0.001)
+            {
+                _playerAspect = aspect;
+                UpdateInlinePlayerBounds();
+                if (_fsWindow == null && ReferenceEquals(_currentPage, ViewerPage)) FitViewerWindowToAspect();
+            }
         }
         if (state.TryGetProperty("t", out var t) && t.TryGetDouble(out double seconds) && double.IsFinite(seconds)) _playerTime = Math.Max(seconds, 0);
         if (state.TryGetProperty("playing", out var playing)) _playerPlaying = playing.ValueKind == JsonValueKind.True;
@@ -2464,15 +2533,18 @@ public partial class MainWindow : Window
 
     private void InitCaptureSegments()
     {
-        _settings.CaptureMethod = "Dxgi";
-        CaptureWgcItem.IsEnabled = false;
-        CaptureMethodCombo.SelectedIndex = 1;
+        CaptureWgcItem.IsEnabled = true;
+        CaptureMethodCombo.SelectedIndex = _settings.CaptureMethod == "Wgc" ? 0 : 1;
         UpdateCaptureMethodControls();
     }
 
     private void UpdateCaptureMethodControls()
     {
-        CaptureMethodCombo.IsEnabled = false;
+        bool desktop = _settings.CaptureTarget != "SpecificWindows";
+        CaptureMethodCombo.IsEnabled = desktop;
+        CaptureMethodHelpText.Text = desktop
+            ? "Applies to Whole Desktop. Game Capture uses automatic WGC/DXGI switching."
+            : "Game Capture overrides this setting and switches between WGC and DXGI automatically.";
         CaptureBorderCheck.IsEnabled = false;
     }
 
@@ -2603,16 +2675,8 @@ public partial class MainWindow : Window
 
     private void CaptureMethodCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (_initializing) return;
-
-        _settings.CaptureMethod = "Dxgi";
-        if (CaptureMethodCombo.SelectedIndex != 1)
-        {
-            _initializing = true;
-            try { CaptureMethodCombo.SelectedIndex = 1; }
-            finally { _initializing = false; }
-        }
-        UpdateCaptureMethodControls();
+        if (_initializing || _syncingCaptureTargets) return;
+        _settings.CaptureMethod = CaptureMethodCombo.SelectedIndex == 0 ? "Wgc" : "Dxgi";
         CheckDirty();
     }
 
@@ -3115,8 +3179,7 @@ public partial class MainWindow : Window
             SaveLocationBox.Text = _settings.GetEffectiveSaveDestination();
             InitEncoderSegments();
             InitBufferMethodSegments();
-            _settings.CaptureMethod = "Dxgi";
-            CaptureMethodCombo.SelectedIndex = 1;
+            InitCaptureSegments();
             InitCaptureTargets();
         }
         finally
