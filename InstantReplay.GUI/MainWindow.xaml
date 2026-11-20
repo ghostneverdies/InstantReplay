@@ -1186,7 +1186,7 @@
                                              IsClosable="False"
                                              Severity="Warning"
                                              Title="Capture compatibility"
-                                             Message="DXGI remains the desktop capture method. Game capture support is being updated. Encoding uses Media Foundation."
+                                             Message="Game Capture switches automatically between WGC and DXGI. The recording method setting applies to Whole Desktop only. Encoding uses Media Foundation."
                                              Margin="0,0,0,12">
                                         <InfoBar.ActionButton>
                                             <Button Content="Dismiss"
@@ -1250,7 +1250,7 @@
                                             <ComboBoxItem Content="MP4"/>
                                         </ComboBox>
                                     </controls:SettingRow>
-                                    <controls:SettingRow Label="Capture method"
+                                    <controls:SettingRow Label="Recording method"
                                                          Margin="0,0,0,6">
                                         <StackPanel Spacing="6">
                                             <ComboBox x:Name="CaptureMethodCombo"
@@ -1262,7 +1262,8 @@
                                                 <ComboBoxItem x:Name="CaptureDxgiItem"
                                                               Content="DXGI"/>
                                             </ComboBox>
-                                            <TextBlock Text="Coming Soon"
+                                            <TextBlock x:Name="CaptureMethodHelpText"
+                                                       Text="Applies to Whole Desktop. Game Capture uses automatic WGC/DXGI switching."
                                                        TextWrapping="Wrap"
                                                        FontSize="12"
                                                        Opacity="0.65"/>
