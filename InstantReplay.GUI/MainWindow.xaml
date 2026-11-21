@@ -961,10 +961,31 @@
                                                   Checked="WindowCaptureOption_Changed"
                                                   Unchecked="WindowCaptureOption_Changed"/>
                                     </controls:SettingRow>
+                                    <controls:SettingRow Label="Only client area"
+                                                         Margin="0,0,0,6">
+                                        <CheckBox x:Name="CaptureClientAreaCheck"
+                                                  AutomationProperties.Name="Capture only the client area"
+                                                  Checked="WindowCaptureOption_Changed"
+                                                  Unchecked="WindowCaptureOption_Changed"/>
+                                    </controls:SettingRow>
                                     <controls:SettingRow Label="Capture border"
                                                          Margin="0,0,0,6">
                                         <CheckBox x:Name="CaptureBorderCheck"
                                                   IsEnabled="False"
+                                                  Checked="WindowCaptureOption_Changed"
+                                                  Unchecked="WindowCaptureOption_Changed"/>
+                                    </controls:SettingRow>
+                                    <controls:SettingRow Label="Keep rounded corners"
+                                                        Margin="0,0,0,6">
+                                        <CheckBox x:Name="CaptureRoundedCornersCheck"
+                                                  AutomationProperties.Name="Keep rounded window corners"
+                                                  Checked="WindowCaptureOption_Changed"
+                                                  Unchecked="WindowCaptureOption_Changed"/>
+                                    </controls:SettingRow>
+                                    <controls:SettingRow Label="Include secondary windows"
+                                                        Margin="0,0,0,6">
+                                        <CheckBox x:Name="CaptureSecondaryWindowsCheck"
+                                                  AutomationProperties.Name="Include secondary windows"
                                                   Checked="WindowCaptureOption_Changed"
                                                   Unchecked="WindowCaptureOption_Changed"/>
                                     </controls:SettingRow>
@@ -1020,6 +1041,35 @@
                                             <ComboBoxItem Content="Slowest"/>
                                         </ComboBox>
                                     </controls:SettingRow>
+                                    <controls:SettingRow Label="Video codec"
+                                                        Margin="0,0,0,8">
+                                        <ComboBox x:Name="CodecCombo"
+                                                  HorizontalAlignment="Stretch"
+                                                  SelectionChanged="CodecCombo_SelectionChanged">
+                                            <ComboBoxItem Content="H.264"/>
+                                            <ComboBoxItem Content="HEVC / H.265"/>
+                                            <ComboBoxItem Content="AV1"/>
+                                        </ComboBox>
+                                    </controls:SettingRow>
+                                    <controls:SettingRow Label="GPU"
+                                                        ToolTipService.ToolTip="Use hardware MFTs for encoding. Turn off to use the software encoder."
+                                                        Margin="0,0,0,8">
+                                        <StackPanel Orientation="Horizontal"
+                                                    Spacing="8"
+                                                    HorizontalAlignment="Stretch">
+                                            <CheckBox x:Name="GpuEncoderCheck"
+                                                      AutomationProperties.Name="GPU encoder"
+                                                      VerticalAlignment="Center"
+                                                      Checked="GpuEncoder_Changed"
+                                                      Unchecked="GpuEncoder_Changed"/>
+                                            <ComboBox x:Name="GpuPreferenceCombo"
+                                                      HorizontalAlignment="Stretch"
+                                                      SelectionChanged="GpuPreferenceCombo_SelectionChanged">
+                                                <ComboBoxItem Content="Prefer iGPU"/>
+                                                <ComboBoxItem Content="Prefer dGPU"/>
+                                            </ComboBox>
+                                        </StackPanel>
+                                    </controls:SettingRow>
                                     <controls:SettingRow Label="Bitrate (calculated)"
                                             ToolTipService.ToolTip="Calculated from quality preset, frame rate and capture resolution. Used as the target for both CBR and VBR."
                                             Margin="0">
@@ -1066,6 +1116,34 @@
                                                       OnContent=""
                                                       OffContent=""
                                                       Toggled="SysAudioToggle_Changed"/>
+                                    </controls:SettingRow>
+                                    <controls:SettingRow Label="Application local audio"
+                                                        Margin="0,0,0,8">
+                                        <ToggleSwitch x:Name="ApplicationLocalAudioToggle"
+                                                      OnContent=""
+                                                      OffContent=""
+                                                      Toggled="ApplicationLocalAudioToggle_Changed"/>
+                                    </controls:SettingRow>
+                                    <controls:SettingRow Label="Audio codec"
+                                                        Margin="0,0,0,8">
+                                        <ComboBox x:Name="AudioCodecCombo"
+                                                  HorizontalAlignment="Stretch"
+                                                  SelectionChanged="AudioCodecCombo_SelectionChanged">
+                                            <ComboBoxItem Content="AAC"/>
+                                            <ComboBoxItem Content="FLAC"/>
+                                        </ComboBox>
+                                    </controls:SettingRow>
+                                    <controls:SettingRow x:Name="AudioBitrateRow"
+                                                        Label="Audio bitrate"
+                                                        Margin="0,0,0,8">
+                                        <ComboBox x:Name="AudioBitrateCombo"
+                                                  HorizontalAlignment="Stretch"
+                                                  SelectionChanged="AudioBitrateCombo_SelectionChanged">
+                                            <ComboBoxItem Content="96 kbps"/>
+                                            <ComboBoxItem Content="128 kbps"/>
+                                            <ComboBoxItem Content="160 kbps"/>
+                                            <ComboBoxItem Content="192 kbps"/>
+                                        </ComboBox>
                                     </controls:SettingRow>
                                 </StackPanel>
                             </Border>
@@ -1167,128 +1245,6 @@
                                     </controls:SettingRow>
                                 </StackPanel>
                             </Border>
-                            <Border Style="{StaticResource SettingsCard}">
-                                <StackPanel>
-                                    <StackPanel Orientation="Horizontal"
-                                                Spacing="10"
-                                                Margin="0,0,0,12">
-                                        <FontIcon Glyph="&#xE90F;"
-                                                  FontFamily="{ThemeResource SymbolThemeFontFamily}"
-                                                  FontSize="16"
-                                                  Foreground="{ThemeResource ErrorBrush}"/>
-                                        <TextBlock Text="Advanced"
-                                                   FontSize="14"
-                                                   FontWeight="SemiBold"
-                                                   Foreground="{ThemeResource SettingsAreaTextBrush}"/>
-                                    </StackPanel>
-                                    <InfoBar x:Name="AdvancedWarningBar"
-                                            IsOpen="True"
-                                             IsClosable="False"
-                                             Severity="Warning"
-                                             Title="Capture compatibility"
-                                             Message="Game Capture switches automatically between WGC and DXGI. The recording method setting applies to Whole Desktop only. Encoding uses Media Foundation."
-                                             Margin="0,0,0,12">
-                                        <InfoBar.ActionButton>
-                                            <Button Content="Dismiss"
-                                                    Click="DismissAdvancedWarning_Click"/>
-                                        </InfoBar.ActionButton>
-                                    </InfoBar>
-                                    <controls:SettingRow Label="Video encoder"
-                                                         Margin="0,0,0,8">
-                                        <ComboBox x:Name="EncoderCombo"
-                                                  HorizontalAlignment="Stretch"
-                                                  SelectionChanged="EncoderCombo_SelectionChanged">
-                                            <ComboBoxItem Content="Auto"/>
-                                            <ComboBoxItem Content="MF QSV (Intel)"/>
-                                            <ComboBoxItem Content="MF VP12 (Intel Gen12 / Arc)"/>
-                                            <ComboBoxItem Content="MF NVENC (NVIDIA)"/>
-                                            <ComboBoxItem Content="MF AMF (AMD)"/>
-                                            <ComboBoxItem Content="MF Software (CPU)"/>
-                                        </ComboBox>
-                                    </controls:SettingRow>
-                                    <controls:SettingRow Label="Video codec"
-                                                         Margin="0,0,0,8">
-                                        <ComboBox x:Name="CodecCombo"
-                                                  HorizontalAlignment="Stretch"
-                                                  SelectionChanged="CodecCombo_SelectionChanged">
-                                            <ComboBoxItem Content="Auto"/>
-                                            <ComboBoxItem Content="HEVC / H.265"/>
-                                            <ComboBoxItem Content="AVC / H.264"/>
-                                            <ComboBoxItem Content="AV1"/>
-                                        </ComboBox>
-                                    </controls:SettingRow>
-                                    <controls:SettingRow Label="Rate control"
-                                                         Margin="0,0,0,8">
-                                        <ComboBox x:Name="RateControlCombo"
-                                                  HorizontalAlignment="Stretch"
-                                                  SelectionChanged="RateControlCombo_SelectionChanged">
-                                            <ComboBoxItem Content="CBR (constant bitrate)"/>
-                                            <ComboBoxItem Content="VBR (variable bitrate)"/>
-                                        </ComboBox>
-                                    </controls:SettingRow>
-                                    <controls:SettingRow Label="Encoder preset"
-                                                         Margin="0,0,0,8">
-                                        <ComboBox x:Name="EncoderPresetCombo"
-                                                  HorizontalAlignment="Stretch"
-                                                  SelectionChanged="EncoderPresetCombo_SelectionChanged">
-                                            <ComboBoxItem Content="Ultra fast"/>
-                                            <ComboBoxItem Content="Very fast"/>
-                                            <ComboBoxItem Content="Fast"/>
-                                            <ComboBoxItem Content="Balanced"/>
-                                            <ComboBoxItem Content="Slow"/>
-                                            <ComboBoxItem Content="Slower"/>
-                                            <ComboBoxItem Content="Slowest"/>
-                                        </ComboBox>
-                                    </controls:SettingRow>
-                                    <controls:SettingRow Label="Video container"
-                                                         Margin="0,0,0,8">
-                                        <ComboBox x:Name="ContainerCombo"
-                                                  HorizontalAlignment="Stretch"
-                                                  IsEnabled="False"
-                                                  ToolTipService.ToolTip="Media Foundation writes MP4 clips only"
-                                                  SelectionChanged="ContainerCombo_SelectionChanged">
-                                            <ComboBoxItem Content="MP4"/>
-                                        </ComboBox>
-                                    </controls:SettingRow>
-                                    <controls:SettingRow Label="Recording method"
-                                                         Margin="0,0,0,6">
-                                        <StackPanel Spacing="6">
-                                            <ComboBox x:Name="CaptureMethodCombo"
-                                                      HorizontalAlignment="Stretch"
-                                                      IsEnabled="False"
-                                                      SelectionChanged="CaptureMethodCombo_SelectionChanged">
-                                                <ComboBoxItem x:Name="CaptureWgcItem"
-                                                              Content="WGC"/>
-                                                <ComboBoxItem x:Name="CaptureDxgiItem"
-                                                              Content="DXGI"/>
-                                            </ComboBox>
-                                            <TextBlock x:Name="CaptureMethodHelpText"
-                                                       Text="Applies to Whole Desktop. Game Capture uses automatic WGC/DXGI switching."
-                                                       TextWrapping="Wrap"
-                                                       FontSize="12"
-                                                       Opacity="0.65"/>
-                                        </StackPanel>
-                                    </controls:SettingRow>
-
-
-                                    <controls:SettingRow Label="buffer method"
-                                                         Margin="0,0,0,8">
-                                        <ComboBox x:Name="BufferMethodCombo"
-                                                  HorizontalAlignment="Stretch"
-                                                  SelectionChanged="BufferMethodCombo_SelectionChanged">
-                                            <ComboBoxItem Content="Continuous"/>
-                                            <ComboBoxItem Content="Segmented"/>
-                                        </ComboBox>
-                                    </controls:SettingRow>
-                                    <controls:SettingRow Label="Debug logging"
-                                                         Margin="0,0,0,8">
-                                        <ToggleSwitch x:Name="DebugToggle"
-                                                      OnContent=""
-                                                      OffContent=""
-                                                      Toggled="DebugToggle_Changed"/>
-                                    </controls:SettingRow>
-                                </StackPanel>
-                            </Border>
                         </StackPanel>
                     </ScrollViewer>
                 </Grid>
@@ -1380,38 +1336,5 @@
             </Grid>
         </NavigationView>
 
-        <Grid x:Name="EncoderDetectOverlay"
-              Grid.RowSpan="3"
-              Canvas.ZIndex="100"
-              Visibility="Collapsed"
-              Opacity="0">
-            <Image x:Name="EncoderDetectBlurImage"
-                   Stretch="Fill"
-                   IsHitTestVisible="False"/>
-            <Border x:Name="EncoderDetectScrim">
-                <Border.Background>
-                    <AcrylicBrush x:Name="EncoderDetectAcrylic"
-                                  TintColor="#202020"
-                                  TintOpacity="0.55"
-                                  FallbackColor="#CC202020"/>
-                </Border.Background>
-            </Border>
-            <StackPanel HorizontalAlignment="Center"
-                        VerticalAlignment="Center"
-                        Spacing="18"
-                        IsHitTestVisible="False">
-                <ProgressRing IsActive="True"
-                              IsIndeterminate="True"
-                              Width="56"
-                              Height="56"
-                              HorizontalAlignment="Center"/>
-                <TextBlock Text="Detecting Encoders"
-                           FontFamily="Segoe UI Variable"
-                           FontSize="20"
-                           FontWeight="SemiBold"
-                           HorizontalAlignment="Center"
-                           Foreground="{ThemeResource TextPrimaryBrush}"/>
-            </StackPanel>
-        </Grid>
     </Grid>
 </Window>
