@@ -153,37 +153,34 @@ public sealed class RecorderEngine : IDisposable
                      $"convFail={micConvertFailures} last={Hr(micFail)}");
     }
 
-    // Legacy external-encoder choices are intentionally absent: Settings.Load maps
-    // them to Auto, and any surviving value falls through to Auto here as well.
-    private static EncoderPreference ResolveEncoder(string choice) => choice switch
-    {
-        "MfQsv" => EncoderPreference.MfQsv,
-        "MfVp12" => EncoderPreference.MfVp12,
-        "MfNvenc" => EncoderPreference.MfNvenc,
-        "MfAmf" => EncoderPreference.MfAmf,
-        "MfSoftware" => EncoderPreference.MfSoftware,
-        _ => EncoderPreference.Auto,
-    };
+    private static readonly int[] AudioBitrates = [96, 128, 160, 192];
 
-    // Native pref layout (see options_from_pref in engine.c):
-    //   bits  0..7  encoder ordinal
-    //   bit   8     rate control (0 CBR, 1 VBR)
-    //   bit   9     buffer method (0 continuous, 1 segmented)
+    // Native pref layout (see engine.c):
+    //   bits  0..7  encoder ordinal (Auto lets MF pick; 11 requests software)
+    //   bit   8     rate control, always VBR now
+    //   bit   9     segmented ring, always off now
+    //   bit  10     GPU encoder enabled
+    //   bit  11     GPU encoder prefers iGPU
     //   bits 12..14 quality/speed preset 0..6
-    //   bits 15..16 codec (0 Auto, 1 HEVC, 2 H264, 3 AV1)
-    //   bits 24..31 compact per-codec availability byte
-    private static int ResolveEncoderOptions(Settings s)
+    //   bits 15..16 codec (1 HEVC, 2 H264, 3 AV1)
+    // No availability bits are sent: MFT_ENUM_FLAG_SORTANDFILTER chooses the MFT
+    // attached to the selected adapter, exactly like wcap.
+    private static int ResolveEncoderPreference(Settings s)
     {
-        string codec = s.VideoCodec;
-        int codecBits = codec switch { "Hevc" => 1, "H264" => 2, "Av1" => 3, _ => 0 };
-        int presetBits = VideoQualityProfile.PresetIndex(s.EncoderPreset);
-        uint compact = EncoderAvailabilityMap.Compact(
-            EncoderAvailabilityMap.FromDictionary(EncoderDetector.LastResult), codec);
-        return (s.RateControl == "Vbr" ? 1 << 8 : 0)
-             | (s.BufferMethod == "Segmented" ? 1 << 9 : 0)
-             | (presetBits << 12)
-             | (codecBits << 15)
-             | (int)(compact << 24);
+        int codecBits = s.VideoCodec switch { "Hevc" => 1, "H264" => 2, "Av1" => 3, _ => 2 };
+        int pref = (1 << 8)
+                 | (VideoQualityProfile.PresetIndex(s.QualityPreset) << 12)
+                 | (codecBits << 15);
+        if (s.GpuEncoder)
+        {
+            pref |= 1 << 10;
+            if (s.GpuPreference == "Prefer iGPU") pref |= 1 << 11;
+        }
+        else
+        {
+            pref |= (int)EncoderPreference.MfSoftware;
+        }
+        return pref;
     }
 
 
@@ -252,11 +249,20 @@ public sealed class RecorderEngine : IDisposable
         return true;
     }
 
-    private uint CaptureOptions() =>
-        (uint)((_captureSettings.CaptureClientArea ? 1 : 0) | (_captureSettings.CaptureCursor ? 2 : 0) |
-               (_captureSettings.CaptureBorder ? 4 : 0) |
-               (!_specific && _captureSettings.CaptureRoundedCorners ? 8 : 0) |
-               (_captureSettings.CaptureSecondaryWindows ? 16 : 0) | (_specific ? 64 | 128 : 0));
+    private uint CaptureOptions()
+    {
+        int index = Array.IndexOf(AudioBitrates, _captureSettings.AudioBitrate);
+        if (index < 0) index = Array.IndexOf(AudioBitrates, 160);
+        uint options = (uint)((_captureSettings.CaptureClientArea ? 1 : 0) | (_captureSettings.CaptureCursor ? 2 : 0) |
+                              (_captureSettings.CaptureBorder ? 4 : 0) |
+                              (!_specific && _captureSettings.CaptureRoundedCorners ? 8 : 0) |
+                              (_captureSettings.CaptureSecondaryWindows ? 16 : 0) |
+                              (_captureSettings.ApplicationLocalAudio ? 64 : 0) |
+                              (_specific ? 128 : 0));
+        options |= (uint)index << 8;
+        if (_captureSettings.AudioCodec == "FLAC") options |= 1u << 10;
+        return options;
+    }
 
     private bool StartEngine(IntPtr window, WindowSnapshot? snap, bool forceDxgi)
     {
@@ -266,16 +272,16 @@ public sealed class RecorderEngine : IDisposable
         (int srcW, int srcH) = canvasW > 0 && canvasH > 0
             ? (canvasW, canvasH)
             : ReplayEngine.MonitorSize(monitor);
-        // Both CBR and VBR use the same calculated target; there is no manual override.
+        // Bitrate is always derived from the quality preset, frame rate and source size.
         int bitrateKbps = VideoQualityProfile.TargetBitrateKbps(
             _captureSettings.QualityPreset, _captureSettings.FrameRate, srcW, srcH);
-        Logger.Debug($"[Encoder] Target bitrate {bitrateKbps} kbps " +
-                     $"from {_captureSettings.QualityPreset} preset at {_captureSettings.FrameRate} fps, " +
-                     $"source {srcW}x{srcH} ({(_captureSettings.RateControl == "Vbr" ? "VBR" : "CBR")}).");
-        // Game Capture is hybrid and overrides the stored recording method.
-        // Whole Desktop still honours the user's preference.
+        Logger.Debug($"[Encoder] GPU={(_captureSettings.GpuEncoder ? _captureSettings.GpuPreference : "off")}, " +
+                     $"codec={_captureSettings.VideoCodec}, audio={_captureSettings.AudioCodec}/" +
+                     $"{_captureSettings.AudioBitrate}kbps, target bitrate {bitrateKbps} kbps " +
+                     $"from {_captureSettings.QualityPreset} at {_captureSettings.FrameRate} fps, source {srcW}x{srcH}.");
+        // Game Capture is hybrid and picks WGC or DXGI per window. Whole Desktop uses DXGI.
         CaptureMethod method = snap == null
-            ? (_captureSettings.CaptureMethod == "Wgc" ? CaptureMethod.Wgc : CaptureMethod.Dxgi)
+            ? CaptureMethod.Dxgi
             : (snap.Source == CaptureSource.Wgc && !forceDxgi ? CaptureMethod.Wgc : CaptureMethod.Dxgi);
         return _engine.StartBuffering(
             monitorIndex: monitor,
@@ -283,8 +289,8 @@ public sealed class RecorderEngine : IDisposable
             fps: _captureSettings.FrameRate,
             bitrateKbps: bitrateKbps,
             captureAudio: _captureSettings.RecordSystemAudio,
-            preference: ResolveEncoder(_captureSettings.EncoderChoice),
-            encoderOptions: ResolveEncoderOptions(_captureSettings),
+            preference: ResolveEncoderPreference(_captureSettings),
+            encoderOptions: 0,
             method: method,
             captureMic: _captureSettings.RecordMicrophone,
             micDevice: _captureSettings.Microphone,
