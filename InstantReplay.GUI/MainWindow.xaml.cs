@@ -318,7 +318,6 @@ public partial class MainWindow : Window
         Logger.Init(_settings.DebugLogging);
         UpdateWebView2Requirement();
         _baseline = CapturePending();
-        AdvancedWarningBar.IsOpen = !_settings.WarningDismissed;
 
         _tempDir = Path.Combine(Path.GetTempPath(), "instant replay");
         _engine = new RecorderEngine(_settings);
@@ -331,17 +330,14 @@ public partial class MainWindow : Window
         InitDurationSegments();
         InitFpsSegments();
         InitQualitySegments();
-        InitEncoderSegments();
-        InitBufferMethodSegments();
-        UpdateEncoderAvailabilityUi();
-        InitCaptureSegments();
+        InitEncoderSettings();
+        InitAudioSettings();
         InitCaptureTargets();
         UpdateHotkeyButtonDisplay();
 
         NavView.IsPaneOpen = _settings.NavigationPaneOpen;
 
         StartupToggle.IsOn = StartupManager.IsEnabled();
-        DebugToggle.IsOn = _settings.DebugLogging;
         SaveLocationBox.Text = _settings.GetEffectiveSaveDestination();
 
         _initializing = false;
@@ -657,13 +653,9 @@ public partial class MainWindow : Window
         int ReplayDurationSeconds,
         int FrameRate,
         string QualityPreset,
-        string EncoderChoice,
         string VideoCodec,
-        string RateControl,
-        string EncoderPreset,
-        string Container,
-        string BufferMethod,
-        string CaptureMethod,
+        bool GpuEncoder,
+        string GpuPreference,
         string CaptureTarget,
         int CaptureMonitorIndex,
         bool CaptureClientArea,
@@ -674,19 +666,18 @@ public partial class MainWindow : Window
         string Microphone,
         string SaveDestination,
         bool RecordSystemAudio,
-        bool RecordMicrophone);
+        bool RecordMicrophone,
+        string AudioCodec,
+        int AudioBitrate,
+        bool ApplicationLocalAudio);
 
     private PendingSettings CapturePending() => new(
         _settings.ReplayDurationSeconds,
         _settings.FrameRate,
         _settings.QualityPreset,
-        _settings.EncoderChoice,
         _settings.VideoCodec,
-        _settings.RateControl,
-        _settings.EncoderPreset,
-        _settings.Container,
-        _settings.BufferMethod,
-        _settings.CaptureMethod,
+        _settings.GpuEncoder,
+        _settings.GpuPreference,
         _settings.CaptureTarget,
         _settings.CaptureMonitorIndex,
         _settings.CaptureClientArea,
@@ -697,7 +688,10 @@ public partial class MainWindow : Window
         _settings.Microphone,
         _settings.SaveDestination,
         _settings.RecordSystemAudio,
-        _settings.RecordMicrophone);
+        _settings.RecordMicrophone,
+        _settings.AudioCodec,
+        _settings.AudioBitrate,
+        _settings.ApplicationLocalAudio);
 
     private static void PlayButtonSound() => Microsoft.UI.Xaml.ElementSoundPlayer.Play(Microsoft.UI.Xaml.ElementSoundKind.Invoke);
 
@@ -1982,9 +1976,6 @@ public partial class MainWindow : Window
 
     private async Task InitialStartAsync()
     {
-        if (!EncoderDetector.HasResult)
-            await RunEncoderDetectionAsync();
-
         bool ok = await Task.Run(StartCaptureCore);
         SetRunningVisual(ok);
 
@@ -1999,7 +1990,7 @@ public partial class MainWindow : Window
         string detail = ReplayEngine.LastStartError;
         string message = detail.Length > 0
             ? detail + " The debug log contains the failure details."
-            : "Capture could not start. Check that the target is available and try another encoder in Settings. The debug log contains the failure details.";
+            : "Capture could not start. Check that the target is available and try the GPU setting in Settings. The debug log contains the failure details.";
         ShowInfoBar(InfoBarSeverity.Error, "Recording could not start", message, "start");
         _infoBarTimer?.Stop();
     }
@@ -2463,40 +2454,35 @@ public partial class MainWindow : Window
     }
 
     // Combo indices map straight to these arrays (keep in sync with MainWindow.xaml).
-    // Keep in sync with EncoderCombo in MainWindow.xaml (Media Foundation MFTs only).
-    private static readonly string[] EncoderChoices =
-        ["Auto", "MfQsv", "MfVp12", "MfNvenc", "MfAmf", "MfSoftware"];
-    private static readonly string[] CodecChoices = ["Auto", "Hevc", "H264", "Av1"];
-    private static readonly string[] BufferMethodChoices = ["Continuous", "Segmented"];
+    private static readonly string[] CodecChoices = ["H264", "Hevc", "Av1"];
+    private static readonly int[] AudioBitrates = [96, 128, 160, 192];
 
-    private void InitEncoderSegments()
+    private void InitEncoderSettings()
     {
-        EncoderCombo.SelectedIndex = Math.Max(0, Array.IndexOf(EncoderChoices, _settings.EncoderChoice));
-        RateControlCombo.SelectedIndex = _settings.RateControl == "Vbr" ? 1 : 0;
-        RefreshBitrateDisplay();
         CodecCombo.SelectedIndex = Math.Max(0, Array.IndexOf(CodecChoices, _settings.VideoCodec));
-        EncoderPresetCombo.SelectedIndex = VideoQualityProfile.PresetIndex(_settings.EncoderPreset);
-        // The writer is MP4-only; Settings.Load migrates every legacy container to Mp4.
-        ContainerCombo.SelectedIndex = 0;
+        GpuEncoderCheck.IsChecked = _settings.GpuEncoder;
+        GpuPreferenceCombo.SelectedIndex = _settings.GpuPreference == "Prefer iGPU" ? 0 : 1;
+        UpdateGpuControls();
+        RefreshBitrateDisplay();
     }
 
-    private void InitBufferMethodSegments()
+    private void UpdateGpuControls()
     {
-        BufferMethodCombo.SelectedIndex = _settings.BufferMethod == "Segmented" ? 1 : 0;
+        GpuPreferenceCombo.IsEnabled = GpuEncoderCheck.IsChecked == true;
     }
 
-    private void EncoderCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    private void GpuEncoder_Changed(object sender, RoutedEventArgs e)
     {
         if (_initializing) return;
-        int i = EncoderCombo.SelectedIndex;
-        _settings.EncoderChoice = i >= 0 && i < EncoderChoices.Length ? EncoderChoices[i] : "Auto";
+        _settings.GpuEncoder = GpuEncoderCheck.IsChecked == true;
+        UpdateGpuControls();
         CheckDirty();
     }
 
-    private void RateControlCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    private void GpuPreferenceCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_initializing) return;
-        _settings.RateControl = RateControlCombo.SelectedIndex == 1 ? "Vbr" : "Cbr";
+        _settings.GpuPreference = GpuPreferenceCombo.SelectedIndex == 0 ? "Prefer iGPU" : "Prefer dGPU";
         CheckDirty();
     }
 
@@ -2504,48 +2490,45 @@ public partial class MainWindow : Window
     {
         if (_initializing) return;
         int i = CodecCombo.SelectedIndex;
-        _settings.VideoCodec = i >= 0 && i < CodecChoices.Length ? CodecChoices[i] : "Auto";
+        _settings.VideoCodec = i >= 0 && i < CodecChoices.Length ? CodecChoices[i] : "H264";
         CheckDirty();
     }
 
-    private void EncoderPresetCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    private void InitAudioSettings()
+    {
+        AudioCodecCombo.SelectedIndex = _settings.AudioCodec == "FLAC" ? 1 : 0;
+        int index = Array.IndexOf(AudioBitrates, _settings.AudioBitrate);
+        AudioBitrateCombo.SelectedIndex = index < 0 ? 2 : index;
+        ApplicationLocalAudioToggle.IsOn = _settings.ApplicationLocalAudio;
+        UpdateAudioCodecControls();
+    }
+
+    private void UpdateAudioCodecControls()
+    {
+        AudioBitrateRow.IsEnabled = AudioCodecCombo.SelectedIndex == 0;
+    }
+
+    private void AudioCodecCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_initializing) return;
-        _settings.EncoderPreset = VideoQualityProfile.PresetNames[
-            Math.Clamp(EncoderPresetCombo.SelectedIndex, 0, VideoQualityProfile.PresetNames.Length - 1)];
+        _settings.AudioCodec = AudioCodecCombo.SelectedIndex == 1 ? "FLAC" : "AAC";
+        UpdateAudioCodecControls();
         CheckDirty();
     }
 
-    private void ContainerCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    private void AudioBitrateCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_initializing) return;
-        _settings.Container = "Mp4";
+        int i = AudioBitrateCombo.SelectedIndex;
+        _settings.AudioBitrate = i >= 0 && i < AudioBitrates.Length ? AudioBitrates[i] : 160;
         CheckDirty();
     }
 
-    private void BufferMethodCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    private void ApplicationLocalAudioToggle_Changed(object sender, RoutedEventArgs e)
     {
-        if (_initializing) return;
-        _settings.BufferMethod = BufferMethodChoices[
-            Math.Clamp(BufferMethodCombo.SelectedIndex, 0, BufferMethodChoices.Length - 1)];
+        if (_initializing || _syncingAudioToggles) return;
+        _settings.ApplicationLocalAudio = ApplicationLocalAudioToggle.IsOn;
         CheckDirty();
-    }
-
-    private void InitCaptureSegments()
-    {
-        CaptureWgcItem.IsEnabled = true;
-        CaptureMethodCombo.SelectedIndex = _settings.CaptureMethod == "Wgc" ? 0 : 1;
-        UpdateCaptureMethodControls();
-    }
-
-    private void UpdateCaptureMethodControls()
-    {
-        bool desktop = _settings.CaptureTarget != "SpecificWindows";
-        CaptureMethodCombo.IsEnabled = desktop;
-        CaptureMethodHelpText.Text = desktop
-            ? "Applies to Whole Desktop. Game Capture uses automatic WGC/DXGI switching."
-            : "Game Capture overrides this setting and switches between WGC and DXGI automatically.";
-        CaptureBorderCheck.IsEnabled = false;
     }
 
     private List<(int Index, string Name)> _captureMonitors = new();
@@ -2561,7 +2544,10 @@ public partial class MainWindow : Window
             int savedMonitor = _settings.CaptureMonitorIndex < 0 ? 0 : _captureMonitors.FindIndex(m => m.Index == _settings.CaptureMonitorIndex);
             CaptureMonitorCombo.SelectedIndex = savedMonitor < 0 ? 0 : savedMonitor;
             CaptureCursorCheck.IsChecked = _settings.CaptureCursor;
+            CaptureClientAreaCheck.IsChecked = _settings.CaptureClientArea;
             CaptureBorderCheck.IsChecked = _settings.CaptureBorder;
+            CaptureRoundedCornersCheck.IsChecked = _settings.CaptureRoundedCorners;
+            CaptureSecondaryWindowsCheck.IsChecked = _settings.CaptureSecondaryWindows;
             UpdateCaptureTargetControls();
         }
         finally { _syncingCaptureTargets = false; }
@@ -2572,7 +2558,6 @@ public partial class MainWindow : Window
         CaptureMonitorRow.Visibility = window ? Visibility.Collapsed : Visibility.Visible;
         NavGamesItem.Visibility = window ? Visibility.Visible : Visibility.Collapsed;
         RecordAudioRow.Label = window ? "Record app audio" : "Record system audio";
-        UpdateCaptureMethodControls();
     }
     private void CaptureTargetCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
@@ -2602,13 +2587,6 @@ public partial class MainWindow : Window
         _settings.DismissedGameInfoBar2 = true;
         _settings.SaveFields(nameof(Settings.DismissedGameInfoBar2));
         GameInfoBar2.IsOpen = false;
-    }
-
-    private void DismissAdvancedWarning_Click(object sender, RoutedEventArgs e)
-    {
-        _settings.WarningDismissed = true;
-        _settings.SaveFields(nameof(Settings.WarningDismissed));
-        AdvancedWarningBar.IsOpen = false;
     }
 
     private async void AddGame_Click(object sender, RoutedEventArgs e)
@@ -2669,14 +2647,10 @@ public partial class MainWindow : Window
     {
         if (_initializing || _syncingCaptureTargets) return;
         _settings.CaptureCursor = CaptureCursorCheck.IsChecked == true;
+        _settings.CaptureClientArea = CaptureClientAreaCheck.IsChecked == true;
         _settings.CaptureBorder = CaptureBorderCheck.IsChecked == true;
-        CheckDirty();
-    }
-
-    private void CaptureMethodCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (_initializing || _syncingCaptureTargets) return;
-        _settings.CaptureMethod = CaptureMethodCombo.SelectedIndex == 0 ? "Wgc" : "Dxgi";
+        _settings.CaptureRoundedCorners = CaptureRoundedCornersCheck.IsChecked == true;
+        _settings.CaptureSecondaryWindows = CaptureSecondaryWindowsCheck.IsChecked == true;
         CheckDirty();
     }
 
@@ -2849,170 +2823,6 @@ public partial class MainWindow : Window
         _syncingStartupToggle = false;
     }
 
-    private bool _detectingEncoders;
-    private TaskCompletionSource? _rootLoaded;
-
-    /// <summary>
-    /// Probes all encoders (real frames), refreshes the encoder UI and keeps the result in memory.
-    /// While it runs a blurred overlay covers the whole window and blocks input.
-    /// Returns false if a detection was already running or the probe could not run.
-    /// </summary>
-    private async Task<bool> RunEncoderDetectionAsync()
-    {
-        if (_detectingEncoders) return false;
-        _detectingEncoders = true;
-        // Block the UI from the first await onwards; fade the scrim in once the blur snapshot is ready.
-        EncoderDetectOverlay.Opacity = 0;
-        EncoderDetectOverlay.Visibility = Visibility.Visible;
-        bool wasEnabled = NavView.IsEnabled;
-        try
-        {
-            await WaitForRootLoadedAsync();
-            ImageSource? snapshot = await CaptureBlurSnapshotAsync();
-            await ShowEncoderOverlayAsync(snapshot);
-            NavView.IsEnabled = false;
-
-            var map = await EncoderDetector.DetectAsync();
-            if (map is null)
-            {
-                Logger.Warn("Encoder detection could not run; keeping the previous result.");
-                return false;
-            }
-
-            // A saved preference can be unavailable on this machine (or an unknown string from an
-            // older build); fall back to Auto now that a complete detection map is known.
-            if (EncoderAvailabilityMap.IsComplete(map) && _settings.EncoderChoice != "Auto")
-            {
-                EncoderPreference? preference = _settings.EncoderChoice switch
-                {
-                    "MfQsv" => EncoderPreference.MfQsv,
-                    "MfVp12" => EncoderPreference.MfVp12,
-                    "MfNvenc" => EncoderPreference.MfNvenc,
-                    "MfAmf" => EncoderPreference.MfAmf,
-                    "MfSoftware" => EncoderPreference.MfSoftware,
-                    _ => null,
-                };
-                if (preference is null || !EncoderDetector.IsSelectable(preference.Value, map))
-                {
-                    _settings.EncoderChoice = "Auto";
-                    EncoderCombo.SelectedIndex = 0; // the selection handler writes "Auto" back
-                    _settings.SaveFields(nameof(Settings.EncoderChoice));
-                    Logger.Info("[Encoders] Saved encoder choice was unavailable; reset to Auto.");
-                }
-            }
-
-            UpdateEncoderAvailabilityUi();
-            return true;
-        }
-        catch (Exception ex)
-        {
-            Logger.Error("RunEncoderDetectionAsync failed", ex);
-            return false;
-        }
-        finally
-        {
-            NavView.IsEnabled = wasEnabled;
-            await HideEncoderOverlayAsync();
-            _detectingEncoders = false;
-        }
-    }
-
-    private async Task WaitForRootLoadedAsync()
-    {
-        if (RootGrid.IsLoaded) return;
-        _rootLoaded ??= new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var tcs = _rootLoaded;
-        RootGrid.Loaded += OnLoaded;
-        void OnLoaded(object s, RoutedEventArgs e) { RootGrid.Loaded -= OnLoaded; tcs.TrySetResult(); }
-        if (RootGrid.IsLoaded) tcs.TrySetResult();
-        await Task.WhenAny(tcs.Task, Task.Delay(2000));
-        RootGrid.Loaded -= OnLoaded;
-        await Task.Delay(60);
-    }
-
-    // The window has no in-app blur primitive without extra packages, so the page is rendered at
-    // 1/14 size and stretched back up (bilinear), which looks like a heavy blur. Failure just means
-    // the acrylic scrim is shown on its own.
-    private async Task<ImageSource?> CaptureBlurSnapshotAsync()
-    {
-        try
-        {
-            double w = RootGrid.ActualWidth, h = RootGrid.ActualHeight;
-            if (w < 2 || h < 2) return null;
-            var bitmap = new RenderTargetBitmap();
-            await bitmap.RenderAsync(RootGrid, Math.Max(1, (int)(w / 14)), Math.Max(1, (int)(h / 14)));
-            return bitmap;
-        }
-        catch (Exception ex)
-        {
-            Logger.Warn($"Encoder overlay snapshot skipped: {ex.Message}");
-            return null;
-        }
-    }
-
-    private async Task ShowEncoderOverlayAsync(ImageSource? snapshot)
-    {
-        bool dark = _settings.DarkMode;
-        EncoderDetectAcrylic.TintColor = dark ? Color.FromArgb(255, 32, 32, 32) : Color.FromArgb(255, 243, 243, 243);
-        EncoderDetectAcrylic.FallbackColor = dark ? Color.FromArgb(204, 32, 32, 32) : Color.FromArgb(204, 243, 243, 243);
-        EncoderDetectBlurImage.Source = snapshot;
-        EncoderDetectOverlay.Visibility = Visibility.Visible;
-        await FadeOverlayAsync(1);
-    }
-
-    private async Task HideEncoderOverlayAsync()
-    {
-        await FadeOverlayAsync(0);
-        EncoderDetectOverlay.Visibility = Visibility.Collapsed;
-        EncoderDetectBlurImage.Source = null;
-    }
-
-    private async Task FadeOverlayAsync(double to)
-    {
-        if (!_animationsEnabled)
-        {
-            EncoderDetectOverlay.Opacity = to;
-            return;
-        }
-        var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var animation = new DoubleAnimation
-        {
-            To = to,
-            Duration = new Duration(TimeSpan.FromMilliseconds(180)),
-            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
-        };
-        Storyboard.SetTarget(animation, EncoderDetectOverlay);
-        Storyboard.SetTargetProperty(animation, "Opacity");
-        var storyboard = new Storyboard();
-        storyboard.Children.Add(animation);
-        storyboard.Completed += (_, _) => { EncoderDetectOverlay.Opacity = to; tcs.TrySetResult(); };
-        storyboard.Begin();
-        await Task.WhenAny(tcs.Task, Task.Delay(400));
-        EncoderDetectOverlay.Opacity = to;
-    }
-
-    /// <summary>Greys out encoders that failed detection. No detected-encoder text is shown.</summary>
-    private void UpdateEncoderAvailabilityUi()
-    {
-        var detected = EncoderDetector.LastResult;
-        EncoderPreference[] order = [EncoderPreference.Auto, EncoderPreference.MfQsv, EncoderPreference.MfVp12,
-                                     EncoderPreference.MfNvenc, EncoderPreference.MfAmf, EncoderPreference.MfSoftware];
-        for (int i = 0; i < order.Length && i < EncoderCombo.Items.Count; i++)
-        {
-            if (EncoderCombo.Items[i] is ComboBoxItem item)
-                item.IsEnabled = EncoderDetector.IsSelectable(order[i], detected) || EncoderCombo.SelectedIndex == i;
-        }
-    }
-
-    private void DebugToggle_Changed(object sender, RoutedEventArgs e)
-    {
-        if (_initializing) return;
-        bool enabled = DebugToggle.IsOn;
-        _settings.DebugLogging = enabled;
-        Logger.SetDebugMode(enabled);
-        _settings.SaveFields(nameof(Settings.DebugLogging));
-    }
-
     private void NavView_PaneOpened(NavigationView sender, object args)
     {
         if (_initializing) return;
@@ -3137,13 +2947,9 @@ public partial class MainWindow : Window
         _settings.ReplayDurationSeconds = previous.ReplayDurationSeconds;
         _settings.FrameRate = previous.FrameRate;
         _settings.QualityPreset = previous.QualityPreset;
-        _settings.EncoderChoice = previous.EncoderChoice;
         _settings.VideoCodec = previous.VideoCodec;
-        _settings.RateControl = previous.RateControl;
-        _settings.EncoderPreset = previous.EncoderPreset;
-        _settings.Container = previous.Container;
-        _settings.BufferMethod = previous.BufferMethod;
-        _settings.CaptureMethod = previous.CaptureMethod;
+        _settings.GpuEncoder = previous.GpuEncoder;
+        _settings.GpuPreference = previous.GpuPreference;
         _settings.CaptureSecondaryWindows = previous.CaptureSecondaryWindows;
         _settings.CaptureRoundedCorners = previous.CaptureRoundedCorners;
         _settings.CaptureBorder = previous.CaptureBorder;
@@ -3155,6 +2961,9 @@ public partial class MainWindow : Window
         _settings.SaveDestination = previous.SaveDestination;
         _settings.RecordSystemAudio = previous.RecordSystemAudio;
         _settings.RecordMicrophone = previous.RecordMicrophone;
+        _settings.AudioCodec = previous.AudioCodec;
+        _settings.AudioBitrate = previous.AudioBitrate;
+        _settings.ApplicationLocalAudio = previous.ApplicationLocalAudio;
 
         SyncControlsFromSettings();
 
@@ -3177,9 +2986,8 @@ public partial class MainWindow : Window
             InitFpsSegments();
             InitQualitySegments();
             SaveLocationBox.Text = _settings.GetEffectiveSaveDestination();
-            InitEncoderSegments();
-            InitBufferMethodSegments();
-            InitCaptureSegments();
+            InitEncoderSettings();
+            InitAudioSettings();
             InitCaptureTargets();
         }
         finally
