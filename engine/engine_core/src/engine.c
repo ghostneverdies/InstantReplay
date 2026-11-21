@@ -2203,6 +2203,8 @@ typedef struct
     IMFTransform *mft;
     ICodecAPI *api;
     IMFMediaEventGenerator *events;
+    IMFDXGIDeviceManager *manager;
+    UINT32 manager_token;
     BOOL async, provides_samples;
     int pending_need;
     BOOL drained;
@@ -2369,6 +2371,8 @@ struct IrEngine
     HANDLE save_wake;
     HANDLE save_stop;
     HANDLE save_thread;
+    HANDLE hb_stop;
+    HANDLE hb_thread;
     CRITICAL_SECTION job_cs;
     IrSaveJob *job_head;
     UINT64 next_job_id;
@@ -2794,6 +2798,9 @@ static void IrLive_Release(IrLiveEncoder *enc)
     if (enc->api) ICodecAPI_Release(enc->api);
     if (enc->events) IMFMediaEventGenerator_Release(enc->events);
     if (enc->mft) IMFTransform_Release(enc->mft);
+    // The transform may still hold a reference, but keep the manager alive
+    // until after the transform is gone so device handles stay valid.
+    if (enc->manager) IMFDXGIDeviceManager_Release(enc->manager);
     free(enc->seq_header);
 
     if (enc->staging) ID3D11Texture2D_Release(enc->staging);
@@ -2806,6 +2813,16 @@ static void IrLive_Release(IrLiveEncoder *enc)
     }
     free(enc->nv12);
     memset(enc, 0, sizeof(*enc));
+}
+
+static void IrReleaseActivates(IMFActivate **list, UINT32 count)
+{
+    if (!list) return;
+    for (UINT32 i = 0; i < count; ++i)
+    {
+        if (list[i]) IMFActivate_Release(list[i]);
+    }
+    CoTaskMemFree(list);
 }
 
 static BOOL IrLive_Create(IrLiveEncoder *enc, IrEngine *engine, ID3D11Device *device,
@@ -2833,19 +2850,47 @@ static BOOL IrLive_Create(IrLiveEncoder *enc, IrEngine *engine, ID3D11Device *de
     MFT_REGISTER_TYPE_INFO input_type = { MFMediaType_Video, MFVideoFormat_NV12 };
     MFT_REGISTER_TYPE_INFO output_type = { MFMediaType_Video, enc->subtype };
     // VBR/CBR is set through ICodecAPI below; it does not affect enumeration.
-    UINT flags = (codec_bits == 3 || IrWantedVendorOrdinal(pref) == 5)
-                     ? (MFT_ENUM_FLAG_SYNCMFT | MFT_ENUM_FLAG_SORTANDFILTER)
-                     : (MFT_ENUM_FLAG_HARDWARE | MFT_ENUM_FLAG_SORTANDFILTER);
+    BOOL hardware = codec_bits != 3 && IrWantedVendorOrdinal(pref) != 5;
+    UINT flags = hardware
+                     ? (MFT_ENUM_FLAG_HARDWARE | MFT_ENUM_FLAG_ASYNCMFT | MFT_ENUM_FLAG_SORTANDFILTER)
+                     : (MFT_ENUM_FLAG_SYNCMFT | MFT_ENUM_FLAG_SORTANDFILTER);
+
+    // Restrict hardware MFTs to the adapter owning our D3D11 device. Without
+    // this, hybrid systems can pick a transformer attached to another GPU.
+    IMFAttributes *enum_attrs = NULL;
+    if (hardware && device)
+    {
+        IDXGIDevice *dxgi = NULL;
+        IDXGIAdapter *adapter = NULL;
+        if (SUCCEEDED(ID3D11Device_QueryInterface(device, &IID_IDXGIDevice, (void **)&dxgi)) &&
+            SUCCEEDED(IDXGIDevice_GetAdapter(dxgi, &adapter)))
+        {
+            DXGI_ADAPTER_DESC desc;
+            if (SUCCEEDED(IDXGIAdapter_GetDesc(adapter, &desc)) &&
+                SUCCEEDED(MFCreateAttributes(&enum_attrs, 1)))
+            {
+                IMFAttributes_SetBlob(enum_attrs, &MFT_ENUM_ADAPTER_LUID,
+                                      (UINT8 *)&desc.AdapterLuid, sizeof(desc.AdapterLuid));
+            }
+        }
+        if (adapter) IDXGIAdapter_Release(adapter);
+        if (dxgi) IDXGIDevice_Release(dxgi);
+    }
 
     IMFActivate **list = NULL;
     UINT32 count = 0;
-    hr = MFTEnum2(MFT_CATEGORY_VIDEO_ENCODER, flags, &input_type, &output_type, NULL, &list, &count);
+    hr = MFTEnum2(MFT_CATEGORY_VIDEO_ENCODER, flags, &input_type, &output_type, enum_attrs, &list, &count);
     if (FAILED(hr) || count == 0)
     {
         // Allow the software encoder as a fallback when no hardware MFT exists.
+        IrReleaseActivates(list, count);
+        list = NULL;
+        count = 0;
+        hardware = FALSE;
         flags = MFT_ENUM_FLAG_SYNCMFT | MFT_ENUM_FLAG_SORTANDFILTER;
         hr = MFTEnum2(MFT_CATEGORY_VIDEO_ENCODER, flags, &input_type, &output_type, NULL, &list, &count);
     }
+    if (enum_attrs) IMFAttributes_Release(enum_attrs);
     if (FAILED(hr) || count == 0)
     {
         _snprintf_s(error, error_size, _TRUNCATE, "No Media Foundation video encoder is available (0x%08lX)", (unsigned long)hr);
@@ -2873,11 +2918,7 @@ static BOOL IrLive_Create(IrLiveEncoder *enc, IrEngine *engine, ID3D11Device *de
         list[0] = NULL;
     }
     enc->active_vendor = chosen_vendor ? chosen_vendor : (wanted_vendor ? wanted_vendor : 1);
-    for (UINT32 i = 0; i < count; ++i)
-    {
-        if (list[i]) IMFActivate_Release(list[i]);
-    }
-    CoTaskMemFree(list);
+    IrReleaseActivates(list, count);
 
     hr = IMFActivate_ActivateObject(chosen, &IID_IMFTransform, (void **)&enc->mft);
     IMFActivate_Release(chosen);
@@ -2903,6 +2944,23 @@ static BOOL IrLive_Create(IrLiveEncoder *enc, IrEngine *engine, ID3D11Device *de
     {
         hr = IMFTransform_QueryInterface(enc->mft, &IID_IMFMediaEventGenerator, (void **)&enc->events);
         if (FAILED(hr) || !enc->events) { enc->async = FALSE; }
+    }
+    // Hardware transforms need access to the same D3D11 device that produces
+    // our frames. The manager stays attached for the lifetime of the MFT.
+    if (hardware && device)
+    {
+        hr = MFCreateDXGIDeviceManager(&enc->manager_token, &enc->manager);
+        if (SUCCEEDED(hr) && enc->manager)
+            hr = IMFDXGIDeviceManager_ResetDevice(enc->manager, (IUnknown *)device, enc->manager_token);
+        if (SUCCEEDED(hr))
+            hr = IMFTransform_ProcessMessage(enc->mft, MFT_MESSAGE_SET_D3D_MANAGER,
+                                             (ULONG_PTR)enc->manager);
+        if (FAILED(hr))
+        {
+            if (enc->manager) IMFDXGIDeviceManager_Release(enc->manager);
+            enc->manager = NULL;
+            enc->manager_token = 0;
+        }
     }
     IMFTransform_QueryInterface(enc->mft, &IID_ICodecAPI, (void **)&enc->api);
 
@@ -4587,8 +4645,8 @@ BOOL IrPushFrame(IrEngine *e, ID3D11Texture2D *src, RECT rect, int64_t pts)
         return FALSE;
     }
     InterlockedIncrement64(&e->captured);
-    // Liveness signal for the video lane: advances whenever a frame flows
-    // through the encoder in either capture mode (wcap used a video-loop tick).
+    // Frame-driven video tick. IrHeartbeatThread also advances the heartbeat
+    // while capture is alive but the source is static and delivers no frames.
     InterlockedIncrement64(&e->heartbeat);
     InterlockedExchange64(&e->last_frame_pts, pts);
     (void)w; (void)h;
@@ -5159,6 +5217,21 @@ static bool IrWgcFrameCallback(IrWgc *capture, IrWgcFrame *frame)
         InterlockedIncrement64(&e->rejected);
     }
     return true;
+}
+
+// Capture APIs only deliver frames when the source changes. The UI's health
+// bar checks heartbeat liveness, so it must tick from the capture loop being
+// alive rather than from frames actually arriving.
+static DWORD WINAPI IrHeartbeatThread(LPVOID arg)
+{
+    IrEngine *e = (IrEngine *)arg;
+    while (WaitForSingleObject(e->hb_stop, 100) == WAIT_TIMEOUT)
+    {
+        if (InterlockedCompareExchange(&e->running, 1, 1) &&
+            InterlockedCompareExchange(&e->paused, 0, 0) == 0)
+            InterlockedIncrement64(&e->heartbeat);
+    }
+    return 0;
 }
 
 static DWORD WINAPI IrAudioPumpThread(LPVOID arg)
@@ -5874,6 +5947,18 @@ static void IrStopEngine(IrEngine *e)
 {
     if (!e) return;
     InterlockedExchange(&e->running, 0);
+    if (e->hb_stop)
+    {
+        SetEvent(e->hb_stop);
+        if (e->hb_thread)
+        {
+            WaitForSingleObject(e->hb_thread, INFINITE);
+            CloseHandle(e->hb_thread);
+            e->hb_thread = NULL;
+        }
+        CloseHandle(e->hb_stop);
+        e->hb_stop = NULL;
+    }
     IrStopCapture(e);
 
     if (e->mic.running || e->mic.thread)
@@ -6258,6 +6343,13 @@ IR_EXPORT int __cdecl IR_Start(IntPtr engine, int monitor_index, int ring_second
         InterlockedExchange(&e->fail_stage, STAGE_START_CAPTURE);
         InterlockedExchange(&e->fail_hr, (long)hr);
         IrReportHr(L"Cannot start capture", hr);
+        goto fail;
+    }
+    e->hb_stop = CreateEventW(NULL, TRUE, FALSE, NULL);
+    e->hb_thread = e->hb_stop ? CreateThread(NULL, 0, IrHeartbeatThread, e, 0, NULL) : NULL;
+    if (!e->hb_thread)
+    {
+        IrSetErrorWide(L"Cannot create capture heartbeat thread");
         goto fail;
     }
     InterlockedExchange(&e->running, 1);
