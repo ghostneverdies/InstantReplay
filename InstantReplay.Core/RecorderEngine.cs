@@ -158,7 +158,7 @@ public sealed class RecorderEngine : IDisposable
     // Native pref layout (see engine.c):
     //   bits  0..7  encoder ordinal (Auto lets MF pick; 11 requests software)
     //   bit   8     rate control, always VBR now
-    //   bit   9     segmented ring, always off now
+    //   bit   9     segmented ring
     //   bit  10     GPU encoder enabled
     //   bit  11     GPU encoder prefers iGPU
     //   bits 12..14 quality/speed preset 0..6
@@ -168,7 +168,10 @@ public sealed class RecorderEngine : IDisposable
     private static int ResolveEncoderPreference(Settings s)
     {
         int codecBits = s.VideoCodec switch { "Hevc" => 1, "H264" => 2, "Av1" => 3, _ => 2 };
+        int segmented = string.Equals(s.BufferMethod, "Segmented", StringComparison.OrdinalIgnoreCase)
+            ? (1 << 9) : 0;
         int pref = (1 << 8)
+                 | segmented
                  | (VideoQualityProfile.PresetIndex(s.QualityPreset) << 12)
                  | (codecBits << 15);
         if (s.GpuEncoder)
@@ -253,10 +256,11 @@ public sealed class RecorderEngine : IDisposable
     {
         int index = Array.IndexOf(AudioBitrates, _captureSettings.AudioBitrate);
         if (index < 0) index = Array.IndexOf(AudioBitrates, 160);
+        // Rounded corners are hidden in the UI but stay enabled for WGC.
+        // Include-secondary-windows is hidden and remains off for migration only.
         uint options = (uint)((_captureSettings.CaptureClientArea ? 1 : 0) | (_captureSettings.CaptureCursor ? 2 : 0) |
                               (_captureSettings.CaptureBorder ? 4 : 0) |
-                              (!_specific && _captureSettings.CaptureRoundedCorners ? 8 : 0) |
-                              (_captureSettings.CaptureSecondaryWindows ? 16 : 0) |
+                              8 |
                               (_captureSettings.ApplicationLocalAudio ? 64 : 0) |
                               (_specific ? 128 : 0));
         options |= (uint)index << 8;
@@ -279,10 +283,19 @@ public sealed class RecorderEngine : IDisposable
                      $"codec={_captureSettings.VideoCodec}, audio={_captureSettings.AudioCodec}/" +
                      $"{_captureSettings.AudioBitrate}kbps, target bitrate {bitrateKbps} kbps " +
                      $"from {_captureSettings.QualityPreset} at {_captureSettings.FrameRate} fps, source {srcW}x{srcH}.");
-        // Game Capture is hybrid and picks WGC or DXGI per window. Whole Desktop uses DXGI.
-        CaptureMethod method = snap == null
-            ? CaptureMethod.Dxgi
-            : (snap.Source == CaptureSource.Wgc && !forceDxgi ? CaptureMethod.Wgc : CaptureMethod.Dxgi);
+        // Game Capture is hybrid and follows the detected window mode. Whole Desktop
+        // uses the capture method selected in settings (DXGI by default).
+        CaptureMethod method;
+        if (snap == null)
+        {
+            method = string.Equals(_captureSettings.CaptureMethod, "Wgc", StringComparison.OrdinalIgnoreCase)
+                ? CaptureMethod.Wgc : CaptureMethod.Dxgi;
+        }
+        else
+        {
+            method = snap.Source == CaptureSource.Wgc && !forceDxgi
+                ? CaptureMethod.Wgc : CaptureMethod.Dxgi;
+        }
         return _engine.StartBuffering(
             monitorIndex: monitor,
             ringSeconds: Math.Max(_captureSettings.ReplayDurationSeconds, 1),
