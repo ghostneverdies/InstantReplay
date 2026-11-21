@@ -2327,6 +2327,9 @@ struct IrEngine
     int64_t start_qpc;
     int64_t start_pts;
     volatile LONG64 last_frame_pts;
+    volatile LONG64 last_frame_tick;
+    volatile LONG64 repeat_pts;
+    CRITICAL_SECTION encoder_cs;
 
     IrFrame **frames;
     int frame_cap;
@@ -3147,6 +3150,40 @@ static BOOL IrLive_PrepareGpu(IrLiveEncoder *enc, IrEngine *engine, ID3D11Device
     return TRUE;
 }
 
+// Feed the already-converted NV12 buffer. Used for both new frames and the
+// periodic repeats that keep the replay ring populated on a static desktop.
+static BOOL IrLive_FeedNv12(IrLiveEncoder *enc, IrEngine *engine, int64_t pts, BOOL idr,
+                            char *error, size_t error_size)
+{
+    if (!enc->mft || !enc->nv12 || !enc->output_width || !enc->output_height)
+    {
+        _snprintf_s(error, error_size, _TRUNCATE, "Encoder input is not ready");
+        return FALSE;
+    }
+    uint32_t w = enc->output_width, h = enc->output_height;
+    IMFMediaBuffer *buffer = NULL;
+    IMFSample *sample = NULL;
+    BOOL ok = FALSE;
+    if (SUCCEEDED(MFCreateMemoryBuffer((DWORD)((size_t)w * h * 3 / 2), &buffer)) && buffer &&
+        SUCCEEDED(MFCreateSample(&sample)) && sample)
+    {
+        BYTE *dst = NULL;
+        if (SUCCEEDED(IMFMediaBuffer_Lock(buffer, &dst, NULL, NULL)) && dst)
+        {
+            memcpy(dst, enc->nv12, (size_t)w * h * 3 / 2);
+            IMFMediaBuffer_Unlock(buffer);
+            IMFMediaBuffer_SetCurrentLength(buffer, (DWORD)((size_t)w * h * 3 / 2));
+            IMFSample_AddBuffer(sample, buffer);
+            ok = IrLive_Feed(enc, engine, sample, pts, idr, error, error_size);
+        }
+        else _snprintf_s(error, error_size, _TRUNCATE, "Cannot lock the encoder input buffer");
+    }
+    else _snprintf_s(error, error_size, _TRUNCATE, "Cannot allocate the encoder input sample");
+    if (sample) IMFSample_Release(sample);
+    if (buffer) IMFMediaBuffer_Release(buffer);
+    return ok;
+}
+
 static BOOL IrLive_EncodeFrame(IrLiveEncoder *enc, IrEngine *engine, ID3D11DeviceContext *context,
                                ID3D11Texture2D *texture, RECT rect, int64_t pts, BOOL idr,
                                char *error, size_t error_size)
@@ -3202,27 +3239,8 @@ static BOOL IrLive_EncodeFrame(IrLiveEncoder *enc, IrEngine *engine, ID3D11Devic
     int64_t t4 = IrNow100ns();
 
     int64_t t4b = IrNow100ns();
-    IMFMediaBuffer *buffer = NULL;
-    IMFSample *sample = NULL;
-    BOOL ok = FALSE;
-    if (SUCCEEDED(MFCreateMemoryBuffer((DWORD)((size_t)w * h * 3 / 2), &buffer)) && buffer &&
-        SUCCEEDED(MFCreateSample(&sample)) && sample)
-    {
-        BYTE *dst = NULL;
-        if (SUCCEEDED(IMFMediaBuffer_Lock(buffer, &dst, NULL, NULL)) && dst)
-        {
-            memcpy(dst, enc->nv12, (size_t)w * h * 3 / 2);
-            IMFMediaBuffer_Unlock(buffer);
-            IMFMediaBuffer_SetCurrentLength(buffer, (DWORD)((size_t)w * h * 3 / 2));
-            IMFSample_AddBuffer(sample, buffer);
-            ok = IrLive_Feed(enc, engine, sample, pts, idr, error, error_size);
-        }
-        else _snprintf_s(error, error_size, _TRUNCATE, "Cannot lock the encoder input buffer");
-    }
-    else _snprintf_s(error, error_size, _TRUNCATE, "Cannot allocate the encoder input sample");
+    BOOL ok = IrLive_FeedNv12(enc, engine, pts, idr, error, error_size);
     int64_t t5 = IrNow100ns();
-    if (sample) IMFSample_Release(sample);
-    if (buffer) IMFMediaBuffer_Release(buffer);
 
     engine->timing_render_ms += IrMsDiff(t1, t2);
     engine->timing_submit_ms += IrMsDiff(t4b, t5);
@@ -4637,13 +4655,19 @@ BOOL IrPushFrame(IrEngine *e, ID3D11Texture2D *src, RECT rect, int64_t pts)
     }
     char error[192];
     error[0] = '\0';
-    if (!IrLive_EncodeFrame(&e->live, e, e->ctx, src, rect, stamp, idr, error, sizeof(error)))
+    EnterCriticalSection(&e->encoder_cs);
+    BOOL encoded = IrLive_EncodeFrame(&e->live, e, e->ctx, src, rect, stamp, idr, error, sizeof(error));
+    LeaveCriticalSection(&e->encoder_cs);
+    if (!encoded)
     {
         InterlockedExchange(&e->fail_stage, STAGE_FRAME);
         IrSetErrorFmt("%s", error);
         InterlockedIncrement64(&e->rejected);
         return FALSE;
     }
+    InterlockedExchange64(&e->last_frame_tick, IrNow100ns());
+    int64_t rp = InterlockedCompareExchange64(&e->repeat_pts, 0, 0);
+    InterlockedExchange64(&e->repeat_pts, max(rp, stamp));
     InterlockedIncrement64(&e->captured);
     // Frame-driven video tick. IrHeartbeatThread also advances the heartbeat
     // while capture is alive but the source is static and delivers no frames.
@@ -4651,6 +4675,41 @@ BOOL IrPushFrame(IrEngine *e, ID3D11Texture2D *src, RECT rect, int64_t pts)
     InterlockedExchange64(&e->last_frame_pts, pts);
     (void)w; (void)h;
     return TRUE;
+}
+
+// Desktop capture APIs only signal changed content. Re-feed the last converted
+// frame at the target rate so a static screen still produces a replay clip.
+static void IrPushStaticFrame(IrEngine *e)
+{
+    if (!e || !e->live.mft || !e->live.nv12) return;
+    int64_t last = InterlockedCompareExchange64(&e->last_frame_tick, 0, 0);
+    if (!last) return;
+    int64_t interval = IR_SECOND_100NS / max(e->fps, 1);
+    if (interval < 1) interval = 1;
+    int64_t now = IrNow100ns();
+    if (now - last < interval * 2) return;
+
+    EnterCriticalSection(&e->encoder_cs);
+    if (InterlockedCompareExchange(&e->running, 1, 1) == 0 || e->paused ||
+        !e->live.mft || !e->live.nv12)
+    {
+        LeaveCriticalSection(&e->encoder_cs);
+        return;
+    }
+    int64_t rp = InterlockedCompareExchange64(&e->repeat_pts, 0, 0);
+    if (rp == 0) rp = last;
+    int64_t target = now - interval;
+    char error[192];
+    error[0] = '\0';
+    int emitted = 0;
+    while (rp + interval <= target && emitted < 8)
+    {
+        rp += interval;
+        if (!IrLive_FeedNv12(&e->live, e, rp, FALSE, error, sizeof(error))) break;
+        ++emitted;
+    }
+    InterlockedExchange64(&e->repeat_pts, rp);
+    LeaveCriticalSection(&e->encoder_cs);
 }
 
 // ---------------------------------------------------------------------------
@@ -5219,9 +5278,9 @@ static bool IrWgcFrameCallback(IrWgc *capture, IrWgcFrame *frame)
     return true;
 }
 
-// Capture APIs only deliver frames when the source changes. The UI's health
-// bar checks heartbeat liveness, so it must tick from the capture loop being
-// alive rather than from frames actually arriving.
+// Capture APIs only deliver frames when the source changes. Tick the UI
+// heartbeat from capture liveness and keep the compressed ring populated with
+// repeated frames so clipping still works on a static desktop.
 static DWORD WINAPI IrHeartbeatThread(LPVOID arg)
 {
     IrEngine *e = (IrEngine *)arg;
@@ -5229,7 +5288,10 @@ static DWORD WINAPI IrHeartbeatThread(LPVOID arg)
     {
         if (InterlockedCompareExchange(&e->running, 1, 1) &&
             InterlockedCompareExchange(&e->paused, 0, 0) == 0)
+        {
             InterlockedIncrement64(&e->heartbeat);
+            IrPushStaticFrame(e);
+        }
     }
     return 0;
 }
@@ -6133,6 +6195,7 @@ IR_EXPORT int __cdecl IR_Create(IntPtr *out_engine)
     InitializeCriticalSection(&e->cs);
     InitializeCriticalSection(&e->ring_cs);
     InitializeCriticalSection(&e->job_cs);
+    InitializeCriticalSection(&e->encoder_cs);
     IrConfigDefaults(&e->config);
     e->method = IR_CAPTURE_WGC;
     e->options = CAP_CLIENT_AREA | CAP_CURSOR | CAP_KEEP_CORNERS;
@@ -6145,6 +6208,7 @@ IR_EXPORT int __cdecl IR_Create(IntPtr *out_engine)
         if (e->save_wake) CloseHandle(e->save_wake);
         if (e->save_stop) CloseHandle(e->save_stop);
         DeleteCriticalSection(&e->job_cs);
+        DeleteCriticalSection(&e->encoder_cs);
         DeleteCriticalSection(&e->ring_cs);
         DeleteCriticalSection(&e->cs);
         free(e);
@@ -6182,6 +6246,7 @@ IR_EXPORT void __cdecl IR_Destroy(IntPtr engine)
     if (e->save_wake) CloseHandle(e->save_wake);
     if (e->save_stop) CloseHandle(e->save_stop);
     DeleteCriticalSection(&e->job_cs);
+    DeleteCriticalSection(&e->encoder_cs);
     DeleteCriticalSection(&e->ring_cs);
     DeleteCriticalSection(&e->cs);
     free(e);
@@ -6235,6 +6300,8 @@ IR_EXPORT int __cdecl IR_Start(IntPtr engine, int monitor_index, int ring_second
     e->start_qpc = now.QuadPart;
     e->start_pts = IrQpcTo100ns(now.QuadPart);
     e->last_frame_pts = 0;
+    e->last_frame_tick = 0;
+    e->repeat_pts = 0;
     e->pause_start = 0;
     e->time_offset = 0;
     e->next_idr_pts = 0;
@@ -6465,8 +6532,10 @@ IR_EXPORT int __cdecl IR_SetPaused(IntPtr engine, int paused)
         if (!e->want_mic)
         {
             // Application audio and video never sample while paused, so drop
-            // the wall-clock gap from their shared timeline.
+            // the wall-clock gap from their shared timeline. Static-frame
+            // repeats use the same timeline and must skip the pause too.
             InterlockedExchangeAdd64(&e->time_offset, -duration);
+            InterlockedExchangeAdd64(&e->repeat_pts, -duration);
         }
         else if (duration > 0 && e->packet_count > 0)
         {
