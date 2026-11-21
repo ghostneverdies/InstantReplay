@@ -39,6 +39,19 @@
 #include "gen/ConvertPass1.h"
 #include "gen/ConvertPass2.h"
 
+// Forward declarations for types defined later in this translation unit.
+typedef struct IrEngine IrEngine;
+typedef struct IrPacket IrPacket;
+
+// MFSetAttributeSize/MFSetAttributeRatio are C++ inline helpers in mfapi.h;
+// provide the equivalent packed UINT64 setter for this C translation unit.
+// Match the SDK convention: the first value is the high DWORD (width or
+// numerator), the second is the low DWORD (height or denominator).
+static HRESULT IrMFSetSize(void *a, REFGUID key, UINT32 high, UINT32 low)
+{
+    return IMFAttributes_SetUINT64((IMFAttributes *)a, key, ((UINT64)high << 32) | low);
+}
+
 #ifndef IR_INTPTR_DEFINED
 #define IR_INTPTR_DEFINED
 typedef void *IntPtr;
@@ -1802,7 +1815,1542 @@ static void IrYuv_Dispatch(IrYuv* Convert, ID3D11DeviceContext* Context, IrYuvOu
 //
 
 
+// ---------------------------------------------------------------------------
+// Audio normalization, microphone capture and encoded packet replay
+// ---------------------------------------------------------------------------
+#define IR_AUDIO_RATE         48000u
+#define IR_AUDIO_CHANNELS     2u
+#define IR_AUDIO_BYTES_FRAME  (IR_AUDIO_RATE * IR_AUDIO_CHANNELS * sizeof(int16_t))
+#define IR_AAC_FRAME          1024
+#define IR_SECOND_100NS       10000000LL
+#define IR_VIDEO_BUDGET       (128ull * 1024 * 1024)
+
+static void IrPushPacket(IrEngine *e, const uint8_t *data, uint32_t bytes,
+                         uint32_t codec_data, int64_t pts, int64_t duration, BOOL key);
+static void IrPushMicBlock(IrEngine *e, const int16_t *samples, uint32_t frames, int64_t pts);
+
+static double IrMsDiff(int64_t from, int64_t to)
+{
+    return (double)(to - from) / 10000.0;
+}
+
+static int32_t IrClamp16(double v)
+{
+    if (v < -32768.0) return -32768;
+    if (v > 32767.0) return 32767;
+    return (int32_t)(v >= 0 ? floor(v + 0.5) : ceil(v - 0.5));
+}
+
+static BOOL IrIsFloatFormat(const WAVEFORMATEX *f)
+{
+    if (!f) return FALSE;
+    if (f->wFormatTag == WAVE_FORMAT_IEEE_FLOAT) return TRUE;
+    if (f->wFormatTag == WAVE_FORMAT_EXTENSIBLE && f->cbSize >= sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX))
+    {
+        static const GUID float_subtype = { 0x00000003, 0x0000, 0x0010, { 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71 } };
+        const WAVEFORMATEXTENSIBLE *ext = (const WAVEFORMATEXTENSIBLE *)f;
+        return IsEqualGUID(&ext->SubFormat, &float_subtype);
+    }
+    return FALSE;
+}
+
+// Stateful PCM normalizer. Keeping interpolation state across WASAPI packets is
+// what prevents the repeating click that a per-packet resampler produces.
+typedef struct
+{
+    int src_rate, src_channels, bits, is_float;
+    int dst_channels;
+    double next_src; // next output frame expressed in source-frame coordinates
+} IrPcmConverter;
+
+static void IrPcm_Init(IrPcmConverter *c, const WAVEFORMATEX *format, int dst_channels)
+{
+    memset(c, 0, sizeof(*c));
+    if (!format) return;
+    c->src_rate = (int)format->nSamplesPerSec;
+    c->src_channels = (int)format->nChannels;
+    c->bits = (int)format->wBitsPerSample;
+    c->is_float = IrIsFloatFormat(format) ? 1 : 0;
+    c->dst_channels = dst_channels;
+}
+
+static double IrPcm_Read(const uint8_t *data, uint32_t frames, uint32_t frame, uint32_t channel,
+                         const IrPcmConverter *c)
+{
+    if (!data || c->src_rate <= 0 || c->src_channels <= 0) return 0.0;
+    if (frame >= frames) frame = frames ? frames - 1 : 0;
+    uint32_t ch = channel < (uint32_t)c->src_channels ? channel : 0;
+    size_t index = ((size_t)frame * (size_t)c->src_channels + ch);
+    if (c->is_float && c->bits == 32)
+    {
+        float value;
+        memcpy(&value, data + index * 4, sizeof(value));
+        return value;
+    }
+    switch (c->bits)
+    {
+    case 8:
+        return (double)((int)data[index] - 128) / 128.0;
+    case 16:
+    {
+        int16_t value;
+        memcpy(&value, data + index * 2, sizeof(value));
+        return (double)value / 32768.0;
+    }
+    case 24:
+    {
+        const uint8_t *p = data + index * 3;
+        int32_t value = (int32_t)(p[0] | (p[1] << 8) | (p[2] << 16));
+        if (value & 0x800000) value |= (int32_t)0xff000000;
+        return (double)value / 8388608.0;
+    }
+    case 32:
+    {
+        int32_t value;
+        memcpy(&value, data + index * 4, sizeof(value));
+        return (double)value / 2147483648.0;
+    }
+    default:
+        return 0.0;
+    }
+}
+
+// Returns a newly allocated 48 kHz s16 buffer and sets *out_frames. Caller frees.
+static int16_t *IrPcm_Convert(IrPcmConverter *c, const uint8_t *data, uint32_t frames, uint32_t *out_frames)
+{
+    *out_frames = 0;
+    if (!c || c->src_rate <= 0 || c->dst_channels <= 0 || frames == 0) return NULL;
+    const double step = (double)c->src_rate / (double)IR_AUDIO_RATE;
+    uint32_t count = 0;
+    if (c->next_src < (double)frames)
+        count = (uint32_t)floor(((double)frames - c->next_src) / step) + 1;
+    if (count == 0) return NULL;
+    // A hostile format must not grow the replay allocator without bound.
+    uint64_t cap = ((uint64_t)frames * IR_AUDIO_RATE / (uint64_t)c->src_rate) + 8;
+    if (count > cap) count = (uint32_t)cap;
+    int16_t *out = (int16_t *)malloc((size_t)count * (size_t)c->dst_channels * sizeof(int16_t));
+    if (!out) return NULL;
+    for (uint32_t i = 0; i < count; ++i)
+    {
+        double pos = c->next_src + (double)i * step;
+        uint32_t i0 = (uint32_t)floor(pos);
+        if (i0 >= frames) i0 = frames - 1;
+        uint32_t i1 = i0 + 1 < frames ? i0 + 1 : i0;
+        double frac = pos - floor(pos);
+        for (int ch = 0; ch < c->dst_channels; ++ch)
+        {
+            double a = IrPcm_Read(data, frames, i0, (uint32_t)ch, c);
+            double b = IrPcm_Read(data, frames, i1, (uint32_t)ch, c);
+            out[(size_t)i * c->dst_channels + ch] = (int16_t)IrClamp16((a + (b - a) * frac) * 32768.0);
+        }
+    }
+    c->next_src += (double)count * step - (double)frames;
+    if (c->next_src < 0.0) c->next_src = 0.0;
+    *out_frames = count;
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// Independent microphone capture (eCapture, 48 kHz mono s16)
+// ---------------------------------------------------------------------------
+typedef struct IrMic IrMic;
+static DWORD WINAPI IrMicThread(LPVOID arg);
+static void IrMic_Stop(IrMic *m);
+
+struct IrMic
+{
+    IMMDeviceEnumerator *enumerator;
+    IMMDevice *device;
+    IAudioClient *client;
+    IAudioCaptureClient *capture;
+    WAVEFORMATEX *format;
+    IrPcmConverter converter;
+    HANDLE stop;
+    HANDLE event;
+    HANDLE thread;
+    BOOL running;
+    HRESULT activate_hr, init_hr, start_hr, fail_hr;
+    int legacy_fail; // -1 thread unavailable, -2 stream failed, -3 no device
+    long convert_failures;
+    volatile LONG64 frames, events, got_frames;
+    volatile long peak;
+    wchar_t name[256];
+    IrEngine *engine;
+};
+
+static void IrMic_SetPeak(IrMic *m, const int16_t *data, uint32_t frames)
+{
+    int peak = 0;
+    for (uint32_t i = 0; i < frames; ++i)
+    {
+        int v = data[i] < 0 ? -(int)data[i] : (int)data[i];
+        if (v > peak) peak = v;
+    }
+    for (;;)
+    {
+        long old = InterlockedCompareExchange(&m->peak, 0, 0);
+        if (peak <= old || InterlockedCompareExchange(&m->peak, peak, old) == old) break;
+    }
+}
+
+static HRESULT IrMic_FindDevice(IrMic *m, const wchar_t *wanted)
+{
+    HRESULT hr = CoCreateInstance(&CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL,
+                                  &IID_IMMDeviceEnumerator, (void **)&m->enumerator);
+    if (FAILED(hr)) return hr;
+    if (wanted && *wanted)
+    {
+        IMMDeviceCollection *collection = NULL;
+        if (SUCCEEDED(IMMDeviceEnumerator_EnumAudioEndpoints(m->enumerator, eCapture,
+                                                             DEVICE_STATE_ACTIVE, &collection)))
+        {
+            UINT count = 0;
+            IMMDeviceCollection_GetCount(collection, &count);
+            for (UINT i = 0; i < count; ++i)
+            {
+                IMMDevice *device = NULL;
+                if (FAILED(IMMDeviceCollection_Item(collection, i, &device))) continue;
+                IPropertyStore *store = NULL;
+                if (SUCCEEDED(IMMDevice_OpenPropertyStore(device, STGM_READ, &store)))
+                {
+                    PROPVARIANT value;
+                    PropVariantInit(&value);
+                    if (SUCCEEDED(IPropertyStore_GetValue(store, &PKEY_Device_FriendlyName, &value)) &&
+                        value.vt == VT_LPWSTR && value.pwszVal && wcscmp(value.pwszVal, wanted) == 0)
+                    {
+                        m->device = device;
+                        device = NULL;
+                    }
+                    PropVariantClear(&value);
+                    IPropertyStore_Release(store);
+                }
+                if (device) IMMDevice_Release(device);
+                if (m->device) break;
+            }
+            IMMDeviceCollection_Release(collection);
+        }
+    }
+    if (!m->device)
+        hr = IMMDeviceEnumerator_GetDefaultAudioEndpoint(m->enumerator, eCapture, eConsole, &m->device);
+    if (SUCCEEDED(hr) && m->device)
+    {
+        IPropertyStore *store = NULL;
+        m->name[0] = L'\0';
+        if (SUCCEEDED(IMMDevice_OpenPropertyStore(m->device, STGM_READ, &store)))
+        {
+            PROPVARIANT value;
+            PropVariantInit(&value);
+            if (SUCCEEDED(IPropertyStore_GetValue(store, &PKEY_Device_FriendlyName, &value)) &&
+                value.vt == VT_LPWSTR && value.pwszVal)
+                wcsncpy_s(m->name, _countof(m->name), value.pwszVal, _TRUNCATE);
+            PropVariantClear(&value);
+            IPropertyStore_Release(store);
+        }
+    }
+    return hr;
+}
+
+static BOOL IrMic_Start(IrMic *m, IrEngine *e, const wchar_t *device_name)
+{
+    // IrMic_Stop is safe on a partially initialized structure; every failure
+    // path below releases what was acquired so a later IR_Start cannot orphan
+    // COM objects, events or the device enumerator.
+    memset(m, 0, sizeof(*m));
+    m->engine = e;
+    m->activate_hr = IrMic_FindDevice(m, device_name);
+    if (FAILED(m->activate_hr) || !m->device)
+    {
+        m->legacy_fail = -3;
+        m->fail_hr = m->activate_hr;
+        IrMic_Stop(m);
+        return FALSE;
+    }
+
+    HRESULT hr = IMMDevice_Activate(m->device, &IID_IAudioClient, CLSCTX_ALL, NULL, (void **)&m->client);
+    if (FAILED(hr)) { m->fail_hr = hr; m->legacy_fail = -2; IrMic_Stop(m); return FALSE; }
+
+    WAVEFORMATEX format;
+    memset(&format, 0, sizeof(format));
+    format.wFormatTag = WAVE_FORMAT_PCM;
+    format.nChannels = 1;
+    format.nSamplesPerSec = IR_AUDIO_RATE;
+    format.wBitsPerSample = 16;
+    format.nBlockAlign = 2;
+    format.nAvgBytesPerSec = IR_AUDIO_RATE * 2;
+    m->format = (WAVEFORMATEX *)CoTaskMemAlloc(sizeof(format));
+    if (!m->format) { m->fail_hr = E_OUTOFMEMORY; m->legacy_fail = -2; IrMic_Stop(m); return FALSE; }
+    memcpy(m->format, &format, sizeof(format));
+
+    DWORD flags = AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM |
+                  AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY;
+    m->init_hr = IAudioClient_Initialize(m->client, AUDCLNT_SHAREMODE_SHARED, flags,
+                                         0, 0, m->format, NULL);
+    m->activate_hr = S_OK;
+    if (FAILED(m->init_hr)) { m->fail_hr = m->init_hr; m->legacy_fail = -2; IrMic_Stop(m); return FALSE; }
+    hr = IAudioClient_GetService(m->client, &IID_IAudioCaptureClient, (void **)&m->capture);
+    m->stop = CreateEventW(NULL, TRUE, FALSE, NULL);
+    m->event = CreateEventW(NULL, FALSE, FALSE, NULL);
+    if (SUCCEEDED(hr) && m->event) hr = IAudioClient_SetEventHandle(m->client, m->event);
+    if (!m->stop || !m->event) hr = E_OUTOFMEMORY;
+    if (SUCCEEDED(hr)) hr = IAudioClient_Start(m->client);
+    m->start_hr = hr;
+    if (FAILED(hr)) { m->fail_hr = hr; m->legacy_fail = -2; IrMic_Stop(m); return FALSE; }
+
+    IrPcm_Init(&m->converter, m->format, 1);
+    m->thread = CreateThread(NULL, 0, IrMicThread, m, 0, NULL);
+    if (!m->thread)
+    {
+        m->fail_hr = HRESULT_FROM_WIN32(GetLastError());
+        m->legacy_fail = -1;
+        IrMic_Stop(m);
+        return FALSE;
+    }
+    m->running = TRUE;
+    return TRUE;
+}
+
+static void IrMic_Stop(IrMic *m)
+{
+    if (!m) return;
+    m->running = FALSE;
+    if (m->stop) SetEvent(m->stop);
+    if (m->thread)
+    {
+        WaitForSingleObject(m->thread, INFINITE);
+        CloseHandle(m->thread);
+        m->thread = NULL;
+    }
+    if (m->stop) { CloseHandle(m->stop); m->stop = NULL; }
+    if (m->event) { CloseHandle(m->event); m->event = NULL; }
+    if (m->client) IAudioClient_Stop(m->client);
+    if (m->capture) { IAudioCaptureClient_Release(m->capture); m->capture = NULL; }
+    if (m->client) { IAudioClient_Release(m->client); m->client = NULL; }
+    if (m->device) { IMMDevice_Release(m->device); m->device = NULL; }
+    if (m->enumerator) { IMMDeviceEnumerator_Release(m->enumerator); m->enumerator = NULL; }
+    if (m->format) { CoTaskMemFree(m->format); m->format = NULL; }
+}
+
+static DWORD WINAPI IrMicThread(LPVOID arg)
+{
+    IrMic *m = (IrMic *)arg;
+    HRESULT co = CoInitializeEx(NULL, COINIT_MULTITHREADED);
+    if (FAILED(co) && co != RPC_E_CHANGED_MODE)
+    {
+        m->fail_hr = co;
+        m->legacy_fail = -1;
+        return 0;
+    }
+    DWORD task = 0;
+    HANDLE mm = AvSetMmThreadCharacteristicsW(L"Pro Audio", &task);
+    HANDLE waits[2] = { m->stop, m->event };
+    for (;;)
+    {
+        DWORD rc = WaitForMultipleObjects(2, waits, FALSE, INFINITE);
+        if (rc == WAIT_OBJECT_0) break;
+        if (rc != WAIT_OBJECT_0 + 1) continue;
+        UINT32 next = 0;
+        while (m->running && SUCCEEDED(IAudioCaptureClient_GetNextPacketSize(m->capture, &next)) && next > 0)
+        {
+            BYTE *data = NULL;
+            UINT32 frames = 0;
+            DWORD flags = 0;
+            UINT64 position = 0, timestamp = 0;
+            if (FAILED(IAudioCaptureClient_GetBuffer(m->capture, &data, &frames, &flags, &position, &timestamp)))
+            {
+                InterlockedIncrement(&m->convert_failures);
+                m->fail_hr = E_FAIL;
+                m->legacy_fail = -2;
+                break;
+            }
+            InterlockedIncrement64(&m->events);
+            if (frames)
+            {
+                uint32_t out_frames = 0;
+                // Feeding NULL keeps the resampler phase continuous across
+                // silent WASAPI packets instead of resetting it at each one.
+                int16_t *pcm = IrPcm_Convert(&m->converter,
+                                             (flags & AUDCLNT_BUFFERFLAGS_SILENT) ? NULL : data,
+                                             frames, &out_frames);
+                if (!pcm) InterlockedIncrement(&m->convert_failures);
+                int64_t pts = timestamp ? IrQpcTo100ns((int64_t)timestamp) : IrNow100ns();
+                if (pcm && out_frames)
+                {
+                    IrMic_SetPeak(m, pcm, out_frames);
+                    IrPushMicBlock(m->engine, pcm, out_frames, pts);
+                    InterlockedIncrement64(&m->got_frames);
+                    free(pcm);
+                }
+                InterlockedExchangeAdd64(&m->frames, frames);
+            }
+            IAudioCaptureClient_ReleaseBuffer(m->capture, frames);
+        }
+    }
+    if (mm) AvRevertMmThreadCharacteristics(mm);
+    if (SUCCEEDED(co)) CoUninitialize();
+    return 0;
+}
+
 #define MFT64(high, low) (((UINT64)high << 32) | (low))
+
+// ---------------------------------------------------------------------------
+// Long-lived Media Foundation video encoder feeding the compressed replay ring
+// ---------------------------------------------------------------------------
+static const GUID ir_mft_friendly_name = { 0x314ffbae, 0x5b41, 0x4c95, { 0x9c, 0x19, 0x4e, 0x7d, 0x58, 0x6f, 0xac, 0xe3 } };
+static const GUID ir_mft_friendly_name_utf8 = { 0x314ff923, 0x2c6d, 0x4cd2, { 0x8d, 0x32, 0x20, 0xe0, 0xa3, 0xe0, 0xd6, 0x8e } };
+
+typedef struct
+{
+    IMFTransform *mft;
+    ICodecAPI *api;
+    IMFMediaEventGenerator *events;
+    BOOL async, provides_samples;
+    int pending_need;
+    BOOL drained;
+    DWORD out_size;
+    uint32_t width, height;
+    int64_t frame_duration;
+    GUID subtype;
+    BOOL hevc, av1, segmented;
+    uint8_t *seq_header;
+    uint32_t seq_header_size;
+    BOOL wrote_header;
+    uint32_t max_width, max_height;
+    int active_vendor;
+
+    // GPU conversion state, reused for every frame.
+    IrResize resize;
+    IrYuv yuv;
+    IrYuvOutput output;
+    ID3D11Texture2D *staging;
+    ID3D11RenderTargetView *input_view;
+    uint8_t *nv12;
+    uint32_t input_width, input_height, output_width, output_height;
+    BOOL gpu_ready;
+} IrLiveEncoder;
+
+// ---------------------------------------------------------------------------
+// Replay buffer and engine object types (defined early for the live encoder).
+// ---------------------------------------------------------------------------
+typedef struct
+{
+    ID3D11Texture2D *texture;
+    RECT rect;
+    int64_t pts100ns;
+    ULONG refs;
+} IrFrame;
+
+typedef struct
+{
+    uint8_t *data;
+    UINT32 frames;
+    UINT32 bytes;
+    int64_t pts100ns;
+    ULONG refs;
+} IrAudioBlock;
+
+struct IrPacket
+{
+    uint8_t *data;
+    uint32_t bytes;
+    uint32_t codec_data;
+    int64_t pts100ns;
+    int64_t duration;
+    BOOL key;
+    ULONG refs;
+};
+
+typedef struct
+{
+    const int16_t *pcm;
+    int32_t frames;
+    int64_t pts100ns;
+} IrAudioChunk;
+
+typedef struct IrSaveJob IrSaveJob;
+
+struct IrEngine
+{
+    CRITICAL_SECTION cs;
+    CRITICAL_SECTION ring_cs;
+    volatile long running;
+    volatile long paused;
+    volatile long shutdown;
+
+    ID3D11Device *dev;
+    ID3D11DeviceContext *ctx;
+    Config config;
+
+    int method;
+    int monitor_index;
+    HWND window;
+    uint32_t options;
+    int fps;
+    int ring_seconds;
+    int bitrate_kbps;
+    uint32_t cap_w;
+    uint32_t cap_h;
+    int want_audio;
+    int want_mic;
+    wchar_t mic_device[256];
+    int pref;
+    int active_encoder;
+    HRESULT hw_init_hr;
+
+    IrLiveEncoder live;
+    IrMic mic;
+    int64_t pause_start;
+    int64_t time_offset;
+    int64_t next_idr_pts;
+    volatile long force_idr;
+    int last_encoder_width;
+    int last_encoder_height;
+    int encoded_width;
+    int encoded_height;
+
+    IrWgc wgc;
+    IrDxgi dxgi;
+    IrAudio audio;
+    WAVEFORMATEXTENSIBLE audio_fmt;
+    BOOL audio_running;
+    HANDLE audio_thread;
+    HANDLE audio_stop;
+    HRESULT audio_activate_hr;
+    HRESULT audio_init_hr;
+    HRESULT audio_start_hr;
+    int audio_tag;
+    long audio_convert_failures;
+    IrPcmConverter audio_converter;
+    volatile long audio_peak;
+
+    int64_t start_qpc;
+    int64_t start_pts;
+    volatile LONG64 last_frame_pts;
+
+    IrFrame **frames;
+    int frame_cap;
+    int frame_head;
+    int frame_count;
+    IrAudioBlock **audio_blocks;
+    int audio_cap;
+    int audio_head;
+    int audio_count;
+    IrAudioBlock **mic_blocks;
+    int mic_cap;
+    int mic_head;
+    int mic_count;
+    IrPacket **packets;
+    int packet_cap;
+    int packet_head;
+    int packet_count;
+    uint64_t packet_bytes;
+
+    volatile LONG64 captured;
+    volatile LONG64 paced;
+    volatile LONG64 rejected;
+    volatile LONG64 encoded;
+    volatile LONG64 dropped;
+    volatile LONG64 frames_encoded;
+    volatile LONG64 audio_frames;
+    volatile LONG64 audio_events;
+    volatile LONG64 audio_got;
+    volatile LONG64 heartbeat;
+    volatile LONG64 last_pts;
+    volatile LONG64 timing_frames;
+    double timing_map_ms;
+    double timing_encode_ms;
+    double timing_render_ms;
+    double timing_submit_ms;
+    double timing_snapshot_ms;
+    double timing_unmap_ms;
+    volatile long fail_stage;
+    volatile long fail_hr;
+    volatile long capture_hr;
+
+    HANDLE save_wake;
+    HANDLE save_stop;
+    HANDLE save_thread;
+    CRITICAL_SECTION job_cs;
+    IrSaveJob *job_head;
+    UINT64 next_job_id;
+};
+
+struct IrSaveJob
+{
+    UINT64 id;
+    wchar_t path[MAX_PATH];
+    int seconds_back;
+    Config config;
+    int width;
+    int height;
+    int fps;
+    BOOL segmented;
+    GUID subtype;
+    uint8_t *seq_header;
+    uint32_t seq_header_size;
+    int64_t trim_pts;
+    int64_t base_pts;
+    int64_t end_pts;
+    IrPacket **packets;
+    int packet_count;
+    IrAudioBlock **sys;
+    int sys_count;
+    IrAudioBlock **mic;
+    int mic_count;
+    volatile long progress;
+    volatile long result;
+    volatile long done;
+    volatile long refs;
+    IrSaveJob *next;
+};
+
+static GUID IrCodecSubtype(int codec_bits)
+{
+    switch (codec_bits)
+    {
+    case 1: return MFVideoFormat_HEVC;
+    case 2: return MFVideoFormat_H264;
+    case 3: return MFVideoFormat_AV1;
+    default: return MFVideoFormat_H264;
+    }
+}
+
+static int IrVendorOrdinal(int pref)
+{
+    switch (pref & 0xff)
+    {
+    case 5: return 1; // QSV
+    case 6: return 2; // VP12
+    case 7: return 3; // NVENC
+    case 8: return 4; // AMF
+    case 11: return 5; // software
+    default: return 0; // auto
+    }
+}
+
+// Compact availability bits (pref bits 24..31) win over the ordinal when the
+// caller supplied them, matching the managed encoder preference mapping.
+static int IrWantedVendorOrdinal(int pref)
+{
+    // Compact bits are QSV, VP12, NVENC, AMF in that order (software is the
+    // implicit MFT fallback and has no compact bit).
+    unsigned compact = ((unsigned)pref >> 24) & 0xffu;
+    if (compact & 0x10u) return 1;
+    if (compact & 0x20u) return 2;
+    if (compact & 0x40u) return 3;
+    if (compact & 0x80u) return 4;
+    return IrVendorOrdinal(pref);
+}
+
+static void IrLowerName(const WCHAR *src, WCHAR *dst, size_t capacity)
+{
+    size_t i = 0;
+    for (; src && src[i] && i + 1 < capacity; ++i) dst[i] = (WCHAR)towlower(src[i]);
+    dst[i] = L'\0';
+}
+
+static int IrActivateVendor(IMFActivate *activate)
+{
+    WCHAR *name = NULL;
+    if (FAILED(IMFActivate_GetAllocatedString(activate, &ir_mft_friendly_name_utf8, &name, NULL)) || !name)
+        IMFActivate_GetAllocatedString(activate, &ir_mft_friendly_name, &name, NULL);
+    if (!name) return 0;
+    WCHAR lower[256];
+    IrLowerName(name, lower, _countof(lower));
+    CoTaskMemFree(name);
+    if (wcsstr(lower, L"nvidia") || wcsstr(lower, L"nvenc")) return 3;
+    if (wcsstr(lower, L"amd") || wcsstr(lower, L"amf") || wcsstr(lower, L"radeon")) return 4;
+    if (wcsstr(lower, L"microsoft") || wcsstr(lower, L"software")) return 5;
+    if (wcsstr(lower, L"intel") || wcsstr(lower, L"qsv") || wcsstr(lower, L"quick sync") ||
+        wcsstr(lower, L"arc") || wcsstr(lower, L"core ultra"))
+        return wcsstr(lower, L"arc") || wcsstr(lower, L"core ultra") ? 2 : 1;
+    return 0;
+}
+
+static HRESULT IrSetCodecU32(ICodecAPI *api, const GUID *key, uint32_t value)
+{
+    VARIANT v;
+    VariantInit(&v);
+    v.vt = VT_UI4;
+    v.ulVal = value;
+    HRESULT hr = ICodecAPI_SetValue(api, key, &v);
+    VariantClear(&v);
+    return hr;
+}
+
+static HRESULT IrSetCodecBool(ICodecAPI *api, const GUID *key, BOOL value)
+{
+    VARIANT v;
+    VariantInit(&v);
+    v.vt = VT_BOOL;
+    v.boolVal = value ? VARIANT_TRUE : VARIANT_FALSE;
+    HRESULT hr = ICodecAPI_SetValue(api, key, &v);
+    VariantClear(&v);
+    return hr;
+}
+
+static void IrLive_ReadSeqHeader(IrLiveEncoder *enc)
+{
+    free(enc->seq_header);
+    enc->seq_header = NULL;
+    enc->seq_header_size = 0;
+    IMFMediaType *type = NULL;
+    if (FAILED(IMFTransform_GetOutputCurrentType(enc->mft, 0, &type)) || !type) return;
+    UINT32 size = 0;
+    if (SUCCEEDED(IMFMediaType_GetBlobSize(type, &MF_MT_MPEG_SEQUENCE_HEADER, &size)) && size > 4)
+    {
+        uint8_t *buf = (uint8_t *)malloc(size);
+        UINT32 written = 0;
+        if (buf && SUCCEEDED(IMFMediaType_GetBlob(type, &MF_MT_MPEG_SEQUENCE_HEADER, buf, size, &written)) &&
+            written > 4 && ((buf[0] == 0 && buf[1] == 0 && buf[2] == 1) ||
+                            (buf[0] == 0 && buf[1] == 0 && buf[2] == 0 && buf[3] == 1)))
+        {
+            enc->seq_header = buf;
+            enc->seq_header_size = written;
+            buf = NULL;
+        }
+        free(buf);
+    }
+    IMFMediaType_Release(type);
+}
+
+static BOOL IrHasKeyNal(const uint8_t *data, uint32_t size, BOOL hevc)
+{
+    for (uint32_t i = 0; i + 3 < size; ++i)
+    {
+        if (data[i] != 0 || data[i + 1] != 0 || data[i + 2] != 1) continue;
+        uint32_t at = i + 3;
+        uint8_t b = data[at];
+        int type = hevc ? ((b >> 1) & 0x3f) : (b & 0x1f);
+        if (hevc ? (type >= 16 && type <= 21) : (type == 5)) return TRUE;
+    }
+    return FALSE;
+}
+
+static BOOL IrHasParamSets(const uint8_t *data, uint32_t size, BOOL hevc)
+{
+    BOOL vps = FALSE, sps = FALSE, pps = FALSE;
+    for (uint32_t i = 0; i + 3 < size; ++i)
+    {
+        if (data[i] != 0 || data[i + 1] != 0 || data[i + 2] != 1) continue;
+        uint32_t at = i + 3;
+        uint8_t b = data[at];
+        int type = hevc ? ((b >> 1) & 0x3f) : (b & 0x1f);
+        if (hevc)
+        {
+            if (type == 32) vps = TRUE;
+            else if (type == 33) sps = TRUE;
+            else if (type == 34) pps = TRUE;
+        }
+        else
+        {
+            if (type == 7) sps = TRUE;
+            else if (type == 8) pps = TRUE;
+        }
+    }
+    return hevc ? (vps && sps && pps) : (sps && pps);
+}
+
+// Copy VPS/SPS/PPS (HEVC) or SPS/PPS (H.264) NAL units, including their
+// Annex-B start codes, from an in-band keyframe. Some MFTs emit parameter sets
+// inside the sample instead of exposing them as MF_MT_MPEG_SEQUENCE_HEADER.
+static uint8_t *IrCollectParamSets(const uint8_t *data, uint32_t size, BOOL hevc, uint32_t *out_size)
+{
+    *out_size = 0;
+    if (!data || size < 4) return NULL;
+    uint8_t *out = (uint8_t *)malloc(size);
+    if (!out) return NULL;
+    uint32_t used = 0, pos = 0;
+    for (;;)
+    {
+        while (pos + 3 <= size)
+        {
+            if (data[pos] == 0 && data[pos + 1] == 0 && data[pos + 2] == 1) break;
+            if (pos + 4 <= size && data[pos] == 0 && data[pos + 1] == 0 &&
+                data[pos + 2] == 0 && data[pos + 3] == 1) break;
+            ++pos;
+        }
+        if (pos + 3 > size) break;
+        uint32_t start = pos;
+        uint32_t sc = (data[pos] == 0 && data[pos + 1] == 0 && data[pos + 2] == 1) ? 3 : 4;
+        pos += sc;
+        if (pos >= size) break;
+        uint32_t end = pos;
+        while (end + 3 <= size)
+        {
+            if (data[end] == 0 && data[end + 1] == 0 && data[end + 2] == 1) break;
+            if (end + 4 <= size && data[end] == 0 && data[end + 1] == 0 &&
+                data[end + 2] == 0 && data[end + 3] == 1) break;
+            ++end;
+        }
+        uint8_t header = data[pos];
+        int type = hevc ? ((header >> 1) & 0x3f) : (header & 0x1f);
+        BOOL keep = hevc ? (type == 32 || type == 33 || type == 34) : (type == 7 || type == 8);
+        if (keep && end > start)
+        {
+            uint32_t len = end - start;
+            memcpy(out + used, data + start, len);
+            used += len;
+        }
+        pos = end;
+    }
+    if (!used) { free(out); return NULL; }
+    *out_size = used;
+    return out;
+}
+
+static void IrLive_EmitSample(IrLiveEncoder *enc, IMFSample *sample, IrEngine *engine)
+{
+    IMFMediaBuffer *buffer = NULL;
+    if (FAILED(IMFSample_ConvertToContiguousBuffer(sample, &buffer)) || !buffer) return;
+    BYTE *data = NULL;
+    DWORD size = 0;
+    if (SUCCEEDED(IMFMediaBuffer_Lock(buffer, &data, NULL, &size)) && data && size)
+    {
+        UINT32 clean = 0;
+        BOOL key = (enc->av1 ? FALSE : IrHasKeyNal(data, size, enc->hevc)) ||
+                   (SUCCEEDED(IMFSample_GetUINT32(sample, &MFSampleExtension_CleanPoint, &clean)) && clean);
+        BOOL packet_params = enc->av1 ? FALSE : IrHasParamSets(data, size, enc->hevc);
+        LONGLONG pts = 0;
+        IMFSample_GetSampleTime(sample, &pts);
+        LONGLONG duration = 0;
+        IMFSample_GetSampleDuration(sample, &duration);
+        if (duration <= 0) duration = enc->frame_duration;
+
+        uint8_t *packet = NULL;
+        uint32_t bytes = 0, codec_data = 0;
+        if (!packet_params && !enc->av1 && enc->seq_header_size &&
+            (key || !enc->wrote_header) && (uint64_t)size + enc->seq_header_size <= 0x40000000ull)
+        {
+            bytes = size + enc->seq_header_size;
+            packet = (uint8_t *)malloc(bytes);
+            if (packet)
+            {
+                memcpy(packet, enc->seq_header, enc->seq_header_size);
+                memcpy(packet + enc->seq_header_size, data, size);
+                codec_data = enc->seq_header_size;
+            }
+        }
+        if (!packet)
+        {
+            packet = (uint8_t *)malloc(size);
+            if (packet) { memcpy(packet, data, size); bytes = size; }
+        }
+        if (packet)
+        {
+            IrPushPacket(engine, packet, bytes, codec_data, (int64_t)pts, (int64_t)duration, key);
+            if (key || packet_params) enc->wrote_header = TRUE;
+            free(packet);
+        }
+        IMFMediaBuffer_Unlock(buffer);
+    }
+    IMFMediaBuffer_Release(buffer);
+}
+
+static BOOL IrLive_ProcessOutput(IrLiveEncoder *enc, IrEngine *engine, BOOL *need_more, char *error, size_t error_size)
+{
+    MFT_OUTPUT_DATA_BUFFER output;
+    memset(&output, 0, sizeof(output));
+    IMFSample *owned = NULL;
+    if (!enc->provides_samples)
+    {
+        IMFMediaBuffer *buffer = NULL;
+        if (FAILED(MFCreateSample(&owned)) || !owned ||
+            FAILED(MFCreateMemoryBuffer(enc->out_size, &buffer)) || !buffer)
+        {
+            if (owned) IMFSample_Release(owned);
+            _snprintf_s(error, error_size, _TRUNCATE, "Cannot allocate encoder output sample");
+            return FALSE;
+        }
+        IMFSample_AddBuffer(owned, buffer);
+        IMFMediaBuffer_Release(buffer);
+        output.pSample = owned;
+    }
+    DWORD status = 0;
+    HRESULT hr = IMFTransform_ProcessOutput(enc->mft, 0, 1, &output, &status);
+    if (need_more) *need_more = FALSE;
+    if (hr == MF_E_TRANSFORM_NEED_MORE_INPUT)
+    {
+        if (need_more) *need_more = TRUE;
+    }
+    else if (hr == MF_E_TRANSFORM_STREAM_CHANGE)
+    {
+        IrLive_ReadSeqHeader(enc);
+        enc->wrote_header = FALSE;
+    }
+    else if (FAILED(hr))
+    {
+        _snprintf_s(error, error_size, _TRUNCATE, "Encoder output failed (0x%08lX)", (unsigned long)hr);
+    }
+    else if (output.pSample)
+    {
+        IrLive_EmitSample(enc, output.pSample, engine);
+    }
+    if (owned) IMFSample_Release(owned);
+    if (output.pEvents) IMFCollection_Release(output.pEvents);
+    // MF_E_TRANSFORM_NEED_MORE_INPUT (the normal "drained" result, signalled
+    // through *need_more) and MF_E_TRANSFORM_STREAM_CHANGE (handled above) are
+    // both failure HRESULTs but are expected encoder events, not errors.
+    // Returning SUCCEEDED(hr) here would latch STAGE_FRAME on every frame and
+    // leave the error message empty, even though packets were emitted.
+    if (hr == MF_E_TRANSFORM_NEED_MORE_INPUT || hr == MF_E_TRANSFORM_STREAM_CHANGE)
+        return TRUE;
+    return SUCCEEDED(hr);
+}
+
+static BOOL IrLive_Pump(IrLiveEncoder *enc, IrEngine *engine, BOOL wait_need, char *error, size_t error_size)
+{
+    if (!enc->async)
+    {
+        for (;;)
+        {
+            BOOL need = FALSE;
+            if (!IrLive_ProcessOutput(enc, engine, &need, error, error_size)) return FALSE;
+            if (need) return TRUE;
+        }
+    }
+    uint64_t deadline = GetTickCount64() + 200;
+    for (;;)
+    {
+        if (wait_need && enc->pending_need > 0) return TRUE;
+        if (wait_need && GetTickCount64() >= deadline)
+        {
+            _snprintf_s(error, error_size, _TRUNCATE, "Encoder timed out waiting for input");
+            return FALSE;
+        }
+        IMFMediaEvent *event = NULL;
+        HRESULT hr = IMFMediaEventGenerator_GetEvent(enc->events, MF_EVENT_FLAG_NO_WAIT, &event);
+        if (hr == MF_E_NO_EVENTS_AVAILABLE)
+        {
+            if (!wait_need) return TRUE;
+            Sleep(1);
+            continue;
+        }
+        if (FAILED(hr))
+        {
+            _snprintf_s(error, error_size, _TRUNCATE, "Encoder event failed (0x%08lX)", (unsigned long)hr);
+            return FALSE;
+        }
+        MediaEventType type = MEUnknown;
+        IMFMediaEvent_GetType(event, &type);
+        if (type == METransformNeedInput)
+        {
+            enc->pending_need++;
+            if (wait_need) { IMFMediaEvent_Release(event); return TRUE; }
+        }
+        else if (type == METransformHaveOutput)
+        {
+            BOOL need = FALSE;
+            if (!IrLive_ProcessOutput(enc, engine, &need, error, error_size))
+            {
+                IMFMediaEvent_Release(event);
+                return FALSE;
+            }
+        }
+        else if (type == METransformDrainComplete)
+        {
+            enc->drained = TRUE;
+        }
+        else if (type == MEError)
+        {
+            HRESULT status = S_OK;
+            IMFMediaEvent_GetStatus(event, &status);
+            _snprintf_s(error, error_size, _TRUNCATE, "Encoder error (0x%08lX)", (unsigned long)status);
+            IMFMediaEvent_Release(event);
+            return FALSE;
+        }
+        IMFMediaEvent_Release(event);
+    }
+}
+
+static BOOL IrLive_Feed(IrLiveEncoder *enc, IrEngine *engine, IMFSample *sample,
+                        int64_t pts, BOOL idr, char *error, size_t error_size)
+{
+    IMFSample_SetSampleTime(sample, pts);
+    IMFSample_SetSampleDuration(sample, enc->frame_duration);
+    if (idr && enc->api) IrSetCodecU32(enc->api, &CODECAPI_AVEncVideoForceKeyFrame, 1);
+    if (enc->async && !IrLive_Pump(enc, engine, TRUE, error, error_size)) return FALSE;
+    HRESULT hr = IMFTransform_ProcessInput(enc->mft, 0, sample, 0);
+    if (hr == MF_E_NOTACCEPTING && !enc->async)
+    {
+        if (!IrLive_Pump(enc, engine, FALSE, error, error_size)) return FALSE;
+        hr = IMFTransform_ProcessInput(enc->mft, 0, sample, 0);
+    }
+    if (FAILED(hr))
+    {
+        _snprintf_s(error, error_size, _TRUNCATE, "Encoder input failed (0x%08lX)", (unsigned long)hr);
+        return FALSE;
+    }
+    if (enc->async && enc->pending_need > 0) enc->pending_need--;
+    return IrLive_Pump(enc, engine, FALSE, error, error_size);
+}
+
+static void IrLive_Release(IrLiveEncoder *enc)
+{
+    if (enc->mft)
+    {
+        IMFTransform_ProcessMessage(enc->mft, MFT_MESSAGE_NOTIFY_END_OF_STREAM, 0);
+        IMFTransform_ProcessMessage(enc->mft, MFT_MESSAGE_COMMAND_DRAIN, 0);
+    }
+    if (enc->api) ICodecAPI_Release(enc->api);
+    if (enc->events) IMFMediaEventGenerator_Release(enc->events);
+    if (enc->mft) IMFTransform_Release(enc->mft);
+    free(enc->seq_header);
+
+    if (enc->staging) ID3D11Texture2D_Release(enc->staging);
+    if (enc->input_view) ID3D11RenderTargetView_Release(enc->input_view);
+    if (enc->gpu_ready)
+    {
+        IrYuvOutput_Release(&enc->output);
+        IrYuv_Release(&enc->yuv);
+        IrResize_Release(&enc->resize);
+    }
+    free(enc->nv12);
+    memset(enc, 0, sizeof(*enc));
+}
+
+static BOOL IrLive_Create(IrLiveEncoder *enc, IrEngine *engine, ID3D11Device *device,
+                          uint32_t width, uint32_t height, int fps, int bitrate_kbps,
+                          int pref, char *error, size_t error_size)
+{
+    memset(enc, 0, sizeof(*enc));
+    HRESULT hr = MFStartup(MF_VERSION, MFSTARTUP_LITE);
+    if (FAILED(hr) && hr != MF_E_ALREADY_INITIALIZED)
+    {
+        _snprintf_s(error, error_size, _TRUNCATE, "Media Foundation startup failed (0x%08lX)", (unsigned long)hr);
+        return FALSE;
+    }
+    int codec_bits = (pref >> 15) & 3;
+    enc->subtype = IrCodecSubtype(codec_bits);
+    enc->hevc = IsEqualGUID(&enc->subtype, &MFVideoFormat_HEVC);
+    enc->av1 = IsEqualGUID(&enc->subtype, &MFVideoFormat_AV1);
+    enc->segmented = (pref & 0x200) != 0;
+    enc->width = width;
+    enc->height = height;
+    enc->max_width = engine && engine->config.VideoMaxWidth ? engine->config.VideoMaxWidth : 0;
+    enc->max_height = engine && engine->config.VideoMaxHeight ? engine->config.VideoMaxHeight : 0;
+    enc->frame_duration = IR_SECOND_100NS / max(fps, 1);
+
+    MFT_REGISTER_TYPE_INFO input_type = { MFMediaType_Video, MFVideoFormat_NV12 };
+    MFT_REGISTER_TYPE_INFO output_type = { MFMediaType_Video, enc->subtype };
+    // VBR/CBR is set through ICodecAPI below; it does not affect enumeration.
+    UINT flags = (codec_bits == 3 || IrWantedVendorOrdinal(pref) == 5)
+                     ? (MFT_ENUM_FLAG_SYNCMFT | MFT_ENUM_FLAG_SORTANDFILTER)
+                     : (MFT_ENUM_FLAG_HARDWARE | MFT_ENUM_FLAG_SORTANDFILTER);
+
+    IMFActivate **list = NULL;
+    UINT32 count = 0;
+    hr = MFTEnum2(MFT_CATEGORY_VIDEO_ENCODER, flags, &input_type, &output_type, NULL, &list, &count);
+    if (FAILED(hr) || count == 0)
+    {
+        // Allow the software encoder as a fallback when no hardware MFT exists.
+        flags = MFT_ENUM_FLAG_SYNCMFT | MFT_ENUM_FLAG_SORTANDFILTER;
+        hr = MFTEnum2(MFT_CATEGORY_VIDEO_ENCODER, flags, &input_type, &output_type, NULL, &list, &count);
+    }
+    if (FAILED(hr) || count == 0)
+    {
+        _snprintf_s(error, error_size, _TRUNCATE, "No Media Foundation video encoder is available (0x%08lX)", (unsigned long)hr);
+        return FALSE;
+    }
+
+    int wanted_vendor = IrWantedVendorOrdinal(pref);
+    IMFActivate *chosen = NULL;
+    int chosen_vendor = 0;
+    for (UINT32 i = 0; i < count; ++i)
+    {
+        int vendor = IrActivateVendor(list[i]);
+        chosen_vendor = vendor;
+        if (!wanted_vendor || vendor == wanted_vendor || vendor == 0 || wanted_vendor == 5)
+        {
+            chosen = list[i];
+            list[i] = NULL;
+            break;
+        }
+    }
+    if (!chosen)
+    {
+        chosen = list[0];
+        chosen_vendor = IrActivateVendor(chosen);
+        list[0] = NULL;
+    }
+    enc->active_vendor = chosen_vendor ? chosen_vendor : (wanted_vendor ? wanted_vendor : 1);
+    for (UINT32 i = 0; i < count; ++i)
+    {
+        if (list[i]) IMFActivate_Release(list[i]);
+    }
+    CoTaskMemFree(list);
+
+    hr = IMFActivate_ActivateObject(chosen, &IID_IMFTransform, (void **)&enc->mft);
+    IMFActivate_Release(chosen);
+    if (FAILED(hr) || !enc->mft)
+    {
+        _snprintf_s(error, error_size, _TRUNCATE, "Cannot activate video encoder (0x%08lX)", (unsigned long)hr);
+        goto fail;
+    }
+
+    IMFAttributes *attributes = NULL;
+    if (SUCCEEDED(IMFTransform_GetAttributes(enc->mft, &attributes)) && attributes)
+    {
+        UINT32 is_async = 0;
+        if (SUCCEEDED(IMFAttributes_GetUINT32(attributes, &MF_TRANSFORM_ASYNC, &is_async)) && is_async)
+        {
+            IMFAttributes_SetUINT32(attributes, &MF_TRANSFORM_ASYNC_UNLOCK, TRUE);
+            enc->async = TRUE;
+        }
+        IMFAttributes_SetUINT32(attributes, &MF_LOW_LATENCY, TRUE);
+        IMFAttributes_Release(attributes);
+    }
+    if (enc->async)
+    {
+        hr = IMFTransform_QueryInterface(enc->mft, &IID_IMFMediaEventGenerator, (void **)&enc->events);
+        if (FAILED(hr) || !enc->events) { enc->async = FALSE; }
+    }
+    IMFTransform_QueryInterface(enc->mft, &IID_ICodecAPI, (void **)&enc->api);
+
+    if (enc->api)
+    {
+        IrSetCodecU32(enc->api, &CODECAPI_AVEncCommonRateControlMode,
+                      (pref & 0x100) ? eAVEncCommonRateControlMode_PeakConstrainedVBR
+                                     : eAVEncCommonRateControlMode_CBR);
+        IrSetCodecU32(enc->api, &CODECAPI_AVEncCommonMeanBitRate, (uint32_t)bitrate_kbps * 1000);
+        IrSetCodecU32(enc->api, &CODECAPI_AVEncCommonMaxBitRate, (uint32_t)bitrate_kbps * 1500);
+        IrSetCodecU32(enc->api, &CODECAPI_AVEncMPVGOPSize, (uint32_t)(fps * (enc->segmented ? 1 : 2)));
+        IrSetCodecU32(enc->api, &CODECAPI_AVEncMPVDefaultBPictureCount, 0);
+        IrSetCodecBool(enc->api, &CODECAPI_AVLowLatencyMode, TRUE);
+        IrSetCodecU32(enc->api, &CODECAPI_AVEncCommonQualityVsSpeed,
+                      (uint32_t)clamp((pref >> 12) & 7, 0, 6) * 100 / 6);
+    }
+
+    BOOL highdef = width >= 1280 || height > 576;
+    IMFMediaType *out_type = NULL;
+    MFCreateMediaType(&out_type);
+    IMFMediaType_SetGUID(out_type, &MF_MT_MAJOR_TYPE, &MFMediaType_Video);
+    IMFMediaType_SetGUID(out_type, &MF_MT_SUBTYPE, &enc->subtype);
+    IMFMediaType_SetUINT32(out_type, &MF_MT_AVG_BITRATE, bitrate_kbps * 1000);
+    IrMFSetSize(out_type, &MF_MT_FRAME_SIZE, width, height);
+    IrMFSetSize(out_type, &MF_MT_FRAME_RATE, (UINT32)fps, 1);
+    IrMFSetSize(out_type, &MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
+    IMFMediaType_SetUINT32(out_type, &MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
+    IMFMediaType_SetUINT32(out_type, &MF_MT_VIDEO_NOMINAL_RANGE, MFNominalRange_16_235);
+    IMFMediaType_SetUINT32(out_type, &MF_MT_YUV_MATRIX, highdef ? MFVideoTransferMatrix_BT709 : MFVideoTransferMatrix_BT601);
+    IMFMediaType_SetUINT32(out_type, &MF_MT_VIDEO_PRIMARIES, highdef ? MFVideoPrimaries_BT709 : MFVideoPrimaries_SMPTE170M);
+    IMFMediaType_SetUINT32(out_type, &MF_MT_TRANSFER_FUNCTION, MFVideoTransFunc_709);
+    if (!enc->av1)
+        IMFMediaType_SetUINT32(out_type, &MF_MT_MPEG2_PROFILE,
+                               enc->hevc ? (UINT32)eAVEncH265VProfile_Main_420_8 : (UINT32)eAVEncH264VProfile_High);
+    hr = IMFTransform_SetOutputType(enc->mft, 0, out_type, 0);
+    IMFMediaType_Release(out_type);
+    if (FAILED(hr))
+    {
+        _snprintf_s(error, error_size, _TRUNCATE, "Encoder rejected the output format (0x%08lX)", (unsigned long)hr);
+        goto fail;
+    }
+
+    IMFMediaType *in_type = NULL;
+    MFCreateMediaType(&in_type);
+    IMFMediaType_SetGUID(in_type, &MF_MT_MAJOR_TYPE, &MFMediaType_Video);
+    IMFMediaType_SetGUID(in_type, &MF_MT_SUBTYPE, &MFVideoFormat_NV12);
+    IrMFSetSize(in_type, &MF_MT_FRAME_SIZE, width, height);
+    IrMFSetSize(in_type, &MF_MT_FRAME_RATE, (UINT32)fps, 1);
+    IrMFSetSize(in_type, &MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
+    IMFMediaType_SetUINT32(in_type, &MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
+    IMFMediaType_SetUINT32(in_type, &MF_MT_VIDEO_NOMINAL_RANGE, MFNominalRange_16_235);
+    IMFMediaType_SetUINT32(in_type, &MF_MT_YUV_MATRIX, highdef ? MFVideoTransferMatrix_BT709 : MFVideoTransferMatrix_BT601);
+    IMFMediaType_SetUINT32(in_type, &MF_MT_VIDEO_PRIMARIES, highdef ? MFVideoPrimaries_BT709 : MFVideoPrimaries_SMPTE170M);
+    IMFMediaType_SetUINT32(in_type, &MF_MT_TRANSFER_FUNCTION, MFVideoTransFunc_709);
+    hr = IMFTransform_SetInputType(enc->mft, 0, in_type, 0);
+    IMFMediaType_Release(in_type);
+    if (FAILED(hr))
+    {
+        _snprintf_s(error, error_size, _TRUNCATE, "Encoder rejected NV12 input (0x%08lX)", (unsigned long)hr);
+        goto fail;
+    }
+
+    MFT_OUTPUT_STREAM_INFO info;
+    memset(&info, 0, sizeof(info));
+    if (SUCCEEDED(IMFTransform_GetOutputStreamInfo(enc->mft, 0, &info)))
+    {
+        enc->provides_samples = (info.dwFlags & (MFT_OUTPUT_STREAM_PROVIDES_SAMPLES |
+                                                  MFT_OUTPUT_STREAM_CAN_PROVIDE_SAMPLES)) != 0;
+        enc->out_size = max(info.cbSize, 1u << 20);
+    }
+    else enc->out_size = max(width * height, 1u << 20);
+
+    IrLive_ReadSeqHeader(enc);
+    IMFTransform_ProcessMessage(enc->mft, MFT_MESSAGE_COMMAND_FLUSH, 0);
+    IMFTransform_ProcessMessage(enc->mft, MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0);
+    IMFTransform_ProcessMessage(enc->mft, MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0);
+    return TRUE;
+
+fail:
+    IrLive_Release(enc);
+    return FALSE;
+}
+
+static void IrComputeOutputSize(uint32_t input_w, uint32_t input_h, uint32_t max_w, uint32_t max_h,
+                                uint32_t *out_w, uint32_t *out_h)
+{
+    *out_w = input_w;
+    *out_h = input_h;
+    if (max_w && max_h)
+    {
+        if ((uint64_t)max_w * input_h < (uint64_t)max_h * input_w)
+            *out_h = input_h * max_w / input_w, *out_w = max_w;
+        else
+            *out_w = input_w * max_h / input_h, *out_h = max_h;
+    }
+    else if (max_w && max_w < input_w)
+    {
+        *out_w = max_w;
+        *out_h = input_h * max_w / input_w;
+    }
+    else if (max_h && max_h < input_h)
+    {
+        *out_h = max_h;
+        *out_w = input_w * max_h / input_h;
+    }
+    *out_w = max(*out_w & ~1u, 2u);
+    *out_h = max(*out_h & ~1u, 2u);
+}
+
+static BOOL IrLive_PrepareGpu(IrLiveEncoder *enc, IrEngine *engine, ID3D11Device *device,
+                              uint32_t input_w, uint32_t input_h)
+{
+    uint32_t output_w = 0, output_h = 0;
+    IrComputeOutputSize(input_w, input_h, enc->max_width, enc->max_height, &output_w, &output_h);
+    if (enc->mft && (enc->width != output_w || enc->height != output_h))
+    {
+        // The MFT output type is fixed at creation time. Rebuild it when the
+        // capture size or canvas hint changes; the caller forces an IDR.
+        IrLive_Release(enc);
+        char create_error[192];
+        create_error[0] = '\0';
+        if (!IrLive_Create(enc, engine, device, output_w, output_h, engine->fps,
+                           engine->bitrate_kbps, engine->pref, create_error, sizeof(create_error)))
+        {
+            IrSetErrorFmt("%s", create_error);
+            return FALSE;
+        }
+    }
+    if (enc->gpu_ready && enc->input_width == input_w && enc->input_height == input_h &&
+        enc->output_width == output_w && enc->output_height == output_h)
+        return TRUE;
+    if (enc->gpu_ready)
+    {
+        IrYuvOutput_Release(&enc->output);
+        IrYuv_Release(&enc->yuv);
+        IrResize_Release(&enc->resize);
+        if (enc->staging) ID3D11Texture2D_Release(enc->staging);
+        if (enc->input_view) ID3D11RenderTargetView_Release(enc->input_view);
+        enc->staging = NULL;
+        enc->input_view = NULL;
+        enc->gpu_ready = FALSE;
+    }
+    enc->input_width = input_w;
+    enc->input_height = input_h;
+    enc->output_width = output_w;
+    enc->output_height = output_h;
+    // Remember the real encoded size: IrLive_Release clears enc on stop, but a
+    // save issued after IR_Stop still needs the dimensions of the buffered
+    // bitstream, not the configured canvas maximum.
+    if (engine)
+    {
+        engine->encoded_width = (int)output_w;
+        engine->encoded_height = (int)output_h;
+    }
+
+    D3D11_TEXTURE2D_DESC staging_desc;
+    memset(&staging_desc, 0, sizeof(staging_desc));
+    staging_desc.Width = enc->output_width;
+    staging_desc.Height = enc->output_height;
+    staging_desc.MipLevels = staging_desc.ArraySize = 1;
+    staging_desc.Format = DXGI_FORMAT_NV12;
+    staging_desc.SampleDesc.Count = 1;
+    staging_desc.Usage = D3D11_USAGE_STAGING;
+    staging_desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    if (FAILED(ID3D11Device_CreateTexture2D(device, &staging_desc, NULL, &enc->staging)))
+        return FALSE;
+
+    IrResize_Create(&enc->resize, device, input_w, input_h, enc->output_width, enc->output_height,
+                    FALSE, D3D11_BIND_RENDER_TARGET);
+    D3D11_RENDER_TARGET_VIEW_DESC view_desc;
+    memset(&view_desc, 0, sizeof(view_desc));
+    view_desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    view_desc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+    ID3D11Device_CreateRenderTargetView(device, (ID3D11Resource *)enc->resize.InputTexture,
+                                        &view_desc, &enc->input_view);
+    IrYuv_Create(&enc->yuv, device, enc->resize.OutputTexture, enc->output_width, enc->output_height,
+                 (enc->output_width >= 1280 || enc->output_height > 576)
+                     ? IrYuvColorSpace_BT709 : IrYuvColorSpace_BT601, FALSE);
+    IrYuvOutput_Create(&enc->output, device, enc->output_width, enc->output_height, DXGI_FORMAT_NV12);
+    free(enc->nv12);
+    enc->nv12 = (uint8_t *)malloc((size_t)enc->output_width * enc->output_height * 3 / 2);
+    if (!enc->nv12) return FALSE;
+    enc->gpu_ready = TRUE;
+    return TRUE;
+}
+
+static BOOL IrLive_EncodeFrame(IrLiveEncoder *enc, IrEngine *engine, ID3D11DeviceContext *context,
+                               ID3D11Texture2D *texture, RECT rect, int64_t pts, BOOL idr,
+                               char *error, size_t error_size)
+{
+    if (!enc->mft || !texture || !context) return FALSE;
+    LONG width = rect.right - rect.left;
+    LONG height = rect.bottom - rect.top;
+    if (width < 2 || height < 2) return FALSE;
+    int64_t t0 = IrNow100ns();
+    if (!IrLive_PrepareGpu(enc, engine, engine->dev, (uint32_t)width, (uint32_t)height))
+    {
+        _snprintf_s(error, error_size, _TRUNCATE, "Cannot prepare the live video converter");
+        return FALSE;
+    }
+    int64_t t1 = IrNow100ns();
+
+    D3D11_BOX box;
+    memset(&box, 0, sizeof(box));
+    box.left = (UINT)max(rect.left, 0);
+    box.top = (UINT)max(rect.top, 0);
+    box.right = (UINT)rect.right;
+    box.bottom = (UINT)rect.bottom;
+    box.back = 1;
+    FLOAT black[4] = { 0, 0, 0, 0 };
+    ID3D11DeviceContext_ClearRenderTargetView(context, enc->input_view, black);
+    ID3D11DeviceContext_CopySubresourceRegion(context, (ID3D11Resource *)enc->resize.InputTexture,
+                                              0, 0, 0, 0, (ID3D11Resource *)texture, 0, &box);
+    IrResize_Dispatch(&enc->resize, context);
+    IrYuv_Dispatch(&enc->yuv, context, &enc->output);
+    ID3D11DeviceContext_CopyResource(context, (ID3D11Resource *)enc->staging,
+                                     (ID3D11Resource *)enc->output.Texture);
+    ID3D11DeviceContext_Flush(context);
+    int64_t t2 = IrNow100ns();
+
+    D3D11_MAPPED_SUBRESOURCE mapped;
+    memset(&mapped, 0, sizeof(mapped));
+    if (FAILED(ID3D11DeviceContext_Map(context, (ID3D11Resource *)enc->staging, 0,
+                                       D3D11_MAP_READ, 0, &mapped)))
+    {
+        _snprintf_s(error, error_size, _TRUNCATE, "Cannot read back the encoded frame");
+        return FALSE;
+    }
+    const uint8_t *src = (const uint8_t *)mapped.pData;
+    uint32_t w = enc->output_width, h = enc->output_height;
+    for (uint32_t row = 0; row < h; ++row)
+        memcpy(enc->nv12 + (size_t)row * w, src + (size_t)row * mapped.RowPitch, w);
+    uint8_t *uv_dst = enc->nv12 + (size_t)w * h;
+    const uint8_t *uv_src = (const uint8_t *)mapped.pData + (size_t)(h / 2) * mapped.RowPitch;
+    for (uint32_t row = 0; row < h / 2; ++row)
+        memcpy(uv_dst + (size_t)row * w, uv_src + (size_t)row * mapped.RowPitch, w);
+    int64_t t3 = IrNow100ns();
+    ID3D11DeviceContext_Unmap(context, (ID3D11Resource *)enc->staging, 0);
+    int64_t t4 = IrNow100ns();
+
+    int64_t t4b = IrNow100ns();
+    IMFMediaBuffer *buffer = NULL;
+    IMFSample *sample = NULL;
+    BOOL ok = FALSE;
+    if (SUCCEEDED(MFCreateMemoryBuffer((DWORD)((size_t)w * h * 3 / 2), &buffer)) && buffer &&
+        SUCCEEDED(MFCreateSample(&sample)) && sample)
+    {
+        BYTE *dst = NULL;
+        if (SUCCEEDED(IMFMediaBuffer_Lock(buffer, &dst, NULL, NULL)) && dst)
+        {
+            memcpy(dst, enc->nv12, (size_t)w * h * 3 / 2);
+            IMFMediaBuffer_Unlock(buffer);
+            IMFMediaBuffer_SetCurrentLength(buffer, (DWORD)((size_t)w * h * 3 / 2));
+            IMFSample_AddBuffer(sample, buffer);
+            ok = IrLive_Feed(enc, engine, sample, pts, idr, error, error_size);
+        }
+        else _snprintf_s(error, error_size, _TRUNCATE, "Cannot lock the encoder input buffer");
+    }
+    else _snprintf_s(error, error_size, _TRUNCATE, "Cannot allocate the encoder input sample");
+    int64_t t5 = IrNow100ns();
+    if (sample) IMFSample_Release(sample);
+    if (buffer) IMFMediaBuffer_Release(buffer);
+
+    engine->timing_render_ms += IrMsDiff(t1, t2);
+    engine->timing_submit_ms += IrMsDiff(t4b, t5);
+    engine->timing_map_ms += IrMsDiff(t2, t3);
+    engine->timing_unmap_ms += IrMsDiff(t3, t4);
+    engine->timing_encode_ms += IrMsDiff(t4, t5);
+    engine->timing_snapshot_ms += IrMsDiff(t0, t5);
+    InterlockedIncrement64(&engine->timing_frames);
+    return ok;
+}
+
+static BOOL IrLive_FlushEncoder(IrLiveEncoder *enc, IrEngine *engine)
+{
+    if (!enc->mft) return TRUE;
+    enc->drained = FALSE;
+    IMFTransform_ProcessMessage(enc->mft, MFT_MESSAGE_NOTIFY_END_OF_STREAM, 0);
+    IMFTransform_ProcessMessage(enc->mft, MFT_MESSAGE_COMMAND_DRAIN, 0);
+    char error[192];
+    if (enc->async)
+    {
+        uint64_t deadline = GetTickCount64() + 2000;
+        while (!enc->drained && GetTickCount64() < deadline)
+        {
+            if (!IrLive_Pump(enc, engine, FALSE, error, sizeof(error))) break;
+            Sleep(2);
+        }
+    }
+    else
+    {
+        IrLive_Pump(enc, engine, FALSE, error, sizeof(error));
+    }
+    return TRUE;
+}
+
+// ---------------------------------------------------------------------------
+// Compressed remux writer. The SinkWriter receives the already encoded video
+// packets; only the audio stream is encoded from a single continuous PCM input.
+// ---------------------------------------------------------------------------
+typedef struct
+{
+    IMFSinkWriter *writer;
+    DWORD video_stream;
+    DWORD audio_stream;
+    BOOL has_audio;
+} IrMux;
+
+static BOOL IrMux_Create(IrMux *mux, const wchar_t *path, const Config *config, BOOL want_audio,
+                         const GUID *subtype, const uint8_t *sequence_header,
+                         uint32_t sequence_size, uint32_t width, uint32_t height, int fps)
+{
+    memset(mux, 0, sizeof(*mux));
+    mux->video_stream = mux->audio_stream = (DWORD)-1;
+
+    IMFAttributes *attributes = NULL;
+    if (FAILED(MFCreateAttributes(&attributes, 4))) return FALSE;
+    IMFAttributes_SetUINT32(attributes, &MF_SINK_WRITER_DISABLE_THROTTLING, TRUE);
+    IMFAttributes_SetGUID(attributes, &MF_TRANSCODE_CONTAINERTYPE,
+                          config->FragmentedOutput ? &MFTranscodeContainerType_FMPEG4
+                                                   : &MFTranscodeContainerType_MPEG4);
+    HRESULT hr = MFCreateSinkWriterFromURL(path, NULL, attributes, &mux->writer);
+    IMFAttributes_Release(attributes);
+    if (FAILED(hr) || !mux->writer) return FALSE;
+
+    IMFMediaType *video = NULL;
+    MFCreateMediaType(&video);
+    IMFMediaType_SetGUID(video, &MF_MT_MAJOR_TYPE, &MFMediaType_Video);
+    IMFMediaType_SetGUID(video, &MF_MT_SUBTYPE, subtype);
+    IrMFSetSize(video, &MF_MT_FRAME_SIZE, width, height);
+    IrMFSetSize(video, &MF_MT_FRAME_RATE, (UINT32)max(fps, 1), 1);
+    IrMFSetSize(video, &MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
+    IMFMediaType_SetUINT32(video, &MF_MT_AVG_BITRATE, config->VideoBitrate * 1000);
+    IMFMediaType_SetUINT32(video, &MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
+    if (IsEqualGUID(subtype, &MFVideoFormat_H264))
+        IMFMediaType_SetUINT32(video, &MF_MT_MPEG2_PROFILE, eAVEncH264VProfile_High);
+    else if (IsEqualGUID(subtype, &MFVideoFormat_HEVC))
+        IMFMediaType_SetUINT32(video, &MF_MT_MPEG2_PROFILE, eAVEncH265VProfile_Main_420_8);
+    if (sequence_header && sequence_size)
+        IMFMediaType_SetBlob(video, &MF_MT_MPEG_SEQUENCE_HEADER, sequence_header, sequence_size);
+    hr = IMFSinkWriter_AddStream(mux->writer, video, &mux->video_stream);
+    if (SUCCEEDED(hr)) hr = IMFSinkWriter_SetInputMediaType(mux->writer, mux->video_stream, video, NULL);
+    IMFMediaType_Release(video);
+    if (FAILED(hr)) goto fail;
+
+    if (want_audio)
+    {
+        IMFMediaType *output = NULL;
+        MFCreateMediaType(&output);
+        IMFMediaType_SetGUID(output, &MF_MT_MAJOR_TYPE, &MFMediaType_Audio);
+        IMFMediaType_SetGUID(output, &MF_MT_SUBTYPE, config->AudioCodec == IR_AUDIO_FLAC
+                                                         ? &MFAudioFormat_FLAC : &MFAudioFormat_AAC);
+        IMFMediaType_SetUINT32(output, &MF_MT_AUDIO_BITS_PER_SAMPLE, 16);
+        IMFMediaType_SetUINT32(output, &MF_MT_AUDIO_SAMPLES_PER_SECOND, config->AudioSamplerate);
+        IMFMediaType_SetUINT32(output, &MF_MT_AUDIO_NUM_CHANNELS, config->AudioChannels);
+        if (config->AudioCodec == IR_AUDIO_AAC)
+        {
+            IMFMediaType_SetUINT32(output, &MF_MT_AUDIO_AVG_BYTES_PER_SECOND, config->AudioBitrate * 1000 / 8);
+            IMFMediaType_SetUINT32(output, &MF_MT_AAC_PAYLOAD_TYPE, 0);
+        }
+        hr = IMFSinkWriter_AddStream(mux->writer, output, &mux->audio_stream);
+        IMFMediaType_Release(output);
+        if (FAILED(hr)) goto fail;
+
+        IMFMediaType *input = NULL;
+        MFCreateMediaType(&input);
+        IMFMediaType_SetGUID(input, &MF_MT_MAJOR_TYPE, &MFMediaType_Audio);
+        IMFMediaType_SetGUID(input, &MF_MT_SUBTYPE, &MFAudioFormat_PCM);
+        IMFMediaType_SetUINT32(input, &MF_MT_AUDIO_BITS_PER_SAMPLE, 16);
+        IMFMediaType_SetUINT32(input, &MF_MT_AUDIO_SAMPLES_PER_SECOND, config->AudioSamplerate);
+        IMFMediaType_SetUINT32(input, &MF_MT_AUDIO_NUM_CHANNELS, config->AudioChannels);
+        IMFMediaType_SetUINT32(input, &MF_MT_AUDIO_BLOCK_ALIGNMENT, config->AudioChannels * 2);
+        IMFMediaType_SetUINT32(input, &MF_MT_AUDIO_AVG_BYTES_PER_SECOND,
+                               config->AudioSamplerate * config->AudioChannels * 2);
+        IMFMediaType_SetUINT32(input, &MF_MT_ALL_SAMPLES_INDEPENDENT, TRUE);
+        hr = IMFSinkWriter_SetInputMediaType(mux->writer, mux->audio_stream, input, NULL);
+        IMFMediaType_Release(input);
+        if (FAILED(hr)) goto fail;
+        mux->has_audio = TRUE;
+    }
+
+    hr = IMFSinkWriter_BeginWriting(mux->writer);
+    if (FAILED(hr)) goto fail;
+    return TRUE;
+
+fail:
+    if (mux->writer) { IMFSinkWriter_Release(mux->writer); mux->writer = NULL; }
+    DeleteFileW(path);
+    return FALSE;
+}
+
+static IMFSample *IrMux_MemorySample(const void *data, uint32_t bytes, int64_t pts, int64_t duration)
+{
+    IMFMediaBuffer *buffer = NULL;
+    IMFSample *sample = NULL;
+    if (FAILED(MFCreateMemoryBuffer(bytes, &buffer)) || !buffer) return NULL;
+    BYTE *dst = NULL;
+    if (FAILED(IMFMediaBuffer_Lock(buffer, &dst, NULL, NULL)))
+    {
+        IMFMediaBuffer_Release(buffer);
+        return NULL;
+    }
+    memcpy(dst, data, bytes);
+    IMFMediaBuffer_Unlock(buffer);
+    IMFMediaBuffer_SetCurrentLength(buffer, bytes);
+    if (FAILED(MFCreateSample(&sample)) || !sample)
+    {
+        IMFMediaBuffer_Release(buffer);
+        return NULL;
+    }
+    IMFSample_AddBuffer(sample, buffer);
+    IMFMediaBuffer_Release(buffer);
+    IMFSample_SetSampleTime(sample, pts);
+    IMFSample_SetSampleDuration(sample, duration);
+    return sample;
+}
+
+static BOOL IrMux_WriteVideo(IrMux *mux, const IrPacket *packet, int64_t pts, int64_t duration)
+{
+    if (!mux->writer || packet->bytes <= packet->codec_data) return TRUE;
+    IMFSample *sample = IrMux_MemorySample(packet->data + packet->codec_data,
+                                           packet->bytes - packet->codec_data, pts, duration);
+    if (!sample) return FALSE;
+    if (packet->key) IMFSample_SetUINT32(sample, &MFSampleExtension_CleanPoint, TRUE);
+    HRESULT hr = IMFSinkWriter_WriteSample(mux->writer, mux->video_stream, sample);
+    IMFSample_Release(sample);
+    return SUCCEEDED(hr);
+}
+
+static BOOL IrMux_WriteAudio(IrMux *mux, const int16_t *pcm, uint32_t frames, int64_t duration)
+{
+    if (!mux->writer || !mux->has_audio || !pcm || !frames) return TRUE;
+    IMFSample *sample = IrMux_MemorySample(pcm, frames * IR_AUDIO_CHANNELS * sizeof(int16_t), 0, duration);
+    if (!sample) return FALSE;
+    HRESULT hr = IMFSinkWriter_WriteSample(mux->writer, mux->audio_stream, sample);
+    IMFSample_Release(sample);
+    return SUCCEEDED(hr);
+}
+
+static BOOL IrMux_Finalize(IrMux *mux, const wchar_t *path)
+{
+    if (!mux->writer) return TRUE;
+    HRESULT hr = IMFSinkWriter_Finalize(mux->writer);
+    IMFSinkWriter_Release(mux->writer);
+    mux->writer = NULL;
+    if (FAILED(hr)) { DeleteFileW(path); return FALSE; }
+    return TRUE;
+}
 
 
 
@@ -1810,9 +3358,6 @@ static void IrYuv_Dispatch(IrYuv* Convert, ID3D11DeviceContext* Context, IrYuvOu
 //
 // interface
 //
-
-#define IR_ENCODER_VIDEO_BUFFER_COUNT 8
-#define IR_ENCODER_AUDIO_BUFFER_COUNT 16
 
 typedef struct
 {
@@ -2791,22 +4336,7 @@ void IrEncoder_GetStats(IrEncoder* IrEncoder, DWORD* Bitrate, DWORD* LengthMsec,
 }
 
 // ---------------------------------------------------------------------------
-typedef struct
-{
-    ID3D11Texture2D *texture;
-    RECT rect;
-    int64_t pts100ns;
-    ULONG refs;
-} IrFrame;
-
-typedef struct
-{
-    uint8_t *data;
-    UINT32 frames;
-    UINT32 bytes;
-    int64_t pts100ns;
-    ULONG refs;
-} IrAudioBlock;
+// (Buffer types are defined near the live encoder above.)
 
 static void IrFrameRelease(IrFrame *f)
 {
@@ -2825,108 +4355,7 @@ static void IrAudioBlockRelease(IrAudioBlock *b)
 }
 
 // ---------------------------------------------------------------------------
-// Engine object
-// ---------------------------------------------------------------------------
-typedef struct IrSaveJob IrSaveJob;
-
-struct IrEngine
-{
-    CRITICAL_SECTION cs;
-    CRITICAL_SECTION ring_cs;
-    volatile long running;
-    volatile long paused;
-    volatile long shutdown;
-
-    ID3D11Device *dev;
-    ID3D11DeviceContext *ctx;
-    Config config;
-
-    int method;
-    int monitor_index;
-    HWND window;
-    uint32_t options;
-    int fps;
-    int ring_seconds;
-    int bitrate_kbps;
-    uint32_t cap_w;
-    uint32_t cap_h;
-    int want_audio;
-    int want_mic;
-    wchar_t mic_device[256];
-    int pref;
-    int active_encoder;
-    HRESULT hw_init_hr;
-
-    IrWgc wgc;
-    IrDxgi dxgi;
-    IrAudio audio;
-    WAVEFORMATEXTENSIBLE audio_fmt;
-    BOOL audio_running;
-    HANDLE audio_thread;
-    HANDLE audio_stop;
-    HRESULT audio_activate_hr;
-    HRESULT audio_init_hr;
-    HRESULT audio_start_hr;
-    int audio_tag;
-    long audio_convert_failures;
-
-    int64_t start_qpc;
-    int64_t start_pts;
-    volatile LONG64 last_frame_pts;
-
-    IrFrame **frames;
-    int frame_cap;
-    int frame_head;
-    int frame_count;
-    IrAudioBlock **audio_blocks;
-    int audio_cap;
-    int audio_head;
-    int audio_count;
-
-    volatile LONG64 captured;
-    volatile LONG64 paced;
-    volatile LONG64 rejected;
-    volatile LONG64 encoded;
-    volatile LONG64 dropped;
-    volatile LONG64 frames_encoded;
-    volatile LONG64 audio_frames;
-    volatile LONG64 audio_events;
-    volatile LONG64 audio_got;
-    volatile LONG64 heartbeat;
-    volatile LONG64 last_pts;
-    volatile long fail_stage;
-    volatile long fail_hr;
-    volatile long capture_hr;
-
-    HANDLE save_wake;
-    HANDLE save_stop;
-    HANDLE save_thread;
-    CRITICAL_SECTION job_cs;
-    IrSaveJob *job_head;
-    UINT64 next_job_id;
-};
-
-struct IrSaveJob
-{
-    UINT64 id;
-    wchar_t path[MAX_PATH];
-    int seconds_back;
-    Config config;
-    int width;
-    int height;
-    int fps;
-    BOOL has_audio;
-    WAVEFORMATEXTENSIBLE fmt;
-    IrFrame **frames;
-    int frame_count;
-    IrAudioBlock **audio;
-    int audio_count;
-    volatile long progress;
-    volatile long result;
-    volatile long done;
-    volatile long refs;
-    IrSaveJob *next;
-};
+// (Engine and save-job types are defined near the live encoder above.)
 
 static BOOL CALLBACK IrMonitorCountCallback(HMONITOR monitor, HDC hdc, LPRECT rect, LPARAM param)
 {
@@ -2965,14 +4394,162 @@ static HMONITOR IrMonitorAtFixed(int index)
     return f.handle;
 }
 
-static void IrPushFrameLocal(IrEngine *e, ID3D11Texture2D *src, RECT rect, int64_t pts)
+static void IrPacketRelease(IrPacket *packet)
 {
-    (void)e; (void)src; (void)rect; (void)pts;
+    if (!packet) return;
+    if (InterlockedDecrement(&packet->refs) != 0) return;
+    free(packet->data);
+    free(packet);
+}
+
+static void IrTrimPackets(IrEngine *e)
+{
+    if (!e || e->packet_count <= 1 || !e->packets) return;
+    int64_t newest = e->packets[(e->packet_head + e->packet_count - 1) % e->packet_cap]->pts100ns;
+    int64_t cutoff = newest - ((int64_t)max(e->ring_seconds, 1) + 2) * IR_SECOND_100NS;
+
+    // Retain the last keyframe at or before the cutoff: a full-length save
+    // needs that pre-roll to start on a decodable packet.
+    int keep = 0;
+    for (int i = 0; i < e->packet_count; ++i)
+    {
+        IrPacket *p = e->packets[(e->packet_head + i) % e->packet_cap];
+        if (p->pts100ns > cutoff) break;
+        if (p->key) keep = i;
+    }
+    for (int i = 0; i < keep; ++i)
+    {
+        IrPacket *old = e->packets[e->packet_head];
+        e->packet_head = (e->packet_head + 1) % e->packet_cap;
+        e->packet_count--;
+        e->packet_bytes -= old->bytes;
+        IrPacketRelease(old);
+        InterlockedIncrement64(&e->dropped);
+    }
+
+    // Budget trimming may only cross complete GOPs and never the retained
+    // save window.
+    while (e->packet_bytes > IR_VIDEO_BUDGET && e->packet_count > 1)
+    {
+        int next_key = 1;
+        while (next_key < e->packet_count &&
+               !e->packets[(e->packet_head + next_key) % e->packet_cap]->key)
+            next_key++;
+        if (next_key >= e->packet_count) break;
+        if (e->packets[(e->packet_head + next_key) % e->packet_cap]->pts100ns > cutoff) break;
+        for (int i = 0; i < next_key; ++i)
+        {
+            IrPacket *old = e->packets[e->packet_head];
+            e->packet_head = (e->packet_head + 1) % e->packet_cap;
+            e->packet_count--;
+            e->packet_bytes -= old->bytes;
+            IrPacketRelease(old);
+            InterlockedIncrement64(&e->dropped);
+        }
+    }
+}
+
+static void IrPushPacket(IrEngine *e, const uint8_t *data, uint32_t bytes,
+                         uint32_t codec_data, int64_t pts, int64_t duration, BOOL key)
+{
+    if (!e || !data || !bytes) return;
+    IrPacket *packet = (IrPacket *)calloc(1, sizeof(*packet));
+    if (!packet) { InterlockedIncrement64(&e->dropped); return; }
+    packet->data = (uint8_t *)malloc(bytes);
+    if (!packet->data) { free(packet); InterlockedIncrement64(&e->dropped); return; }
+    memcpy(packet->data, data, bytes);
+    packet->bytes = bytes;
+    packet->codec_data = min(codec_data, bytes);
+    packet->pts100ns = pts;
+    packet->duration = duration > 0 ? duration : (IR_SECOND_100NS / max(e->fps, 1));
+    packet->key = key;
+    packet->refs = 1;
+
+    EnterCriticalSection(&e->ring_cs);
+    if (!e->packets || !e->packet_cap)
+    {
+        e->packet_cap = 8192;
+        e->packets = (IrPacket **)calloc((size_t)e->packet_cap, sizeof(IrPacket *));
+    }
+    if (!e->packets)
+    {
+        LeaveCriticalSection(&e->ring_cs);
+        IrPacketRelease(packet);
+        InterlockedIncrement64(&e->dropped);
+        return;
+    }
+    if (e->packet_count == e->packet_cap)
+    {
+        IrPacket *old = e->packets[e->packet_head];
+        e->packet_head = (e->packet_head + 1) % e->packet_cap;
+        e->packet_count--;
+        e->packet_bytes -= old->bytes;
+        IrPacketRelease(old);
+        InterlockedIncrement64(&e->dropped);
+    }
+    int slot = (e->packet_head + e->packet_count) % e->packet_cap;
+    e->packets[slot] = packet;
+    e->packet_count++;
+    e->packet_bytes += packet->bytes;
+    IrTrimPackets(e);
+    LeaveCriticalSection(&e->ring_cs);
+    InterlockedIncrement64(&e->encoded);
+    InterlockedExchange64(&e->last_pts, pts + packet->duration);
+}
+
+static void IrPushAudioBlockTo(IrEngine *e, uint8_t *data, UINT32 bytes, UINT32 frames,
+                               int64_t pts, BOOL mic)
+{
+    IrAudioBlock ***blocks = mic ? &e->mic_blocks : &e->audio_blocks;
+    int *cap = mic ? &e->mic_cap : &e->audio_cap;
+    int *head = mic ? &e->mic_head : &e->audio_head;
+    int *count = mic ? &e->mic_count : &e->audio_count;
+    if (!e || !*blocks || !data || !bytes) return;
+    IrAudioBlock *b = (IrAudioBlock *)calloc(1, sizeof(*b));
+    if (!b) return;
+    b->data = (uint8_t *)malloc(bytes);
+    if (!b->data) { free(b); return; }
+    memcpy(b->data, data, bytes);
+    b->bytes = bytes;
+    b->frames = frames;
+    b->pts100ns = pts;
+    b->refs = 1;
+
+    EnterCriticalSection(&e->ring_cs);
+    if (*count == *cap)
+    {
+        IrAudioBlock *old = (*blocks)[*head];
+        (*blocks)[*head] = b;
+        *head = (*head + 1) % *cap;
+        LeaveCriticalSection(&e->ring_cs);
+        IrAudioBlockRelease(old);
+    }
+    else
+    {
+        int slot = (*head + *count) % *cap;
+        (*blocks)[slot] = b;
+        (*count)++;
+        LeaveCriticalSection(&e->ring_cs);
+    }
+    // Mic source frames are counted in IrMicThread; only system audio blocks
+    // are counted here to avoid double-reporting the microphone rate.
+    if (!mic) InterlockedIncrement64(&e->audio_frames);
+}
+
+static void IrPushAudioBlock(IrEngine *e, uint8_t *data, UINT32 bytes, UINT32 frames, int64_t pts)
+{
+    IrPushAudioBlockTo(e, data, bytes, frames, pts, FALSE);
+}
+
+static void IrPushMicBlock(IrEngine *e, const int16_t *samples, uint32_t frames, int64_t pts)
+{
+    IrPushAudioBlockTo(e, (uint8_t *)samples, frames * sizeof(int16_t), frames, pts, TRUE);
 }
 
 BOOL IrPushFrame(IrEngine *e, ID3D11Texture2D *src, RECT rect, int64_t pts)
 {
-    if (!e || !src || !e->dev || InterlockedCompareExchange(&e->running, 1, 1) == 0 || e->paused)
+    if (!e || !src || !e->dev || !e->live.mft ||
+        InterlockedCompareExchange(&e->running, 1, 1) == 0 || e->paused)
         return FALSE;
     LONG w = rect.right - rect.left;
     LONG h = rect.bottom - rect.top;
@@ -2983,103 +4560,39 @@ BOOL IrPushFrame(IrEngine *e, ID3D11Texture2D *src, RECT rect, int64_t pts)
     rect.top = max(rect.top, 0);
     rect.right = min(rect.right, (LONG)sd.Width);
     rect.bottom = min(rect.bottom, (LONG)sd.Height);
-    w = rect.right - rect.left;
-    h = rect.bottom - rect.top;
-    if (w < 2 || h < 2) return FALSE;
+    if (rect.right - rect.left < 2 || rect.bottom - rect.top < 2) return FALSE;
 
-    D3D11_TEXTURE2D_DESC td;
-    memset(&td, 0, sizeof(td));
-    td.Width = (UINT)w;
-    td.Height = (UINT)h;
-    td.MipLevels = td.ArraySize = 1;
-    td.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-    td.SampleDesc.Count = 1;
-    td.Usage = D3D11_USAGE_DEFAULT;
-    td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-    ID3D11Texture2D *copy = NULL;
-    if (FAILED(ID3D11Device_CreateTexture2D(e->dev, &td, NULL, &copy))) return FALSE;
-    D3D11_BOX box;
-    memset(&box, 0, sizeof(box));
-    box.left = (UINT)rect.left;
-    box.top = (UINT)rect.top;
-    box.front = 0;
-    box.right = (UINT)rect.right;
-    box.bottom = (UINT)rect.bottom;
-    box.back = 1;
-    ID3D11DeviceContext_CopySubresourceRegion(e->ctx, (ID3D11Resource *)copy, 0, 0, 0, 0,
-                                               (ID3D11Resource *)src, 0, &box);
-
-    IrFrame *f = (IrFrame *)calloc(1, sizeof(*f));
-    if (!f)
+    int64_t stamp = pts + e->time_offset;
+    BOOL idr = InterlockedCompareExchange(&e->force_idr, 0, 1) != 0;
+    if (e->last_encoder_width != (int)(rect.right - rect.left) ||
+        e->last_encoder_height != (int)(rect.bottom - rect.top))
     {
-        ID3D11Texture2D_Release(copy);
-        InterlockedExchange(&g_ir_last_progress, g_ir_last_progress);
+        idr = TRUE;
+        e->last_encoder_width = (int)(rect.right - rect.left);
+        e->last_encoder_height = (int)(rect.bottom - rect.top);
+        e->next_idr_pts = stamp + ((e->pref & 0x200) ? IR_SECOND_100NS : 2 * IR_SECOND_100NS);
+    }
+    if (stamp >= e->next_idr_pts)
+    {
+        idr = TRUE;
+        e->next_idr_pts = stamp + ((e->pref & 0x200) ? IR_SECOND_100NS : 2 * IR_SECOND_100NS);
+    }
+    char error[192];
+    error[0] = '\0';
+    if (!IrLive_EncodeFrame(&e->live, e, e->ctx, src, rect, stamp, idr, error, sizeof(error)))
+    {
+        InterlockedExchange(&e->fail_stage, STAGE_FRAME);
+        IrSetErrorFmt("%s", error);
+        InterlockedIncrement64(&e->rejected);
         return FALSE;
     }
-    f->texture = copy;
-    f->rect.left = f->rect.top = 0;
-    f->rect.right = w;
-    f->rect.bottom = h;
-    f->pts100ns = pts;
-    f->refs = 1;
-
-    EnterCriticalSection(&e->ring_cs);
-    if (e->frame_count == e->frame_cap)
-    {
-        IrFrame *old = e->frames[e->frame_head];
-        e->frames[e->frame_head] = f;
-        e->frame_head = (e->frame_head + 1) % e->frame_cap;
-        LeaveCriticalSection(&e->ring_cs);
-        IrFrameRelease(old);
-        InterlockedIncrement64(&e->dropped);
-    }
-    else
-    {
-        int slot = (e->frame_head + e->frame_count) % e->frame_cap;
-        e->frames[slot] = f;
-        e->frame_count++;
-        LeaveCriticalSection(&e->ring_cs);
-    }
     InterlockedIncrement64(&e->captured);
-    InterlockedExchange64(&e->last_pts, pts);
-    (void)IrPushFrameLocal;
+    // Liveness signal for the video lane: advances whenever a frame flows
+    // through the encoder in either capture mode (wcap used a video-loop tick).
+    InterlockedIncrement64(&e->heartbeat);
+    InterlockedExchange64(&e->last_frame_pts, pts);
+    (void)w; (void)h;
     return TRUE;
-}
-
-static void IrPushAudioBlock(IrEngine *e, uint8_t *data, UINT32 bytes, UINT32 frames, int64_t pts)
-{
-    if (!e || !e->audio_blocks || !data || bytes == 0) return;
-    IrAudioBlock *b = (IrAudioBlock *)calloc(1, sizeof(*b));
-    if (!b) return;
-    b->data = (uint8_t *)malloc(bytes);
-    if (!b->data)
-    {
-        free(b);
-        return;
-    }
-    memcpy(b->data, data, bytes);
-    b->bytes = bytes;
-    b->frames = frames;
-    b->pts100ns = pts;
-    b->refs = 1;
-
-    EnterCriticalSection(&e->ring_cs);
-    if (e->audio_count == e->audio_cap)
-    {
-        IrAudioBlock *old = e->audio_blocks[e->audio_head];
-        e->audio_blocks[e->audio_head] = b;
-        e->audio_head = (e->audio_head + 1) % e->audio_cap;
-        LeaveCriticalSection(&e->ring_cs);
-        IrAudioBlockRelease(old);
-    }
-    else
-    {
-        int slot = (e->audio_head + e->audio_count) % e->audio_cap;
-        e->audio_blocks[slot] = b;
-        e->audio_count++;
-        LeaveCriticalSection(&e->ring_cs);
-    }
-    InterlockedIncrement64(&e->audio_frames);
 }
 
 // ---------------------------------------------------------------------------
@@ -3658,13 +5171,36 @@ static DWORD WINAPI IrAudioPumpThread(LPVOID arg)
         memset(&data, 0, sizeof(data));
         while (IrAudio_GetData(&e->audio, &data, (uint64_t)e->start_qpc))
         {
-            if (e->audio.Format && data.Count && data.Samples)
+            if (e->audio.Format && data.Count && data.Samples && !e->paused)
             {
-                int64_t pts = IrQpcTo100ns((int64_t)data.Time);
-                IrPushAudioBlock(e, (uint8_t *)data.Samples,
-                                 (UINT32)(data.Count * e->audio.Format->nBlockAlign),
-                                 (UINT32)data.Count, pts);
-                InterlockedIncrement64(&e->audio_got);
+                uint32_t out_frames = 0;
+                int16_t *pcm = IrPcm_Convert(&e->audio_converter, (const uint8_t *)data.Samples,
+                                             (uint32_t)data.Count, &out_frames);
+                if (pcm && out_frames)
+                {
+                    IrPushAudioBlock(e, (uint8_t *)pcm, out_frames * IR_AUDIO_CHANNELS * sizeof(int16_t),
+                                     out_frames,
+                                     IrQpcTo100ns((int64_t)data.Time) +
+                                         InterlockedCompareExchange64(&e->time_offset, 0, 0));
+                    int peak = 0;
+                    for (uint32_t i = 0; i < out_frames * IR_AUDIO_CHANNELS; ++i)
+                    {
+                        int v = pcm[i] < 0 ? -(int)pcm[i] : (int)pcm[i];
+                        if (v > peak) peak = v;
+                    }
+                    for (;;)
+                    {
+                        long old = InterlockedCompareExchange(&e->audio_peak, 0, 0);
+                        if (peak <= old || InterlockedCompareExchange(&e->audio_peak, peak, old) == old) break;
+                    }
+                    InterlockedIncrement64(&e->audio_got);
+                    free(pcm);
+                }
+                else
+                {
+                    InterlockedIncrement(&e->audio_convert_failures);
+                    e->audio_init_hr = E_FAIL;
+                }
             }
             IrAudio_ReleaseData(&e->audio, &data);
             memset(&data, 0, sizeof(data));
@@ -3723,48 +5259,43 @@ static HRESULT IrStartCapture(IrEngine *e)
 static void IrFreeRings(IrEngine *e)
 {
     EnterCriticalSection(&e->ring_cs);
-    for (int i = 0; i < e->frame_count; ++i)
-    {
-        int idx = (e->frame_head + i) % e->frame_cap;
-        IrFrameRelease(e->frames[idx]);
-        e->frames[idx] = NULL;
-    }
+    for (int i = 0; i < e->packet_count; ++i)
+        IrPacketRelease(e->packets[(e->packet_head + i) % e->packet_cap]);
     for (int i = 0; i < e->audio_count; ++i)
-    {
-        int idx = (e->audio_head + i) % e->audio_cap;
-        IrAudioBlockRelease(e->audio_blocks[idx]);
-        e->audio_blocks[idx] = NULL;
-    }
-    e->frame_head = e->frame_count = 0;
+        IrAudioBlockRelease(e->audio_blocks[(e->audio_head + i) % e->audio_cap]);
+    for (int i = 0; i < e->mic_count; ++i)
+        IrAudioBlockRelease(e->mic_blocks[(e->mic_head + i) % e->mic_cap]);
+    e->packet_head = e->packet_count = 0;
+    e->packet_bytes = 0;
     e->audio_head = e->audio_count = 0;
+    e->mic_head = e->mic_count = 0;
     LeaveCriticalSection(&e->ring_cs);
-    free(e->frames);
+    free(e->packets);
     free(e->audio_blocks);
-    e->frames = NULL;
+    free(e->mic_blocks);
+    e->packets = NULL;
     e->audio_blocks = NULL;
-    e->frame_cap = e->audio_cap = 0;
+    e->mic_blocks = NULL;
+    e->packet_cap = e->audio_cap = e->mic_cap = 0;
 }
 
 static void IrAllocateRings(IrEngine *e)
 {
-    uint32_t w = e->config.VideoMaxWidth ? e->config.VideoMaxWidth : 1920;
-    uint32_t h = e->config.VideoMaxHeight ? e->config.VideoMaxHeight : 1080;
-    uint64_t frame_bytes = (uint64_t)w * h * 4;
-    int wanted = e->ring_seconds * max(e->fps, 1);
-    if (wanted < 8) wanted = 8;
-    if (wanted > 3600) wanted = 3600;
-    int memory_cap = (int)(512ull * 1024 * 1024 / max(frame_bytes, 1));
-    if (memory_cap < 8) memory_cap = 8;
-    e->frame_cap = min(wanted, memory_cap);
-    e->frames = (IrFrame **)calloc((size_t)e->frame_cap, sizeof(IrFrame *));
-    e->frame_head = e->frame_count = 0;
-
+    IrFreeRings(e);
     int audio_wanted = e->ring_seconds * 100;
     if (audio_wanted < 64) audio_wanted = 64;
-    if (audio_wanted > 16384) audio_wanted = 16384;
+    if (audio_wanted > 32768) audio_wanted = 32768;
     e->audio_cap = audio_wanted;
     e->audio_blocks = (IrAudioBlock **)calloc((size_t)e->audio_cap, sizeof(IrAudioBlock *));
     e->audio_head = e->audio_count = 0;
+    e->mic_cap = max(audio_wanted / 2, 32);
+    e->mic_blocks = (IrAudioBlock **)calloc((size_t)e->mic_cap, sizeof(IrAudioBlock *));
+    e->mic_head = e->mic_count = 0;
+    e->packet_cap = max(e->ring_seconds * max(e->fps, 1) + 16, 128);
+    if (e->packet_cap > 8192) e->packet_cap = 8192;
+    e->packets = (IrPacket **)calloc((size_t)e->packet_cap, sizeof(IrPacket *));
+    e->packet_head = e->packet_count = 0;
+    e->packet_bytes = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -3779,10 +5310,13 @@ static IrSaveJob *IrRetainJob(IrSaveJob *j)
 static void IrReleaseJob(IrSaveJob *j)
 {
     if (!j || InterlockedDecrement(&j->refs) != 0) return;
-    for (int i = 0; i < j->frame_count; ++i) IrFrameRelease(j->frames[i]);
-    for (int i = 0; i < j->audio_count; ++i) IrAudioBlockRelease(j->audio[i]);
-    free(j->frames);
-    free(j->audio);
+    for (int i = 0; i < j->packet_count; ++i) IrPacketRelease(j->packets[i]);
+    for (int i = 0; i < j->sys_count; ++i) IrAudioBlockRelease(j->sys[i]);
+    for (int i = 0; i < j->mic_count; ++i) IrAudioBlockRelease(j->mic[i]);
+    free(j->packets);
+    free(j->sys);
+    free(j->mic);
+    free(j->seq_header);
     free(j);
 }
 
@@ -3792,6 +5326,114 @@ static void IrFinishJob(IrSaveJob *j, int result, int progress)
     InterlockedExchange(&j->progress, progress);
     InterlockedExchange(&j->done, 1);
     InterlockedExchange(&g_ir_last_progress, progress);
+}
+
+// Exact 100 ns <-> 48 kHz conversions used by the replay timeline mapper.
+static int64_t IrCeilFrames(int64_t ticks)
+{
+    if (ticks >= 0)
+        return (ticks * (int64_t)IR_AUDIO_RATE + IR_SECOND_100NS - 1) / IR_SECOND_100NS;
+    return -(((-ticks) * (int64_t)IR_AUDIO_RATE) / IR_SECOND_100NS);
+}
+
+typedef struct
+{
+    int64_t begin, end, out_base;
+} IrTimeRange;
+
+// Mix the system stereo and microphone mono rings into one continuous 48 kHz
+// stereo buffer. Both sources are placed by timestamp; overlapping samples are
+// summed and scaled only when they would clip.
+static int16_t *IrMixRange(int64_t t0, int64_t t1,
+                           IrAudioBlock **sys, int sys_count,
+                           IrAudioBlock **mic, int mic_count,
+                           int *out_frames)
+{
+    *out_frames = 0;
+    int64_t n = (t1 - t0) * (int64_t)IR_AUDIO_RATE / IR_SECOND_100NS;
+    if (n <= 0) return NULL;
+    int32_t *acc = (int32_t *)calloc((size_t)n * IR_AUDIO_CHANNELS, sizeof(int32_t));
+    if (!acc) return NULL;
+    BOOL have_sys = FALSE, have_mic = FALSE;
+
+    for (int side = 0; side < 2; ++side)
+    {
+        IrAudioBlock **blocks = side ? mic : sys;
+        int count = side ? mic_count : sys_count;
+        for (int b = 0; b < count; ++b)
+        {
+            IrAudioBlock *block = blocks[b];
+            if (!block || !block->data || !block->frames) continue;
+            int64_t first = (block->pts100ns - t0) * (int64_t)IR_AUDIO_RATE / IR_SECOND_100NS;
+            const int16_t *pcm = (const int16_t *)block->data;
+            for (uint32_t i = 0; i < block->frames; ++i)
+            {
+                int64_t at = first + (int64_t)i;
+                if (at < 0 || at >= n) continue;
+                if (side)
+                {
+                    acc[(size_t)at * 2] += pcm[i];
+                    acc[(size_t)at * 2 + 1] += pcm[i];
+                    have_mic = TRUE;
+                }
+                else
+                {
+                    acc[(size_t)at * 2] += pcm[(size_t)i * 2];
+                    acc[(size_t)at * 2 + 1] += pcm[(size_t)i * 2 + 1];
+                    have_sys = TRUE;
+                }
+            }
+        }
+    }
+
+    int peak = 0;
+    for (int64_t i = 0; i < n * (int64_t)IR_AUDIO_CHANNELS; ++i)
+    {
+        int v = acc[i] < 0 ? -acc[i] : acc[i];
+        if (v > peak) peak = v;
+    }
+    int limit = (have_sys && have_mic) ? 30000 : 32767;
+    double gain = peak > limit ? (double)limit / (double)peak : 1.0;
+
+    int16_t *out = (int16_t *)malloc((size_t)n * IR_AUDIO_CHANNELS * sizeof(int16_t));
+    if (out)
+    {
+        for (int64_t i = 0; i < n * (int64_t)IR_AUDIO_CHANNELS; ++i)
+            out[i] = (int16_t)IrClamp16(gain < 1.0 ? (double)acc[i] * gain : (double)acc[i]);
+        *out_frames = (int)n;
+    }
+    free(acc);
+    return out;
+}
+
+// Maps an absolute packet timestamp into the output clip timeline.
+static int64_t IrMapVideoPts(int64_t pts, BOOL segmented,
+                             const int64_t *seg_starts, int nseg, int64_t end_time,
+                             BOOL exact_cap, int64_t trim_start, int64_t first_pts,
+                             int64_t out_end, int64_t frame_dur)
+{
+    if (segmented)
+    {
+        int si = 0;
+        for (int i = 0; i < nseg; ++i)
+        {
+            if (seg_starts[i] <= pts) si = i;
+            else break;
+        }
+        int64_t origin = seg_starts[si];
+        int64_t rel = max((int64_t)0, pts - origin);
+        int64_t next = si + 1 < nseg ? seg_starts[si + 1] : end_time;
+        int64_t limit = min(IR_SECOND_100NS, max((int64_t)1, next - origin));
+        if (limit > 0 && rel >= limit)
+            rel = limit > frame_dur ? limit - frame_dur : 0;
+        return clamp((int64_t)si * IR_SECOND_100NS + rel, (int64_t)0, out_end - 1);
+    }
+    if (exact_cap)
+    {
+        if (pts <= trim_start) return 0;
+        return clamp(pts - trim_start, (int64_t)0, out_end - 1);
+    }
+    return max((int64_t)0, pts - first_pts);
 }
 
 static IrSaveJob *IrEnqueueSave(IrEngine *e, const wchar_t *path, int seconds_back)
@@ -3806,75 +5448,76 @@ static IrSaveJob *IrEnqueueSave(IrEngine *e, const wchar_t *path, int seconds_ba
     j->progress = 0;
     j->config = e->config;
     j->fps = e->fps;
+    j->segmented = (e->pref & 0x200) != 0;
+    j->subtype = IrCodecSubtype((e->pref >> 15) & 3);
+    j->width = e->encoded_width >= 2 ? e->encoded_width
+                                     : (int)(e->config.VideoMaxWidth ? e->config.VideoMaxWidth : 1920);
+    j->height = e->encoded_height >= 2 ? e->encoded_height
+                                      : (int)(e->config.VideoMaxHeight ? e->config.VideoMaxHeight : 1080);
+    if (j->width < 2) j->width = 2;
+    if (j->height < 2) j->height = 2;
 
     EnterCriticalSection(&e->ring_cs);
-    int64_t newest = 0;
-    if (e->frame_count > 0)
+    if (e->packet_count > 0)
     {
-        int idx = (e->frame_head + e->frame_count - 1) % e->frame_cap;
-        newest = e->frames[idx] ? e->frames[idx]->pts100ns : 0;
+        int idx = (e->packet_head + e->packet_count - 1) % e->packet_cap;
+        IrPacket *newest = e->packets[idx];
+        if (newest) j->end_pts = newest->pts100ns + newest->duration;
     }
-    int64_t cutoff = newest - (int64_t)max(seconds_back, 0) * 10000000LL;
-    IrFrame **frames = (IrFrame **)malloc((size_t)max(e->frame_count, 1) * sizeof(IrFrame *));
-    IrAudioBlock **audio = (IrAudioBlock **)malloc((size_t)max(e->audio_count, 1) * sizeof(IrAudioBlock *));
-    if (frames && audio)
+    j->packet_count = e->packet_count;
+    if (e->packet_count > 0)
     {
-        int n = 0;
-        for (int i = e->frame_count - 1; i >= 0 && n < e->frame_count; --i)
+        j->packets = (IrPacket **)malloc((size_t)e->packet_count * sizeof(IrPacket *));
+        if (j->packets)
         {
-            int idx = (e->frame_head + i) % e->frame_cap;
-            IrFrame *f = e->frames[idx];
-            if (f && (seconds_back <= 0 || f->pts100ns >= cutoff))
+            for (int i = 0; i < e->packet_count; ++i)
             {
-                InterlockedIncrement(&f->refs);
-                frames[n++] = f;
+                IrPacket *p = e->packets[(e->packet_head + i) % e->packet_cap];
+                j->packets[i] = p;
+                if (p) InterlockedIncrement(&p->refs);
             }
         }
-        int m = 0;
-        for (int i = e->audio_count - 1; i >= 0 && m < e->audio_count; --i)
+        else j->packet_count = 0;
+    }
+
+    j->sys_count = e->audio_count;
+    if (e->audio_count > 0)
+    {
+        j->sys = (IrAudioBlock **)malloc((size_t)e->audio_count * sizeof(IrAudioBlock *));
+        if (j->sys)
         {
-            int idx = (e->audio_head + i) % e->audio_cap;
-            IrAudioBlock *b = e->audio_blocks[idx];
-            if (b && (seconds_back <= 0 || b->pts100ns >= cutoff))
+            for (int i = 0; i < e->audio_count; ++i)
             {
-                InterlockedIncrement(&b->refs);
-                audio[m++] = b;
+                IrAudioBlock *b = e->audio_blocks[(e->audio_head + i) % e->audio_cap];
+                j->sys[i] = b;
+                if (b) InterlockedIncrement(&b->refs);
             }
         }
-        // Reverse newest-first snapshots into chronological order.
-        for (int i = 0; i < n / 2; ++i)
-        {
-            IrFrame *tmp = frames[i];
-            frames[i] = frames[n - 1 - i];
-            frames[n - 1 - i] = tmp;
-        }
-        for (int i = 0; i < m / 2; ++i)
-        {
-            IrAudioBlock *tmp = audio[i];
-            audio[i] = audio[m - 1 - i];
-            audio[m - 1 - i] = tmp;
-        }
-        j->frames = frames;
-        j->frame_count = n;
-        j->audio = audio;
-        j->audio_count = m;
-        if (n > 0)
-        {
-            j->width = (int)(frames[0]->rect.right - frames[0]->rect.left);
-            j->height = (int)(frames[0]->rect.bottom - frames[0]->rect.top);
-        }
-        if (m > 0 && e->audio_running)
-        {
-            j->has_audio = TRUE;
-            j->fmt = e->audio_fmt;
-        }
+        else j->sys_count = 0;
     }
-    else
+
+    j->mic_count = e->mic_count;
+    if (e->mic_count > 0)
     {
-        free(frames);
-        free(audio);
+        j->mic = (IrAudioBlock **)malloc((size_t)e->mic_count * sizeof(IrAudioBlock *));
+        if (j->mic)
+        {
+            for (int i = 0; i < e->mic_count; ++i)
+            {
+                IrAudioBlock *b = e->mic_blocks[(e->mic_head + i) % e->mic_cap];
+                j->mic[i] = b;
+                if (b) InterlockedIncrement(&b->refs);
+            }
+        }
+        else j->mic_count = 0;
     }
     LeaveCriticalSection(&e->ring_cs);
+
+    if (j->packet_count <= 0)
+    {
+        IrReleaseJob(j);
+        return NULL;
+    }
 
     EnterCriticalSection(&e->job_cs);
     j->id = e->next_job_id++;
@@ -3886,65 +5529,316 @@ static IrSaveJob *IrEnqueueSave(IrEngine *e, const wchar_t *path, int seconds_ba
     return j;
 }
 
-static void IrWaitVideoSlot(IrEncoder *enc)
-{
-    for (int i = 0; i < 200; ++i)
-    {
-        if (atomic_load(&enc->VideoSampleAvailable) != 0)
-            return;
-        uint64_t zero = 0;
-        WaitOnAddress((volatile void *)&enc->VideoSampleAvailable, &zero, sizeof(zero), 50);
-    }
-}
-
 static int IrRunSave(IrEngine *e, IrSaveJob *j)
 {
-    if (j->frame_count <= 0 || j->width < 2 || j->height < 2)
-        return IR_NOT_ENOUGH_DATA;
-    IrEncoder enc;
-    memset(&enc, 0, sizeof(enc));
-    IrEncoder_Init(&enc);
-    IrEncoderConfig ec;
-    memset(&ec, 0, sizeof(ec));
-    ec.Width = (DWORD)j->width;
-    ec.Height = (DWORD)j->height;
-    ec.FramerateNum = (DWORD)max(j->fps, 1);
-    ec.FramerateDen = 1;
-    ec.AudioFormat = j->has_audio ? &j->fmt.Format : NULL;
-    ec.Config = &j->config;
-    if (!IrEncoder_Start(&enc, e->dev, j->path, &ec))
+    (void)e;
+    if (!j || j->packet_count <= 0) return IR_NOT_ENOUGH_DATA;
+
+    IrPacket **pkts = (IrPacket **)malloc((size_t)j->packet_count * sizeof(IrPacket *));
+    if (!pkts) { IrSetErrorFmt("Not enough memory to plan the replay."); return IR_LOW_MEMORY; }
+    int np = 0;
+    for (int i = 0; i < j->packet_count; ++i)
     {
-        IrFinishJob(j, IR_FAIL, 0);
-        return IR_FAIL;
+        IrPacket *p = j->packets[i];
+        if (p && p->data && p->bytes > p->codec_data) pkts[np++] = p;
+    }
+    if (!np) { free(pkts); return IR_NOT_ENOUGH_DATA; }
+
+    int fps = max(j->fps, 1);
+    int w = max(j->width, 2), h = max(j->height, 2);
+    int64_t frame_dur = IR_SECOND_100NS / fps;
+    int64_t requested = j->seconds_back > 0 ? (int64_t)j->seconds_back * IR_SECOND_100NS : 0;
+    int64_t end_time = j->end_pts;
+    int64_t trim_start = j->seconds_back > 0 ? end_time - requested : INT64_MIN;
+
+    int *keys = (int *)malloc((size_t)np * sizeof(int));
+    if (!keys) { free(pkts); IrSetErrorFmt("Not enough memory to plan the replay."); return IR_LOW_MEMORY; }
+    int nk = 0;
+    for (int i = 0; i < np; ++i)
+        if (pkts[i]->key) keys[nk++] = i;
+
+    int start = 0;
+    if (j->seconds_back > 0)
+    {
+        int before = -1;
+        for (int i = 0; i < np; ++i)
+        {
+            if (pkts[i]->pts100ns > trim_start) break;
+            if (pkts[i]->key) before = i;
+        }
+        start = before >= 0 ? before : (nk ? keys[0] : 0);
     }
 
-    int fi = 0, ai = 0;
-    int total = j->frame_count + j->audio_count;
-    int done = 0;
-    while (fi < j->frame_count || ai < j->audio_count)
+    int64_t *seg_starts = NULL;
+    int nseg = 0;
+    BOOL exact_cap = FALSE;
+    if (j->segmented)
     {
-        BOOL take_frame = fi < j->frame_count;
-        if (take_frame && ai < j->audio_count)
-            take_frame = j->frames[fi]->pts100ns <= j->audio[ai]->pts100ns;
-        if (take_frame)
+        seg_starts = (int64_t *)malloc((size_t)max(nk, 1) * sizeof(int64_t));
+        if (!seg_starts) { free(keys); free(pkts); IrSetErrorFmt("Not enough memory to plan the replay."); return IR_LOW_MEMORY; }
+        int seg_first = 0;
+        if (j->seconds_back > 0 && nk > 0)
         {
-            IrFrame *f = j->frames[fi++];
-            IrWaitVideoSlot(&enc);
-            IrEncoder_NewFrame(&enc, f->texture, f->rect, (UINT64)f->pts100ns, MF_UNITS_PER_SECOND);
-            InterlockedIncrement64(&e->frames_encoded);
+            int at_or_after = 0;
+            while (at_or_after < nk && pkts[keys[at_or_after]]->pts100ns <= trim_start)
+                ++at_or_after;
+            seg_first = at_or_after > 0 ? at_or_after - 1 : 0;
+            int needed = max(j->seconds_back, 1);
+            if (nk - seg_first >= needed)
+            {
+                exact_cap = TRUE;
+                start = keys[seg_first];
+                for (int i = 0; i < needed; ++i)
+                    seg_starts[nseg++] = pkts[keys[seg_first + i]]->pts100ns;
+            }
+            else
+            {
+                start = keys[seg_first];
+                for (int i = seg_first; i < nk; ++i)
+                    seg_starts[nseg++] = pkts[keys[i]]->pts100ns;
+            }
         }
         else
         {
-            IrAudioBlock *b = j->audio[ai++];
-            if (b->pts100ns >= j->frames[0]->pts100ns)
-                IrEncoder_NewSamples(&enc, b->data, b->frames, (UINT64)b->pts100ns, MF_UNITS_PER_SECOND);
+            for (int i = 0; i < nk; ++i)
+            {
+                if (keys[i] >= start)
+                {
+                    for (; i < nk; ++i) seg_starts[nseg++] = pkts[keys[i]]->pts100ns;
+                    break;
+                }
+            }
         }
-        if (++done % 16 == 0)
-            InterlockedExchange(&j->progress, min(99, done * 100 / max(total, 1)));
+        if (!nseg) seg_starts[nseg++] = pkts[start]->pts100ns;
     }
-    IrEncoder_Stop(&enc);
-    IrFinishJob(j, IR_OK, 100);
-    return IR_OK;
+
+    int64_t first_pts = pkts[start]->pts100ns;
+    int64_t last_end = max(end_time, pkts[np - 1]->pts100ns + pkts[np - 1]->duration);
+    if (last_end - first_pts < IR_SECOND_100NS / 2)
+    {
+        free(seg_starts); free(keys); free(pkts);
+        return IR_NOT_ENOUGH_DATA;
+    }
+    if (!j->segmented && j->seconds_back > 0 &&
+        end_time - first_pts >= requested - min(IR_SECOND_100NS, 2 * frame_dur))
+        exact_cap = TRUE;
+    int64_t out_end = (exact_cap && !j->segmented) ? requested
+                    : (j->segmented ? (int64_t)nseg * IR_SECOND_100NS
+                                    : max((int64_t)0, last_end - first_pts));
+    if (out_end <= 0)
+    {
+        free(seg_starts); free(keys); free(pkts);
+        return IR_NOT_ENOUGH_DATA;
+    }
+
+    BOOL av1 = IsEqualGUID(&j->subtype, &MFVideoFormat_AV1);
+    BOOL hevc = IsEqualGUID(&j->subtype, &MFVideoFormat_HEVC);
+    uint8_t *seq = NULL;
+    uint32_t seq_size = 0;
+    if (!av1)
+    {
+        for (int i = start; i < np; ++i)
+        {
+            if (!pkts[i]->key) continue;
+            if (pkts[i]->codec_data)
+            {
+                seq_size = pkts[i]->codec_data;
+                seq = (uint8_t *)malloc(seq_size);
+                if (seq) { memcpy(seq, pkts[i]->data, seq_size); break; }
+            }
+            else
+            {
+                // Parameter sets were emitted in-band; recover them from the
+                // Annex-B keyframe instead of rejecting the whole replay.
+                seq = IrCollectParamSets(pkts[i]->data, pkts[i]->bytes, hevc, &seq_size);
+                if (seq) break;
+            }
+        }
+        if (!seq)
+        {
+            IrSetErrorFmt("%s", hevc ? "The buffered HEVC video has no parameter sets."
+                                     : "The buffered H.264 video has no SPS/PPS.");
+            free(seg_starts); free(keys); free(pkts);
+            return IR_FAIL;
+        }
+    }
+
+    // One range per one-second segment; the ring can hold thousands of them.
+    // Allocate to the actual segment count instead of a fixed 64-entry cap.
+    int range_cap = max(nseg, 1);
+    IrTimeRange *ranges = (IrTimeRange *)malloc((size_t)range_cap * sizeof(IrTimeRange));
+    if (!ranges)
+    {
+        IrSetErrorFmt("Not enough memory to plan the replay.");
+        free(seg_starts); free(keys); free(pkts);
+        return IR_LOW_MEMORY;
+    }
+    int nranges = 0;
+    if (j->segmented)
+    {
+        for (int i = 0; i < nseg; ++i)
+        {
+            int64_t range_end = i + 1 < nseg ? seg_starts[i + 1] : end_time;
+            if (range_end > seg_starts[i])
+            {
+                ranges[nranges].begin = seg_starts[i];
+                ranges[nranges].end = range_end;
+                ranges[nranges].out_base = (int64_t)i * IR_SECOND_100NS;
+                ++nranges;
+            }
+        }
+    }
+    else if (exact_cap)
+    {
+        ranges[0].begin = trim_start;
+        ranges[0].end = end_time;
+        ranges[0].out_base = 0;
+        nranges = 1;
+    }
+    else
+    {
+        ranges[0].begin = first_pts;
+        ranges[0].end = last_end;
+        ranges[0].out_base = 0;
+        nranges = 1;
+    }
+
+    // Mix the replay audio before creating the writer so the MP4 only contains
+    // an audio stream when there is actually PCM available to encode.
+    int16_t *mixed = NULL;
+    int mixed_frames = 0;
+    int64_t mix_t0 = first_pts;
+    if (j->sys_count + j->mic_count > 0)
+    {
+        int64_t t0 = first_pts;
+        if (j->seconds_back > 0)
+            t0 = max(first_pts, end_time - (int64_t)j->seconds_back * IR_SECOND_100NS - 6 * IR_SECOND_100NS);
+        int64_t span = end_time > t0 ? end_time - t0 : 0;
+        int64_t nframes64 = (span * (int64_t)IR_AUDIO_RATE + IR_SECOND_100NS - 1) / IR_SECOND_100NS;
+        if (nframes64 > 0)
+        {
+            int64_t audio_end = t0 + nframes64 * IR_SECOND_100NS / IR_AUDIO_RATE;
+            mixed = IrMixRange(t0, audio_end, j->sys, j->sys_count, j->mic, j->mic_count, &mixed_frames);
+            mix_t0 = t0;
+        }
+    }
+
+    int16_t *audio_pcm = NULL;
+    uint32_t audio_frames_total = 0;
+    int64_t audio_duration = 0;
+    if (mixed && mixed_frames > 0)
+    {
+        int64_t total_frames = out_end * (int64_t)IR_AUDIO_RATE / IR_SECOND_100NS;
+        int64_t aligned = ((total_frames + IR_AAC_FRAME - 1) / IR_AAC_FRAME) * IR_AAC_FRAME;
+        if (aligned > 0)
+        {
+            audio_pcm = (int16_t *)calloc((size_t)aligned * IR_AUDIO_CHANNELS, sizeof(int16_t));
+            if (audio_pcm)
+            {
+                for (int r = 0; r < nranges; ++r)
+                {
+                    int64_t out_span = j->segmented
+                        ? max((int64_t)0, min(ranges[r].out_base + IR_SECOND_100NS, out_end) - ranges[r].out_base)
+                        : max((int64_t)0, out_end - ranges[r].out_base);
+                    int64_t out_frames = out_span * (int64_t)IR_AUDIO_RATE / IR_SECOND_100NS;
+                    int64_t out_base_frames = ranges[r].out_base * (int64_t)IR_AUDIO_RATE / IR_SECOND_100NS;
+                    if (out_frames <= 0) continue;
+                    int64_t from = clamp(IrCeilFrames(ranges[r].begin - mix_t0), (int64_t)0, (int64_t)mixed_frames);
+                    int64_t to = clamp(IrCeilFrames(ranges[r].end - mix_t0), (int64_t)0, (int64_t)mixed_frames);
+                    if (to <= from) continue;
+                    int64_t src_frames = to - from;
+                    for (int64_t at = from; at < to; ++at)
+                    {
+                        int64_t dst = ((at - from) * out_frames + src_frames / 2) / src_frames;
+                        if (dst < 0 || dst >= out_frames) continue;
+                        int64_t d = out_base_frames + dst;
+                        if (d < 0 || d >= aligned) continue;
+                        memcpy(audio_pcm + (size_t)d * IR_AUDIO_CHANNELS,
+                               mixed + (size_t)at * IR_AUDIO_CHANNELS,
+                               IR_AUDIO_CHANNELS * sizeof(int16_t));
+                    }
+                }
+                audio_frames_total = (uint32_t)aligned;
+                audio_duration = aligned * IR_SECOND_100NS / IR_AUDIO_RATE;
+            }
+        }
+    }
+
+    BOOL want_audio = (audio_pcm && audio_frames_total > 0);
+    IrMux mux;
+    if (!IrMux_Create(&mux, j->path, &j->config, want_audio, &j->subtype,
+                      seq, seq_size, w, h, fps))
+    {
+        IrSetErrorFmt("Could not create the MP4 writer for the replay.");
+        free(ranges); free(audio_pcm); free(mixed); free(seq); free(seg_starts); free(keys); free(pkts);
+        return IR_FAIL;
+    }
+    free(seq);
+
+    typedef struct
+    {
+        int64_t pts;
+        IrPacket *packet;
+        int64_t duration;
+    } IrVideoWrite;
+    IrVideoWrite *vw = (IrVideoWrite *)malloc((size_t)(np - start) * sizeof(IrVideoWrite));
+    if (!vw)
+    {
+        IrSetErrorFmt("Not enough memory to plan the replay.");
+        free(ranges); free(mixed); free(audio_pcm); free(seg_starts); free(keys); free(pkts);
+        IrMux_Finalize(&mux, j->path); // releases the writer before the file is removed
+        DeleteFileW(j->path);
+        return IR_LOW_MEMORY;
+    }
+    int nv = 0;
+    int64_t previous = -1;
+    for (int i = start; i < np; ++i)
+    {
+        int64_t pts = IrMapVideoPts(pkts[i]->pts100ns, j->segmented, seg_starts, nseg,
+                                    end_time, exact_cap, trim_start, first_pts, out_end, frame_dur);
+        if (pts <= previous) pts = previous + 1;
+        previous = pts;
+        vw[nv].pts = pts;
+        vw[nv].packet = pkts[i];
+        vw[nv].duration = frame_dur;
+        ++nv;
+    }
+    for (int i = 0; i < nv; ++i)
+    {
+        if (!exact_cap && !j->segmented) continue;
+        int64_t next = i + 1 < nv ? vw[i + 1].pts : out_end;
+        vw[i].duration = clamp(next - vw[i].pts, (int64_t)1, out_end - vw[i].pts);
+    }
+
+    int result = IR_OK;
+    if (audio_pcm && audio_frames_total)
+    {
+        if (!IrMux_WriteAudio(&mux, audio_pcm, audio_frames_total, audio_duration))
+            result = IR_FAIL;
+    }
+    for (int i = 0; i < nv && result == IR_OK; ++i)
+    {
+        if (!IrMux_WriteVideo(&mux, vw[i].packet, vw[i].pts, vw[i].duration))
+            result = IR_FAIL;
+    }
+    // Always finalize so the SinkWriter releases its file handle, even when a
+    // sample write failed; otherwise DeleteFileW below cannot remove the file.
+    if (!IrMux_Finalize(&mux, j->path) && result == IR_OK)
+        result = IR_FAIL;
+    if (result != IR_OK)
+    {
+        DeleteFileW(j->path);
+        IrSetErrorFmt("Writing the replay file failed.");
+    }
+
+    free(vw);
+    free(ranges);
+    free(mixed);
+    free(audio_pcm);
+    free(seg_starts);
+    free(keys);
+    free(pkts);
+    return result;
 }
 
 static DWORD WINAPI IrSaveThread(LPVOID arg)
@@ -3968,8 +5862,7 @@ static DWORD WINAPI IrSaveThread(LPVOID arg)
             LeaveCriticalSection(&e->job_cs);
             if (!j) break;
             int result = IrRunSave(e, j);
-            if (result != IR_OK)
-                IrFinishJob(j, result, 0);
+            IrFinishJob(j, result, result == IR_OK ? 100 : 0);
             IrReleaseJob(j);
         }
     }
@@ -3982,6 +5875,10 @@ static void IrStopEngine(IrEngine *e)
     if (!e) return;
     InterlockedExchange(&e->running, 0);
     IrStopCapture(e);
+
+    if (e->mic.running || e->mic.thread)
+        IrMic_Stop(&e->mic);
+
     if (e->audio_running)
     {
         if (e->audio_stop)
@@ -4001,14 +5898,17 @@ static void IrStopEngine(IrEngine *e)
         memset(&e->audio, 0, sizeof(e->audio));
         e->audio_running = FALSE;
     }
-    if (e->save_thread)
+
+    // Flush and release the live encoder but keep the encoded packets and the
+    // save thread alive: a compressed replay can be remuxed without D3D.
+    if (e->live.mft)
     {
-        SetEvent(e->save_stop);
-        WaitForSingleObject(e->save_thread, INFINITE);
-        CloseHandle(e->save_thread);
-        e->save_thread = NULL;
+        IrLive_FlushEncoder(&e->live, e);
+        IrLive_Release(&e->live);
     }
-    IrFreeRings(e);
+
+    // Do not free the rings here. They survive IR_Stop until the next IR_Start
+    // or IR_Destroy so a save can still be initiated after capture has stopped.
     if (e->ctx)
     {
         ID3D11DeviceContext_Release(e->ctx);
@@ -4033,11 +5933,14 @@ typedef struct
 static void IrGetMicDevices(IrDeviceList *list)
 {
     memset(list, 0, sizeof(*list));
-    CoInitializeEx(NULL, COINIT_MULTITHREADED);
+    HRESULT co = CoInitializeEx(NULL, COINIT_MULTITHREADED);
     IMMDeviceEnumerator *enumerator = NULL;
     if (FAILED(CoCreateInstance(&CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL,
                                 &IID_IMMDeviceEnumerator, (void **)&enumerator)))
+    {
+        if (SUCCEEDED(co)) CoUninitialize();
         return;
+    }
     IMMDeviceCollection *collection = NULL;
     if (SUCCEEDED(IMMDeviceEnumerator_EnumAudioEndpoints(enumerator, eCapture, DEVICE_STATE_ACTIVE, &collection)))
     {
@@ -4066,48 +5969,41 @@ static void IrGetMicDevices(IrDeviceList *list)
         IMMDeviceCollection_Release(collection);
     }
     IMMDeviceEnumerator_Release(enumerator);
+    if (SUCCEEDED(co)) CoUninitialize();
 }
 
 static uint32_t IrProbeEncoderSet(void)
 {
-    static const GUID ir_mft_name = { 0x314ffbae, 0x5b41, 0x4c95, { 0x9c, 0x19, 0x4e, 0x7d, 0x58, 0x6f, 0xac, 0xe3 } };
-    static const GUID ir_mft_name_utf8 = { 0x314ff923, 0x2c6d, 0x4cd2, { 0x8d, 0x32, 0x20, 0xe0, 0xa3, 0xe0, 0xd6, 0x8e } };
+    HRESULT co = CoInitializeEx(NULL, COINIT_MULTITHREADED);
     MFStartup(MF_VERSION, MFSTARTUP_LITE);
     uint32_t mask = 0;
     const GUID *codecs[] = { &MFVideoFormat_H264, &MFVideoFormat_HEVC, &MFVideoFormat_AV1 };
-    uint32_t h264_bits[] = { ENC_H264_MF_QSV, ENC_H264_MF_VP12, ENC_H264_MF_NVENC, ENC_H264_MF_AMF, ENC_H264_MF_SOFTWARE };
-    uint32_t hevc_bits[] = { ENC_HEVC_MF_QSV, ENC_HEVC_MF_VP12, ENC_HEVC_MF_NVENC, ENC_HEVC_MF_AMF, ENC_HEVC_MF_SOFTWARE };
-    uint32_t av1_bits[] = { ENC_AV1_MF_QSV, ENC_AV1_MF_VP12, ENC_AV1_MF_NVENC, ENC_AV1_MF_AMF, ENC_AV1_MF_SOFTWARE };
-    uint32_t *bitsets[] = { h264_bits, hevc_bits, av1_bits };
+    const uint32_t bits[3][5] = {
+        { ENC_H264_MF_QSV, ENC_H264_MF_VP12, ENC_H264_MF_NVENC, ENC_H264_MF_AMF, ENC_H264_MF_SOFTWARE },
+        { ENC_HEVC_MF_QSV, ENC_HEVC_MF_VP12, ENC_HEVC_MF_NVENC, ENC_HEVC_MF_AMF, ENC_HEVC_MF_SOFTWARE },
+        { ENC_AV1_MF_QSV, ENC_AV1_MF_VP12, ENC_AV1_MF_NVENC, ENC_AV1_MF_AMF, ENC_AV1_MF_SOFTWARE },
+    };
+    const UINT flags[2] = {
+        MFT_ENUM_FLAG_SORTANDFILTER | MFT_ENUM_FLAG_ASYNCMFT | MFT_ENUM_FLAG_HARDWARE,
+        MFT_ENUM_FLAG_SORTANDFILTER | MFT_ENUM_FLAG_SYNCMFT,
+    };
     for (int codec = 0; codec < 3; ++codec)
     {
-        MFT_REGISTER_TYPE_INFO in = { MFMediaType_Video, *codecs[codec] };
+        MFT_REGISTER_TYPE_INFO in = { MFMediaType_Video, MFVideoFormat_NV12 };
         MFT_REGISTER_TYPE_INFO out = { MFMediaType_Video, *codecs[codec] };
-        for (int hw = 0; hw < 2; ++hw)
+        for (int pass = 0; pass < 2; ++pass)
         {
-            UINT flags = hw ? (MFT_ENUM_FLAG_SORTANDFILTER | MFT_ENUM_FLAG_ASYNCMFT | MFT_ENUM_FLAG_HARDWARE)
-                            : (MFT_ENUM_FLAG_SORTANDFILTER | MFT_ENUM_FLAG_SYNCMFT);
             IMFActivate **activates = NULL;
             UINT32 count = 0;
-            if (FAILED(MFTEnum2(MFT_CATEGORY_VIDEO_ENCODER, flags, &in, &out, NULL, &activates, &count)))
+            if (FAILED(MFTEnum2(MFT_CATEGORY_VIDEO_ENCODER, flags[pass], &in, &out, NULL, &activates, &count)))
                 continue;
             for (UINT32 i = 0; i < count; ++i)
             {
-                WCHAR *name = NULL;
-                if (FAILED(IMFActivate_GetAllocatedString(activates[i], &ir_mft_name, &name, NULL)) || !name)
-                    IMFActivate_GetAllocatedString(activates[i], &ir_mft_name_utf8, &name, NULL);
-                int vendor = 4; // software
-                if (name)
-                {
-                    if (wcsstr(name, L"Intel") || wcsstr(name, L"QSV")) vendor = 0;
-                    else if (wcsstr(name, L"NVIDIA") || wcsstr(name, L"NVENC")) vendor = 2;
-                    else if (wcsstr(name, L"AMD") || wcsstr(name, L"AMF")) vendor = 3;
-                    else if (hw && (wcsstr(name, L"Gen12") || wcsstr(name, L"Arc"))) vendor = 1;
-                }
-                if (hw && vendor == 4) vendor = 0;
-                if (!hw) vendor = 4;
-                mask |= bitsets[codec][vendor];
-                if (name) CoTaskMemFree(name);
+                // IrActivateVendor returns 1..5 in QSV/VP12/NVENC/AMF/software
+                // order, which maps directly to the availability bit index.
+                int vendor = pass == 1 ? 5 : IrActivateVendor(activates[i]);
+                if (vendor < 1 || vendor > 5) vendor = pass == 0 ? 1 : 5;
+                mask |= bits[codec][vendor - 1];
             }
             if (activates)
             {
@@ -4116,6 +6012,7 @@ static uint32_t IrProbeEncoderSet(void)
             }
         }
     }
+    if (SUCCEEDED(co)) CoUninitialize();
     return mask & ENC_ALL;
 }
 
@@ -4179,6 +6076,13 @@ IR_EXPORT void __cdecl IR_Destroy(IntPtr engine)
     IrEngine *e = (IrEngine *)engine;
     if (!e) return;
     IrStopEngine(e);
+    if (e->save_thread)
+    {
+        SetEvent(e->save_stop);
+        WaitForSingleObject(e->save_thread, INFINITE);
+        CloseHandle(e->save_thread);
+        e->save_thread = NULL;
+    }
     EnterCriticalSection(&e->job_cs);
     IrSaveJob *j = e->job_head;
     e->job_head = NULL;
@@ -4189,6 +6093,7 @@ IR_EXPORT void __cdecl IR_Destroy(IntPtr engine)
         IrReleaseJob(j);
         j = next;
     }
+    IrFreeRings(e);
     if (e->save_wake) CloseHandle(e->save_wake);
     if (e->save_stop) CloseHandle(e->save_stop);
     DeleteCriticalSection(&e->job_cs);
@@ -4245,6 +6150,22 @@ IR_EXPORT int __cdecl IR_Start(IntPtr engine, int monitor_index, int ring_second
     e->start_qpc = now.QuadPart;
     e->start_pts = IrQpcTo100ns(now.QuadPart);
     e->last_frame_pts = 0;
+    e->pause_start = 0;
+    e->time_offset = 0;
+    e->next_idr_pts = 0;
+    e->last_encoder_width = 0;
+    e->last_encoder_height = 0;
+    e->encoded_width = 0;
+    e->encoded_height = 0;
+    InterlockedExchange(&e->force_idr, 1);
+    e->captured = e->paced = e->rejected = 0;
+    e->encoded = e->dropped = e->frames_encoded = 0;
+    e->audio_frames = e->audio_events = e->audio_got = 0;
+    e->heartbeat = e->last_pts = e->timing_frames = 0;
+    e->timing_map_ms = e->timing_encode_ms = e->timing_render_ms = 0;
+    e->timing_submit_ms = e->timing_snapshot_ms = e->timing_unmap_ms = 0;
+    e->audio_convert_failures = 0;
+    e->audio_peak = 0;
     if (start_qpc_100ns) *start_qpc_100ns = e->start_pts;
 
     HRESULT hr = IrCreateDevice(&e->dev, e->config.HardwarePreferIntegrated);
@@ -4269,11 +6190,14 @@ IR_EXPORT int __cdecl IR_Start(IntPtr engine, int monitor_index, int ring_second
     }
     ResetEvent(e->save_wake);
     ResetEvent(e->save_stop);
-    e->save_thread = CreateThread(NULL, 0, IrSaveThread, e, 0, NULL);
     if (!e->save_thread)
     {
-        IrReportHr(L"Cannot create save thread", HRESULT_FROM_WIN32(GetLastError()));
-        goto fail;
+        e->save_thread = CreateThread(NULL, 0, IrSaveThread, e, 0, NULL);
+        if (!e->save_thread)
+        {
+            IrReportHr(L"Cannot create save thread", HRESULT_FROM_WIN32(GetLastError()));
+            goto fail;
+        }
     }
 
     if (e->want_audio)
@@ -4301,7 +6225,32 @@ IR_EXPORT int __cdecl IR_Start(IntPtr engine, int monitor_index, int ring_second
             IrSetErrorWide(L"Cannot create audio pump thread");
             goto fail;
         }
+        IrPcm_Init(&e->audio_converter, e->audio.Format, IR_AUDIO_CHANNELS);
     }
+
+    // Long-lived encoder feeding the compressed replay ring. Its output type is
+    // fixed at creation time; IrLive_PrepareGpu rebuilds it if the first real
+    // frame maps to a different size.
+    {
+        uint32_t init_w = e->config.VideoMaxWidth ? e->config.VideoMaxWidth : 1920;
+        uint32_t init_h = e->config.VideoMaxHeight ? e->config.VideoMaxHeight : 1080;
+        char create_error[192];
+        create_error[0] = '\0';
+        if (!IrLive_Create(&e->live, e, e->dev, init_w, init_h, e->fps,
+                           e->bitrate_kbps, e->pref, create_error, sizeof(create_error)))
+        {
+            InterlockedExchange(&e->fail_stage, STAGE_START_ENCODER);
+            IrSetErrorFmt("%s", create_error);
+            goto fail;
+        }
+        int vendor = e->live.active_vendor;
+        if (vendor < 1 || vendor > 5) vendor = max(IrVendorOrdinal(e->pref), 1);
+        e->active_encoder = 29 + vendor;
+    }
+
+    // Microphone failure is fail-soft: capture and saves continue without it.
+    if (e->want_mic)
+        IrMic_Start(&e->mic, e, e->mic_device);
 
     hr = IrStartCapture(e);
     if (FAILED(hr))
@@ -4365,6 +6314,7 @@ IR_EXPORT int __cdecl IR_SetCaptureTarget(IntPtr engine, IntPtr window, uint32_t
     EnterCriticalSection(&e->cs);
     e->window = (HWND)window;
     IrApplyOptions(e, options);
+    InterlockedExchange(&e->force_idr, 1);
     HRESULT hr = S_OK;
     if (e->running && (options & CAP_LIVE_SWITCH)) hr = IrStartCapture(e);
     LeaveCriticalSection(&e->cs);
@@ -4382,6 +6332,7 @@ IR_EXPORT int __cdecl IR_SetCaptureSource(IntPtr engine, int method, int monitor
     e->monitor_index = max(monitor_index, 0);
     e->window = (HWND)window;
     IrApplyOptions(e, options);
+    InterlockedExchange(&e->force_idr, 1);
     HRESULT hr = S_OK;
     if (e->running) hr = IrStartCapture(e);
     LeaveCriticalSection(&e->cs);
@@ -4396,6 +6347,9 @@ IR_EXPORT int __cdecl IR_SetCanvasHint(IntPtr engine, int width, int height)
     EnterCriticalSection(&e->cs);
     if (width > 0) e->config.VideoMaxWidth = (DWORD)width;
     if (height > 0) e->config.VideoMaxHeight = (DWORD)height;
+    e->live.max_width = e->config.VideoMaxWidth;
+    e->live.max_height = e->config.VideoMaxHeight;
+    InterlockedExchange(&e->force_idr, 1);
     LeaveCriticalSection(&e->cs);
     return IR_OK;
 }
@@ -4404,7 +6358,39 @@ IR_EXPORT int __cdecl IR_SetPaused(IntPtr engine, int paused)
 {
     IrEngine *e = (IrEngine *)engine;
     if (!e) return IR_FAIL;
-    InterlockedExchange(&e->paused, paused ? 1 : 0);
+    EnterCriticalSection(&e->cs);
+    int was = (int)InterlockedCompareExchange(&e->paused, 0, 0);
+    if (paused && !was)
+    {
+        e->pause_start = IrNow100ns();
+        InterlockedExchange(&e->paused, 1);
+    }
+    else if (!paused && was)
+    {
+        int64_t now = IrNow100ns();
+        int64_t duration = max((int64_t)0, now - e->pause_start);
+        InterlockedExchange(&e->paused, 0);
+        if (!e->want_mic)
+        {
+            // Application audio and video never sample while paused, so drop
+            // the wall-clock gap from their shared timeline.
+            InterlockedExchangeAdd64(&e->time_offset, -duration);
+        }
+        else if (duration > 0 && e->packet_count > 0)
+        {
+            // Mic keeps sampling wall-clock time. Hold the last encoded image
+            // for the whole pause so a save freezes the picture while the mic
+            // continues to record into the gap.
+            EnterCriticalSection(&e->ring_cs);
+            int idx = (e->packet_head + e->packet_count - 1) % e->packet_cap;
+            IrPacket *last = e->packets[idx];
+            if (last) last->duration += duration;
+            LeaveCriticalSection(&e->ring_cs);
+        }
+        e->pause_start = 0;
+        InterlockedExchange(&e->force_idr, 1);
+    }
+    LeaveCriticalSection(&e->cs);
     return IR_OK;
 }
 
@@ -4555,7 +6541,7 @@ IR_EXPORT void __cdecl IR_GetStatus(IntPtr engine, int *is_buffering, int *ring_
     IrEngine *e = (IrEngine *)engine;
     if (is_buffering) *is_buffering = e && e->running ? 1 : 0;
     if (ring_seconds) *ring_seconds = e ? e->ring_seconds : 0;
-    if (frames_encoded) *frames_encoded = e ? InterlockedCompareExchange64(&e->frames_encoded, 0, 0) : 0;
+    if (frames_encoded) *frames_encoded = e ? InterlockedCompareExchange64(&e->encoded, 0, 0) : 0;
     if (frames_dropped) *frames_dropped = e ? InterlockedCompareExchange64(&e->dropped, 0, 0) : 0;
     if (has_error) *has_error = e && InterlockedCompareExchange(&e->fail_stage, 0, 0) != 0 ? 1 : 0;
     if (audio_frames) *audio_frames = e ? InterlockedCompareExchange64(&e->audio_frames, 0, 0) : 0;
@@ -4572,7 +6558,7 @@ IR_EXPORT void __cdecl IR_GetTelemetry(IntPtr engine, int64_t *captured, int64_t
     if (captured) *captured = e ? InterlockedCompareExchange64(&e->captured, 0, 0) : 0;
     if (paced) *paced = e ? InterlockedCompareExchange64(&e->paced, 0, 0) : 0;
     if (rejected) *rejected = e ? InterlockedCompareExchange64(&e->rejected, 0, 0) : 0;
-    if (encoded) *encoded = e ? InterlockedCompareExchange64(&e->frames_encoded, 0, 0) : 0;
+    if (encoded) *encoded = e ? InterlockedCompareExchange64(&e->encoded, 0, 0) : 0;
     if (dropped) *dropped = e ? InterlockedCompareExchange64(&e->dropped, 0, 0) : 0;
     if (encoder) *encoder = e ? e->active_encoder : 0;
     if (last_pts) *last_pts = e ? InterlockedCompareExchange64(&e->last_pts, 0, 0) : 0;
@@ -4582,14 +6568,16 @@ IR_EXPORT void __cdecl IR_GetTiming(IntPtr engine, double *map_ms, double *encod
                                     double *render_ms, double *submit_ms, double *snapshot_ms,
                                     double *unmap_ms, int64_t *frames)
 {
-    (void)engine;
-    if (map_ms) *map_ms = 0;
-    if (encode_ms) *encode_ms = 0;
-    if (render_ms) *render_ms = 0;
-    if (submit_ms) *submit_ms = 0;
-    if (snapshot_ms) *snapshot_ms = 0;
-    if (unmap_ms) *unmap_ms = 0;
-    if (frames) *frames = 0;
+    IrEngine *e = (IrEngine *)engine;
+    int64_t n = e ? InterlockedCompareExchange64(&e->timing_frames, 0, 0) : 0;
+    double div = n > 0 ? (double)n : 1.0;
+    if (map_ms) *map_ms = e ? e->timing_map_ms / div : 0;
+    if (encode_ms) *encode_ms = e ? e->timing_encode_ms / div : 0;
+    if (render_ms) *render_ms = e ? e->timing_render_ms / div : 0;
+    if (submit_ms) *submit_ms = e ? e->timing_submit_ms / div : 0;
+    if (snapshot_ms) *snapshot_ms = e ? e->timing_snapshot_ms / div : 0;
+    if (unmap_ms) *unmap_ms = e ? e->timing_unmap_ms / div : 0;
+    if (frames) *frames = n;
 }
 
 IR_EXPORT void __cdecl IR_AudioDiagnostics(IntPtr engine, int which, int64_t *activate_hr,
@@ -4598,17 +6586,31 @@ IR_EXPORT void __cdecl IR_AudioDiagnostics(IntPtr engine, int which, int64_t *ac
                                             int *convert_failures, int64_t *last_fail_hr)
 {
     IrEngine *e = (IrEngine *)engine;
-    (void)which;
-    if (activate_hr) *activate_hr = e ? e->audio_activate_hr : 0;
-    if (init_hr) *init_hr = e ? e->audio_init_hr : 0;
-    if (start_hr) *start_hr = e ? e->audio_start_hr : 0;
-    if (tag) *tag = e && e->audio.Format ? e->audio.Format->wFormatTag : 0;
-    if (rate) *rate = e && e->audio.Format ? (int)e->audio.Format->nSamplesPerSec : 0;
-    if (channels) *channels = e && e->audio.Format ? e->audio.Format->nChannels : 0;
-    if (bits) *bits = e && e->audio.Format ? e->audio.Format->wBitsPerSample : 0;
-    if (is_float) *is_float = e && e->audio.Format && e->audio.Format->wFormatTag == WAVE_FORMAT_EXTENSIBLE ? 1 : 0;
-    if (convert_failures) *convert_failures = e ? (int)e->audio_convert_failures : 0;
-    if (last_fail_hr) *last_fail_hr = 0;
+    WAVEFORMATEX *format = NULL;
+    if (e && which == 1)
+    {
+        IrMic *m = &e->mic;
+        if (activate_hr) *activate_hr = (int64_t)m->activate_hr;
+        if (init_hr) *init_hr = (int64_t)m->init_hr;
+        if (start_hr) *start_hr = (int64_t)m->start_hr;
+        format = m->format;
+        if (convert_failures) *convert_failures = (int)InterlockedCompareExchange(&m->convert_failures, 0, 0);
+        if (last_fail_hr) *last_fail_hr = (int64_t)m->fail_hr;
+    }
+    else
+    {
+        if (activate_hr) *activate_hr = e ? (int64_t)e->audio_activate_hr : 0;
+        if (init_hr) *init_hr = e ? (int64_t)e->audio_init_hr : 0;
+        if (start_hr) *start_hr = e ? (int64_t)e->audio_start_hr : 0;
+        format = e ? e->audio.Format : NULL;
+        if (convert_failures) *convert_failures = e ? (int)InterlockedCompareExchange(&e->audio_convert_failures, 0, 0) : 0;
+        if (last_fail_hr) *last_fail_hr = e ? (int64_t)e->audio_start_hr : 0;
+    }
+    if (tag) *tag = format ? format->wFormatTag : 0;
+    if (rate) *rate = format ? (int)format->nSamplesPerSec : 0;
+    if (channels) *channels = format ? format->nChannels : 0;
+    if (bits) *bits = format ? format->wBitsPerSample : 0;
+    if (is_float) *is_float = format && IrIsFloatFormat(format) ? 1 : 0;
 }
 
 IR_EXPORT int __cdecl IR_IsDxgiSupported(void)
@@ -4712,14 +6714,21 @@ IR_EXPORT void __cdecl IR_MicStatus(IntPtr engine, int64_t *mic_frames, int64_t 
                                     int64_t *mic_got_frames, int64_t *mic_fail_hr,
                                     int *sys_peak, int *mic_peak, wchar_t *active_name, int name_capacity)
 {
-    (void)engine;
-    if (mic_frames) *mic_frames = 0;
-    if (mic_events) *mic_events = 0;
-    if (mic_got_frames) *mic_got_frames = 0;
-    if (mic_fail_hr) *mic_fail_hr = 0;
-    if (sys_peak) *sys_peak = 0;
-    if (mic_peak) *mic_peak = 0;
-    if (active_name && name_capacity > 0) active_name[0] = L'\0';
+    IrEngine *e = (IrEngine *)engine;
+    IrMic *m = e ? &e->mic : NULL;
+    if (mic_frames) *mic_frames = m ? InterlockedCompareExchange64(&m->frames, 0, 0) : 0;
+    if (mic_events) *mic_events = m ? InterlockedCompareExchange64(&m->events, 0, 0) : 0;
+    if (mic_got_frames) *mic_got_frames = m ? InterlockedCompareExchange64(&m->got_frames, 0, 0) : 0;
+    // The managed UI still interprets the legacy -1/-2/-3 codes; the real
+    // HRESULT is exposed through IR_AudioDiagnostics(1).last_fail_hr.
+    if (mic_fail_hr) *mic_fail_hr = m ? m->legacy_fail : 0;
+    if (sys_peak) *sys_peak = e ? InterlockedCompareExchange(&e->audio_peak, 0, 0) : 0;
+    if (mic_peak) *mic_peak = m ? InterlockedCompareExchange(&m->peak, 0, 0) : 0;
+    if (active_name && name_capacity > 0)
+    {
+        active_name[0] = L'\0';
+        if (m && m->name[0]) wcsncpy_s(active_name, (size_t)name_capacity, m->name, _TRUNCATE);
+    }
 }
 
 IR_EXPORT const char *__cdecl IR_Version(void)
