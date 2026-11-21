@@ -93,6 +93,16 @@ DEFINE_GUID(KSDATAFORMAT_SUBTYPE_IEEE_FLOAT, 0x00000003, 0x0000, 0x0010, 0x80, 0
 #define IR_AUDIO_AAC       0
 #define IR_AUDIO_FLAC      1
 
+// IR_Start preference bits (managed RecorderEngine.ResolveEncoderPreference).
+#define IR_PREF_GPU_ENCODER   0x00000400u
+#define IR_PREF_PREFER_IGPU   0x00000800u
+
+// Capture option bits (managed RecorderEngine.CaptureOptions).
+#define IR_OPT_AUDIO_BITRATE_SHIFT 8
+#define IR_OPT_AUDIO_BITRATE_MASK  3u
+#define IR_OPT_AUDIO_CODEC_SHIFT   10
+#define IR_OPT_AUDIO_CODEC_MASK    3u
+
 #define IR_ENCODER_VIDEO_BUFFER_COUNT 8
 #define IR_ENCODER_AUDIO_BUFFER_COUNT 16
 
@@ -235,20 +245,26 @@ static int64_t IrNow100ns(void)
     return IrQpcTo100ns(now.QuadPart);
 }
 
-static HRESULT IrCreateDevice(ID3D11Device **out_device, BOOL prefer_integrated)
+static HRESULT IrCreateDevice(ID3D11Device **out_device, BOOL gpu_encoder, BOOL prefer_integrated)
 {
     *out_device = NULL;
     IDXGIAdapter *adapter = NULL;
-    if (prefer_integrated)
+    if (gpu_encoder)
     {
+        // wcap selects the preferred adapter only for GPU encoding. If DXGI cannot
+        // provide one, fall through with no explicit adapter and let D3D choose.
         IDXGIFactory *factory = NULL;
         if (SUCCEEDED(CreateDXGIFactory(&IID_IDXGIFactory, (void **)&factory)))
         {
             IDXGIFactory6 *factory6 = NULL;
             if (SUCCEEDED(IDXGIFactory_QueryInterface(factory, &IID_IDXGIFactory6, (void **)&factory6)))
             {
-                IDXGIFactory6_EnumAdapterByGpuPreference(factory6, 0, DXGI_GPU_PREFERENCE_MINIMUM_POWER,
-                                                         &IID_IDXGIAdapter, (void **)&adapter);
+                DXGI_GPU_PREFERENCE preference = prefer_integrated
+                    ? DXGI_GPU_PREFERENCE_MINIMUM_POWER
+                    : DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE;
+                if (FAILED(IDXGIFactory6_EnumAdapterByGpuPreference(factory6, 0, preference,
+                                                                   &IID_IDXGIAdapter, (void **)&adapter)))
+                    adapter = NULL;
                 IDXGIFactory6_Release(factory6);
             }
             IDXGIFactory_Release(factory);
@@ -2853,7 +2869,9 @@ static BOOL IrLive_Create(IrLiveEncoder *enc, IrEngine *engine, ID3D11Device *de
     MFT_REGISTER_TYPE_INFO input_type = { MFMediaType_Video, MFVideoFormat_NV12 };
     MFT_REGISTER_TYPE_INFO output_type = { MFMediaType_Video, enc->subtype };
     // VBR/CBR is set through ICodecAPI below; it does not affect enumeration.
-    BOOL hardware = codec_bits != 3 && IrWantedVendorOrdinal(pref) != 5;
+    // GPU mode is an explicit bit now: no compact availability bits are packed,
+    // so SORTANDFILTER picks the MFT matching the D3D11 adapter chosen above.
+    BOOL hardware = (pref & IR_PREF_GPU_ENCODER) != 0 && codec_bits != 3;
     UINT flags = hardware
                      ? (MFT_ENUM_FLAG_HARDWARE | MFT_ENUM_FLAG_ASYNCMFT | MFT_ENUM_FLAG_SORTANDFILTER)
                      : (MFT_ENUM_FLAG_SYNCMFT | MFT_ENUM_FLAG_SORTANDFILTER);
@@ -6182,6 +6200,15 @@ static int IrVendorFromPref(int pref)
     }
 }
 
+static void IrApplyAudioOptions(IrEngine *e, uint32_t options)
+{
+    static const DWORD bitrates[] = { 96, 128, 160, 192 };
+    uint32_t index = (options >> IR_OPT_AUDIO_BITRATE_SHIFT) & IR_OPT_AUDIO_BITRATE_MASK;
+    e->config.AudioBitrate = bitrates[index];
+    uint32_t codec = (options >> IR_OPT_AUDIO_CODEC_SHIFT) & IR_OPT_AUDIO_CODEC_MASK;
+    e->config.AudioCodec = codec == 1 ? IR_AUDIO_FLAC : IR_AUDIO_AAC;
+}
+
 // ---------------------------------------------------------------------------
 // Public ABI
 // ---------------------------------------------------------------------------
@@ -6285,7 +6312,9 @@ IR_EXPORT int __cdecl IR_Start(IntPtr engine, int monitor_index, int ring_second
     e->config.OnlyClientArea = (e->options & CAP_CLIENT_AREA) ? TRUE : FALSE;
     e->config.ShowRecordingBorder = (e->options & CAP_BORDER) ? TRUE : FALSE;
     e->config.KeepRoundedWindowCorners = (e->options & CAP_KEEP_CORNERS) ? TRUE : FALSE;
-    e->config.HardwareEncoder = (encoder_preference == 11) ? FALSE : TRUE;
+    e->config.HardwareEncoder = (encoder_preference & IR_PREF_GPU_ENCODER) ? TRUE : FALSE;
+    e->config.HardwarePreferIntegrated = (encoder_preference & IR_PREF_PREFER_IGPU) ? TRUE : FALSE;
+    IrApplyAudioOptions(e, e->options);
     e->pref = encoder_preference;
     e->active_encoder = IrVendorFromPref(encoder_preference);
     e->method = (capture_method == IR_CAPTURE_DXGI || capture_method == IR_CAPTURE_EXTERNAL)
@@ -6320,7 +6349,7 @@ IR_EXPORT int __cdecl IR_Start(IntPtr engine, int monitor_index, int ring_second
     e->audio_peak = 0;
     if (start_qpc_100ns) *start_qpc_100ns = e->start_pts;
 
-    HRESULT hr = IrCreateDevice(&e->dev, e->config.HardwarePreferIntegrated);
+    HRESULT hr = IrCreateDevice(&e->dev, e->config.HardwareEncoder, e->config.HardwarePreferIntegrated);
     if (FAILED(hr))
     {
         InterlockedExchange(&e->fail_stage, STAGE_CREATE_DEVICE);
@@ -6464,6 +6493,7 @@ static void IrApplyOptions(IrEngine *e, uint32_t options)
     e->config.KeepRoundedWindowCorners = (options & CAP_KEEP_CORNERS) != 0;
     e->config.IncludeSecondaryWindows = (options & CAP_SECONDARY) != 0;
     e->config.ApplicationLocalAudio = (options & CAP_LOCAL_AUDIO) != 0;
+    IrApplyAudioOptions(e, options);
 }
 
 IR_EXPORT int __cdecl IR_SetCaptureTarget(IntPtr engine, IntPtr window, uint32_t options)
@@ -6783,7 +6813,7 @@ IR_EXPORT int __cdecl IR_DxgiDuplicationSupported(void)
 {
     IrEnsureGlobal();
     ID3D11Device *dev = NULL;
-    HRESULT hr = IrCreateDevice(&dev, FALSE);
+    HRESULT hr = IrCreateDevice(&dev, FALSE, FALSE);
     if (FAILED(hr)) return 0;
     IDXGIDevice *dxgi = NULL;
     IDXGIAdapter *adapter = NULL;
