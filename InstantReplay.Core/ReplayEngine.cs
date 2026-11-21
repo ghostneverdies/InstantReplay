@@ -66,7 +66,7 @@ public sealed class ReplayEngine : IDisposable
     }
 
     public bool StartBuffering(int monitorIndex, int ringSeconds, int fps, int bitrateKbps,
-        bool captureAudio, EncoderPreference preference, CaptureMethod method = CaptureMethod.Dxgi,
+        bool captureAudio, int preference, CaptureMethod method = CaptureMethod.Dxgi,
         bool captureMic = false, string? micDevice = null, IntPtr targetWindow = default, uint captureOptions = 11,
         int outputWidthCap = 3840, int outputHeightCap = 2160, int encoderOptions = 0,
         int canvasWidth = 0, int canvasHeight = 0)
@@ -104,7 +104,7 @@ public sealed class ReplayEngine : IDisposable
             int rc = IrNative.IR_Start(_engine, mon, secs, rate, bps, capW, capH,
                 captureAudio ? 1 : 0, captureMic ? 1 : 0,
                 captureMic ? wantedMic : string.Empty,
-                (int)preference | encoderOptions, (int)method, out origin);
+                preference | encoderOptions, (int)method, out origin);
             if (rc != IrNative.OK)
             {
                 _hasError = true;
