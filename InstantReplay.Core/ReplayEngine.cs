@@ -233,7 +233,10 @@ public sealed class ReplayEngine : IDisposable
         if (_engine == IntPtr.Zero || jobId == 0) return false;
         try
         {
-            bool alive = IrNative.IR_PollSave(_engine, jobId, out progress, out result) != 0;
+            // IR_PollSave returns IR_OK (0) when the job exists, even while it is
+            // still pending. A non-zero code means the job is gone or the call failed.
+            int pollRc = IrNative.IR_PollSave(_engine, jobId, out progress, out result);
+            bool alive = pollRc == IrNative.OK;
             if (!alive)
             {
                 progress = -1;
