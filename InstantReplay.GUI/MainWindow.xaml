@@ -954,6 +954,23 @@
                                                   HorizontalAlignment="Stretch"
                                                   SelectionChanged="CaptureMonitorCombo_SelectionChanged"/>
                                     </controls:SettingRow>
+                                    <controls:SettingRow x:Name="CaptureMethodRow"
+                                                         Label="Capture method"
+                                                         ToolTipService.ToolTip="Windows Graphics Capture targets windows and supports per-window options. DXGI duplication captures the whole display."
+                                                         Margin="0,0,0,6">
+                                        <ComboBox x:Name="CaptureMethodCombo"
+                                                  HorizontalAlignment="Stretch"
+                                                  SelectionChanged="CaptureMethodCombo_SelectionChanged">
+                                            <ComboBoxItem Content="DXGI duplication"/>
+                                            <ComboBoxItem Content="Windows Graphics Capture"/>
+                                        </ComboBox>
+                                    </controls:SettingRow>
+                                    <TextBlock x:Name="CaptureOptionsNote"
+                                               Text="Show mouse cursor and Only client area affect Windows Graphics Capture only. DXGI duplication always captures the whole display."
+                                               TextWrapping="Wrap"
+                                               FontSize="12"
+                                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                               Margin="0,0,0,10"/>
                                     <controls:SettingRow Label="Show mouse cursor"
                                                          Margin="0,0,0,6">
                                         <CheckBox x:Name="CaptureCursorCheck"
@@ -972,20 +989,6 @@
                                                          Margin="0,0,0,6">
                                         <CheckBox x:Name="CaptureBorderCheck"
                                                   IsEnabled="False"
-                                                  Checked="WindowCaptureOption_Changed"
-                                                  Unchecked="WindowCaptureOption_Changed"/>
-                                    </controls:SettingRow>
-                                    <controls:SettingRow Label="Keep rounded corners"
-                                                        Margin="0,0,0,6">
-                                        <CheckBox x:Name="CaptureRoundedCornersCheck"
-                                                  AutomationProperties.Name="Keep rounded window corners"
-                                                  Checked="WindowCaptureOption_Changed"
-                                                  Unchecked="WindowCaptureOption_Changed"/>
-                                    </controls:SettingRow>
-                                    <controls:SettingRow Label="Include secondary windows"
-                                                        Margin="0,0,0,6">
-                                        <CheckBox x:Name="CaptureSecondaryWindowsCheck"
-                                                  AutomationProperties.Name="Include secondary windows"
                                                   Checked="WindowCaptureOption_Changed"
                                                   Unchecked="WindowCaptureOption_Changed"/>
                                     </controls:SettingRow>
@@ -1051,24 +1054,42 @@
                                             <ComboBoxItem Content="AV1"/>
                                         </ComboBox>
                                     </controls:SettingRow>
+                                    <controls:SettingRow Label="Buffer"
+                                                         ToolTipService.ToolTip="Continuous keeps one rolling replay. Segmented saves one clip per second and is better for games that change scenes often."
+                                                         Margin="0,0,0,8">
+                                        <ComboBox x:Name="BufferMethodCombo"
+                                                  HorizontalAlignment="Stretch"
+                                                  SelectionChanged="BufferMethodCombo_SelectionChanged">
+                                            <ComboBoxItem Content="Continuous"/>
+                                            <ComboBoxItem Content="Segmented"/>
+                                        </ComboBox>
+                                    </controls:SettingRow>
                                     <controls:SettingRow Label="GPU"
-                                                        ToolTipService.ToolTip="Use hardware MFTs for encoding. Turn off to use the software encoder."
-                                                        Margin="0,0,0,8">
-                                        <StackPanel Orientation="Horizontal"
-                                                    Spacing="8"
-                                                    HorizontalAlignment="Stretch">
+                                                         ToolTipService.ToolTip="Use hardware MFTs for encoding. Turn off to use the software encoder."
+                                                         Margin="0,0,0,8">
+                                        <Grid HorizontalAlignment="Stretch">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto"/>
+                                                <ColumnDefinition Width="8"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
                                             <CheckBox x:Name="GpuEncoderCheck"
+                                                      Grid.Column="0"
                                                       AutomationProperties.Name="GPU encoder"
+                                                      MinWidth="0"
                                                       VerticalAlignment="Center"
                                                       Checked="GpuEncoder_Changed"
                                                       Unchecked="GpuEncoder_Changed"/>
                                             <ComboBox x:Name="GpuPreferenceCombo"
-                                                      HorizontalAlignment="Stretch"
+                                                      Grid.Column="2"
+                                                      Width="140"
+                                                      MaxWidth="140"
+                                                      HorizontalAlignment="Left"
                                                       SelectionChanged="GpuPreferenceCombo_SelectionChanged">
                                                 <ComboBoxItem Content="Prefer iGPU"/>
                                                 <ComboBoxItem Content="Prefer dGPU"/>
                                             </ComboBox>
-                                        </StackPanel>
+                                        </Grid>
                                     </controls:SettingRow>
                                     <controls:SettingRow Label="Bitrate (calculated)"
                                             ToolTipService.ToolTip="Calculated from quality preset, frame rate and capture resolution. Used as the target for both CBR and VBR."
@@ -1242,6 +1263,14 @@
                                                       OnContent=""
                                                       OffContent=""
                                                       Toggled="StartupToggle_Changed"/>
+                                    </controls:SettingRow>
+                                    <controls:SettingRow Label="Debug logging"
+                                                         ToolTipService.ToolTip="Writes detailed capture diagnostics to a debug log in the temporary folder."
+                                                         Margin="0,0,0,8">
+                                        <ToggleSwitch x:Name="DebugLoggingToggle"
+                                                      OnContent=""
+                                                      OffContent=""
+                                                      Toggled="DebugLoggingToggle_Changed"/>
                                     </controls:SettingRow>
                                 </StackPanel>
                             </Border>
