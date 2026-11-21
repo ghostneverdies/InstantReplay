@@ -245,39 +245,48 @@ static int64_t IrNow100ns(void)
     return IrQpcTo100ns(now.QuadPart);
 }
 
-static HRESULT IrCreateDevice(ID3D11Device **out_device, BOOL gpu_encoder, BOOL prefer_integrated)
+// The capture device must live on the adapter that owns the monitored output,
+// otherwise DXGI duplication fails on hybrid systems. GPU preference is applied
+// separately to MFT enumeration (see IrPreferredAdapterLuid).
+static HRESULT IrCreateDevice(ID3D11Device **out_device)
 {
     *out_device = NULL;
-    IDXGIAdapter *adapter = NULL;
-    if (gpu_encoder)
-    {
-        // wcap selects the preferred adapter only for GPU encoding. If DXGI cannot
-        // provide one, fall through with no explicit adapter and let D3D choose.
-        IDXGIFactory *factory = NULL;
-        if (SUCCEEDED(CreateDXGIFactory(&IID_IDXGIFactory, (void **)&factory)))
-        {
-            IDXGIFactory6 *factory6 = NULL;
-            if (SUCCEEDED(IDXGIFactory_QueryInterface(factory, &IID_IDXGIFactory6, (void **)&factory6)))
-            {
-                DXGI_GPU_PREFERENCE preference = prefer_integrated
-                    ? DXGI_GPU_PREFERENCE_MINIMUM_POWER
-                    : DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE;
-                if (FAILED(IDXGIFactory6_EnumAdapterByGpuPreference(factory6, 0, preference,
-                                                                   &IID_IDXGIAdapter, (void **)&adapter)))
-                    adapter = NULL;
-                IDXGIFactory6_Release(factory6);
-            }
-            IDXGIFactory_Release(factory);
-        }
-    }
-
-    D3D_DRIVER_TYPE driver = adapter ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE;
     D3D_FEATURE_LEVEL level = D3D_FEATURE_LEVEL_11_0;
-    HRESULT hr = D3D11CreateDevice(adapter, driver, NULL, 0, &level, 1, D3D11_SDK_VERSION,
-                                   out_device, NULL, NULL);
-    if (adapter)
-        IDXGIAdapter_Release(adapter);
-    return hr;
+    return D3D11CreateDevice(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, 0, &level, 1, D3D11_SDK_VERSION,
+                             out_device, NULL, NULL);
+}
+
+// wcap-style adapter selection. Used only to choose which hardware MFT to
+// enumerate; it never affects the capture D3D11 device.
+static BOOL IrPreferredAdapterLuid(BOOL prefer_integrated, LUID *out_luid)
+{
+    BOOL ok = FALSE;
+    IDXGIFactory *factory = NULL;
+    if (SUCCEEDED(CreateDXGIFactory(&IID_IDXGIFactory, (void **)&factory)))
+    {
+        IDXGIFactory6 *factory6 = NULL;
+        if (SUCCEEDED(IDXGIFactory_QueryInterface(factory, &IID_IDXGIFactory6, (void **)&factory6)))
+        {
+            DXGI_GPU_PREFERENCE preference = prefer_integrated
+                ? DXGI_GPU_PREFERENCE_MINIMUM_POWER
+                : DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE;
+            IDXGIAdapter *adapter = NULL;
+            if (SUCCEEDED(IDXGIFactory6_EnumAdapterByGpuPreference(factory6, 0, preference,
+                                                                   &IID_IDXGIAdapter, (void **)&adapter)))
+            {
+                DXGI_ADAPTER_DESC desc;
+                if (SUCCEEDED(IDXGIAdapter_GetDesc(adapter, &desc)))
+                {
+                    *out_luid = desc.AdapterLuid;
+                    ok = TRUE;
+                }
+                IDXGIAdapter_Release(adapter);
+            }
+            IDXGIFactory6_Release(factory6);
+        }
+        IDXGIFactory_Release(factory);
+    }
+    return ok;
 }
 
 //
@@ -2876,26 +2885,34 @@ static BOOL IrLive_Create(IrLiveEncoder *enc, IrEngine *engine, ID3D11Device *de
                      ? (MFT_ENUM_FLAG_HARDWARE | MFT_ENUM_FLAG_ASYNCMFT | MFT_ENUM_FLAG_SORTANDFILTER)
                      : (MFT_ENUM_FLAG_SYNCMFT | MFT_ENUM_FLAG_SORTANDFILTER);
 
-    // Restrict hardware MFTs to the adapter owning our D3D11 device. Without
-    // this, hybrid systems can pick a transformer attached to another GPU.
+    // wcap-style hardware MFT selection: prefer the adapter chosen by the GPU
+    // preference. If that lookup fails, fall back to the capture device's adapter
+    // so we still pick a matching transformer when possible.
     IMFAttributes *enum_attrs = NULL;
-    if (hardware && device)
+    if (hardware)
     {
-        IDXGIDevice *dxgi = NULL;
-        IDXGIAdapter *adapter = NULL;
-        if (SUCCEEDED(ID3D11Device_QueryInterface(device, &IID_IDXGIDevice, (void **)&dxgi)) &&
-            SUCCEEDED(IDXGIDevice_GetAdapter(dxgi, &adapter)))
+        LUID luid;
+        BOOL have_luid = IrPreferredAdapterLuid((pref & IR_PREF_PREFER_IGPU) != 0, &luid);
+        if (!have_luid && device)
         {
-            DXGI_ADAPTER_DESC desc;
-            if (SUCCEEDED(IDXGIAdapter_GetDesc(adapter, &desc)) &&
-                SUCCEEDED(MFCreateAttributes(&enum_attrs, 1)))
+            IDXGIDevice *dxgi = NULL;
+            IDXGIAdapter *adapter = NULL;
+            if (SUCCEEDED(ID3D11Device_QueryInterface(device, &IID_IDXGIDevice, (void **)&dxgi)) &&
+                SUCCEEDED(IDXGIDevice_GetAdapter(dxgi, &adapter)))
             {
-                IMFAttributes_SetBlob(enum_attrs, &MFT_ENUM_ADAPTER_LUID,
-                                      (UINT8 *)&desc.AdapterLuid, sizeof(desc.AdapterLuid));
+                DXGI_ADAPTER_DESC desc;
+                if (SUCCEEDED(IDXGIAdapter_GetDesc(adapter, &desc)))
+                {
+                    luid = desc.AdapterLuid;
+                    have_luid = TRUE;
+                }
             }
+            if (adapter) IDXGIAdapter_Release(adapter);
+            if (dxgi) IDXGIDevice_Release(dxgi);
         }
-        if (adapter) IDXGIAdapter_Release(adapter);
-        if (dxgi) IDXGIDevice_Release(dxgi);
+        if (have_luid && SUCCEEDED(MFCreateAttributes(&enum_attrs, 1)))
+            IMFAttributes_SetBlob(enum_attrs, &MFT_ENUM_ADAPTER_LUID,
+                                  (UINT8 *)&luid, sizeof(luid));
     }
 
     IMFActivate **list = NULL;
@@ -3017,6 +3034,17 @@ static BOOL IrLive_Create(IrLiveEncoder *enc, IrEngine *engine, ID3D11Device *de
         IMFMediaType_SetUINT32(out_type, &MF_MT_MPEG2_PROFILE,
                                enc->hevc ? (UINT32)eAVEncH265VProfile_Main_420_8 : (UINT32)eAVEncH264VProfile_High);
     hr = IMFTransform_SetOutputType(enc->mft, 0, out_type, 0);
+    if (FAILED(hr) && hr == MF_E_UNSUPPORTED_D3D_TYPE && enc->manager)
+    {
+        // Some hardware MFTs reject the supplied D3D device. We always feed
+        // system-memory NV12, so dropping the device manager is safe and lets
+        // the encoder fall back to its CPU input path.
+        IMFTransform_ProcessMessage(enc->mft, MFT_MESSAGE_SET_D3D_MANAGER, 0);
+        IMFDXGIDeviceManager_Release(enc->manager);
+        enc->manager = NULL;
+        enc->manager_token = 0;
+        hr = IMFTransform_SetOutputType(enc->mft, 0, out_type, 0);
+    }
     IMFMediaType_Release(out_type);
     if (FAILED(hr))
     {
@@ -6349,7 +6377,7 @@ IR_EXPORT int __cdecl IR_Start(IntPtr engine, int monitor_index, int ring_second
     e->audio_peak = 0;
     if (start_qpc_100ns) *start_qpc_100ns = e->start_pts;
 
-    HRESULT hr = IrCreateDevice(&e->dev, e->config.HardwareEncoder, e->config.HardwarePreferIntegrated);
+    HRESULT hr = IrCreateDevice(&e->dev);
     if (FAILED(hr))
     {
         InterlockedExchange(&e->fail_stage, STAGE_CREATE_DEVICE);
@@ -6420,9 +6448,29 @@ IR_EXPORT int __cdecl IR_Start(IntPtr engine, int monitor_index, int ring_second
         if (!IrLive_Create(&e->live, e, e->dev, init_w, init_h, e->fps,
                            e->bitrate_kbps, e->pref, create_error, sizeof(create_error)))
         {
-            InterlockedExchange(&e->fail_stage, STAGE_START_ENCODER);
-            IrSetErrorFmt("%s", create_error);
-            goto fail;
+            // wcap-style fallback: when the preferred hardware encoder cannot be
+            // configured, retry with the software MFT instead of failing startup.
+            BOOL fell_back = FALSE;
+            if (e->pref & IR_PREF_GPU_ENCODER)
+            {
+                int sw_pref = (e->pref & ~IR_PREF_GPU_ENCODER & ~IR_PREF_PREFER_IGPU) | 11;
+                char sw_error[192];
+                sw_error[0] = '\0';
+                if (IrLive_Create(&e->live, e, e->dev, init_w, init_h, e->fps,
+                                  e->bitrate_kbps, sw_pref, sw_error, sizeof(sw_error)))
+                {
+                    e->pref = sw_pref;
+                    e->config.HardwareEncoder = FALSE;
+                    e->config.HardwarePreferIntegrated = FALSE;
+                    fell_back = TRUE;
+                }
+            }
+            if (!fell_back)
+            {
+                InterlockedExchange(&e->fail_stage, STAGE_START_ENCODER);
+                IrSetErrorFmt("%s", create_error);
+                goto fail;
+            }
         }
         int vendor = e->live.active_vendor;
         if (vendor < 1 || vendor > 5) vendor = max(IrVendorOrdinal(e->pref), 1);
@@ -6813,7 +6861,7 @@ IR_EXPORT int __cdecl IR_DxgiDuplicationSupported(void)
 {
     IrEnsureGlobal();
     ID3D11Device *dev = NULL;
-    HRESULT hr = IrCreateDevice(&dev, FALSE, FALSE);
+    HRESULT hr = IrCreateDevice(&dev);
     if (FAILED(hr)) return 0;
     IDXGIDevice *dxgi = NULL;
     IDXGIAdapter *adapter = NULL;
