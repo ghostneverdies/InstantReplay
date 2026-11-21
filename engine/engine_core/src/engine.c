@@ -105,6 +105,19 @@ DEFINE_GUID(KSDATAFORMAT_SUBTYPE_IEEE_FLOAT, 0x00000003, 0x0000, 0x0010, 0x80, 0
 
 #define IR_ENCODER_VIDEO_BUFFER_COUNT 8
 #define IR_ENCODER_AUDIO_BUFFER_COUNT 16
+#define IR_THREAD_STOP_TIMEOUT_MS 2000
+
+// All capture threads are signalled before this wait. A bounded wait keeps
+// IR_Stop / IR_Destroy from hanging the UI; the fallback only runs for a thread
+// that ignored its stop event.
+static BOOL IrWaitThreadExit(HANDLE thread)
+{
+    if (!thread) return TRUE;
+    if (WaitForSingleObject(thread, IR_THREAD_STOP_TIMEOUT_MS) == WAIT_OBJECT_0)
+        return TRUE;
+    TerminateThread(thread, 0);
+    return FALSE;
+}
 
 #ifndef clamp
 #define clamp(v, lo, hi) ((v) < (lo) ? (lo) : ((v) > (hi) ? (hi) : (v)))
@@ -981,7 +994,7 @@ static bool IrAudio_CanCaptureApplicationLocal(void);
 
 // make sure CoInitializeEx has been called before calling Start()
 static bool IrAudio_Start(IrAudio* Capture, HWND ApplicationWindow);
-static void IrAudio_Stop(IrAudio* Capture);
+static BOOL IrAudio_Stop(IrAudio* Capture);
 static void IrAudio_Flush(IrAudio* Capture);
 
 // expectedTimestamp is used only first time GetData() is called to detect abnormal device timestamps
@@ -1330,14 +1343,14 @@ bool IrAudio_Start(IrAudio* Capture, HWND ApplicationWindow)
 	return Result;
 }
 
-void IrAudio_Stop(IrAudio* Capture)
+static BOOL IrAudio_Stop(IrAudio* Capture)
 {
 	Capture->Stop = true;
-	SetEvent(Capture->Event);
-	WaitForSingleObject(Capture->Thread, INFINITE);
+	if (Capture->Event) SetEvent(Capture->Event);
+	BOOL exited = IrWaitThreadExit(Capture->Thread);
 
-	CloseHandle(Capture->Thread);
-	CloseHandle(Capture->Event);
+	if (Capture->Thread) CloseHandle(Capture->Thread);
+	if (Capture->Event) CloseHandle(Capture->Event);
 
 	UnmapViewOfFileEx(Capture->Buffer, 0);
 	UnmapViewOfFileEx(Capture->Buffer + Capture->BufferSize, 0);
@@ -1350,6 +1363,7 @@ void IrAudio_Stop(IrAudio* Capture)
 	}
 	IAudioCaptureClient_Release(Capture->CaptureClient);
 	IAudioClient_Release(Capture->RecordClient);
+	return exited;
 }
 
 void IrAudio_Flush(IrAudio* Capture)
@@ -1980,7 +1994,7 @@ static int16_t *IrPcm_Convert(IrPcmConverter *c, const uint8_t *data, uint32_t f
 // ---------------------------------------------------------------------------
 typedef struct IrMic IrMic;
 static DWORD WINAPI IrMicThread(LPVOID arg);
-static void IrMic_Stop(IrMic *m);
+static BOOL IrMic_Stop(IrMic *m);
 
 struct IrMic
 {
@@ -2134,14 +2148,15 @@ static BOOL IrMic_Start(IrMic *m, IrEngine *e, const wchar_t *device_name)
     return TRUE;
 }
 
-static void IrMic_Stop(IrMic *m)
+static BOOL IrMic_Stop(IrMic *m)
 {
-    if (!m) return;
+    if (!m) return TRUE;
     m->running = FALSE;
     if (m->stop) SetEvent(m->stop);
+    BOOL exited = TRUE;
     if (m->thread)
     {
-        WaitForSingleObject(m->thread, INFINITE);
+        exited = IrWaitThreadExit(m->thread);
         CloseHandle(m->thread);
         m->thread = NULL;
     }
@@ -2153,6 +2168,7 @@ static void IrMic_Stop(IrMic *m)
     if (m->device) { IMMDevice_Release(m->device); m->device = NULL; }
     if (m->enumerator) { IMMDeviceEnumerator_Release(m->enumerator); m->enumerator = NULL; }
     if (m->format) { CoTaskMemFree(m->format); m->format = NULL; }
+    return exited;
 }
 
 static DWORD WINAPI IrMicThread(LPVOID arg)
@@ -2333,6 +2349,8 @@ struct IrEngine
     int last_encoder_height;
     int encoded_width;
     int encoded_height;
+    int peak_width;
+    int peak_height;
 
     IrWgc wgc;
     IrDxgi dxgi;
@@ -2731,10 +2749,16 @@ static BOOL IrLive_ProcessOutput(IrLiveEncoder *enc, IrEngine *engine, BOOL *nee
 
 static BOOL IrLive_Pump(IrLiveEncoder *enc, IrEngine *engine, BOOL wait_need, char *error, size_t error_size)
 {
+    int guard = 0;
     if (!enc->async)
     {
         for (;;)
         {
+            if (++guard > 128)
+            {
+                _snprintf_s(error, error_size, _TRUNCATE, "Encoder output pump did not settle");
+                return FALSE;
+            }
             BOOL need = FALSE;
             if (!IrLive_ProcessOutput(enc, engine, &need, error, error_size)) return FALSE;
             if (need) return TRUE;
@@ -2743,6 +2767,11 @@ static BOOL IrLive_Pump(IrLiveEncoder *enc, IrEngine *engine, BOOL wait_need, ch
     uint64_t deadline = GetTickCount64() + 200;
     for (;;)
     {
+        if (++guard > 512)
+        {
+            _snprintf_s(error, error_size, _TRUNCATE, "Encoder event pump did not settle");
+            return FALSE;
+        }
         if (wait_need && enc->pending_need > 0) return TRUE;
         if (wait_need && GetTickCount64() >= deadline)
         {
@@ -3158,11 +3187,21 @@ static BOOL IrLive_PrepareGpu(IrLiveEncoder *enc, IrEngine *engine, ID3D11Device
     enc->output_height = output_h;
     // Remember the real encoded size: IrLive_Release clears enc on stop, but a
     // save issued after IR_Stop still needs the dimensions of the buffered
-    // bitstream, not the configured canvas maximum.
+    // bitstream, not the configured canvas maximum. Hybrid capture can switch
+    // sizes mid-buffer, so keep the greatest size seen during this IR_Start.
     if (engine)
     {
         engine->encoded_width = (int)output_w;
         engine->encoded_height = (int)output_h;
+        // Keep the actual frame size with the largest pixel area. Taking the
+        // maximum width and height independently could produce a resolution
+        // that never occurred when a hybrid switch changes aspect ratio.
+        if ((int64_t)output_w * output_h >
+            (int64_t)engine->peak_width * engine->peak_height)
+        {
+            engine->peak_width = (int)output_w;
+            engine->peak_height = (int)output_h;
+        }
     }
 
     D3D11_TEXTURE2D_DESC staging_desc;
@@ -4668,6 +4707,14 @@ static void IrPushMicBlock(IrEngine *e, const int16_t *samples, uint32_t frames,
     IrPushAudioBlockTo(e, (uint8_t *)samples, frames * sizeof(int16_t), frames, pts, TRUE);
 }
 
+// A single rejected frame must not leave the health bar stuck on ERROR after
+// later frames encode successfully again.
+static void IrClearFrameFailure(IrEngine *e)
+{
+    if (InterlockedCompareExchange(&e->fail_stage, STAGE_NONE, STAGE_FRAME) == STAGE_FRAME)
+        InterlockedExchange(&e->fail_hr, 0);
+}
+
 BOOL IrPushFrame(IrEngine *e, ID3D11Texture2D *src, RECT rect, int64_t pts)
 {
     if (!e || !src || !e->dev || !e->live.mft ||
@@ -4712,6 +4759,7 @@ BOOL IrPushFrame(IrEngine *e, ID3D11Texture2D *src, RECT rect, int64_t pts)
         return FALSE;
     }
     InterlockedExchange64(&e->last_frame_tick, IrNow100ns());
+    IrClearFrameFailure(e);
     int64_t rp = InterlockedCompareExchange64(&e->repeat_pts, 0, 0);
     InterlockedExchange64(&e->repeat_pts, max(rp, stamp));
     InterlockedIncrement64(&e->captured);
@@ -4735,7 +4783,9 @@ static void IrPushStaticFrame(IrEngine *e)
     int64_t now = IrNow100ns();
     if (now - last < interval * 2) return;
 
-    EnterCriticalSection(&e->encoder_cs);
+    // Never let a stalled encoder block the capture heartbeat. The frame path
+    // owns this lock; if it is busy, skip this repeat and try again next tick.
+    if (!TryEnterCriticalSection(&e->encoder_cs)) return;
     if (InterlockedCompareExchange(&e->running, 1, 1) == 0 || e->paused ||
         !e->live.mft || !e->live.nv12)
     {
@@ -4755,6 +4805,7 @@ static void IrPushStaticFrame(IrEngine *e)
         ++emitted;
     }
     InterlockedExchange64(&e->repeat_pts, rp);
+    if (emitted > 0) IrClearFrameFailure(e);
     LeaveCriticalSection(&e->encoder_cs);
 }
 
@@ -5237,13 +5288,15 @@ static DWORD WINAPI IrDxgiThread(LPVOID arg)
     return 0;
 }
 
-static void IrDxgiStop(IrDxgi *d)
+static BOOL IrDxgiStop(IrDxgi *d)
 {
+    if (!d) return TRUE;
     InterlockedExchange(&d->running, 0);
     if (d->stop_event) SetEvent(d->stop_event);
+    BOOL exited = TRUE;
     if (d->thread)
     {
-        WaitForSingleObject(d->thread, INFINITE);
+        exited = IrWaitThreadExit(d->thread);
         CloseHandle(d->thread);
         d->thread = NULL;
     }
@@ -5259,6 +5312,7 @@ static void IrDxgiStop(IrDxgi *d)
     IrCursor_Release(&d->cursor);
     IrCursorComp_Release(&d->comp);
     memset(d, 0, sizeof(*d));
+    return exited;
 }
 
 static HRESULT IrDxgiStart(IrDxgi *d, IrEngine *e)
@@ -5324,6 +5378,52 @@ static bool IrWgcFrameCallback(IrWgc *capture, IrWgcFrame *frame)
     return true;
 }
 
+// If the encoder stops producing frames, rebuild it with the largest canvas
+// seen so far. TryEnter keeps this off the encoder's critical section when a
+// frame is genuinely in flight.
+static void IrRecoverStalledEncoder(IrEngine *e)
+{
+    if (!e || !e->dev || !e->live.mft) return;
+    int64_t last = InterlockedCompareExchange64(&e->last_frame_tick, 0, 0);
+    if (!last || IrNow100ns() - last < 4 * IR_SECOND_100NS) return;
+    if (!TryEnterCriticalSection(&e->encoder_cs)) return;
+
+    last = InterlockedCompareExchange64(&e->last_frame_tick, 0, 0);
+    if (!last || IrNow100ns() - last < 4 * IR_SECOND_100NS ||
+        InterlockedCompareExchange(&e->running, 1, 1) == 0 || e->paused)
+    {
+        LeaveCriticalSection(&e->encoder_cs);
+        return;
+    }
+
+    uint32_t width = (uint32_t)max(e->peak_width, 2);
+    uint32_t height = (uint32_t)max(e->peak_height, 2);
+    if (width <= 2 || height <= 2)
+    {
+        width = e->config.VideoMaxWidth ? e->config.VideoMaxWidth : 1920;
+        height = e->config.VideoMaxHeight ? e->config.VideoMaxHeight : 1080;
+    }
+    char error[192];
+    error[0] = '\0';
+    IrLive_Release(&e->live);
+    if (IrLive_Create(&e->live, e, e->dev, width, height, e->fps,
+                      e->bitrate_kbps, e->pref, error, sizeof(error)))
+    {
+        e->encoded_width = (int)width;
+        e->encoded_height = (int)height;
+        InterlockedExchange64(&e->repeat_pts, 0);
+        InterlockedExchange64(&e->last_frame_tick, IrNow100ns());
+        InterlockedExchange(&e->force_idr, 1);
+        IrClearFrameFailure(e);
+    }
+    else
+    {
+        InterlockedExchange(&e->fail_stage, STAGE_FRAME);
+        IrSetErrorFmt("%s", error);
+    }
+    LeaveCriticalSection(&e->encoder_cs);
+}
+
 // Capture APIs only deliver frames when the source changes. Tick the UI
 // heartbeat from capture liveness and keep the compressed ring populated with
 // repeated frames so clipping still works on a static desktop.
@@ -5337,6 +5437,7 @@ static DWORD WINAPI IrHeartbeatThread(LPVOID arg)
         {
             InterlockedIncrement64(&e->heartbeat);
             IrPushStaticFrame(e);
+            IrRecoverStalledEncoder(e);
         }
     }
     return 0;
@@ -5392,19 +5493,25 @@ static DWORD WINAPI IrAudioPumpThread(LPVOID arg)
     return 0;
 }
 
-static void IrStopCapture(IrEngine *e)
+static BOOL IrStopCapture(IrEngine *e)
 {
+    BOOL exited = TRUE;
     if (e->wgc.ItemInterop || e->wgc.Session || e->wgc.Item || e->wgc.FramePool)
     {
         IrWgc_Stop(&e->wgc);
         IrWgc_Release(&e->wgc);
     }
-    IrDxgiStop(&e->dxgi);
+    if (!IrDxgiStop(&e->dxgi)) exited = FALSE;
+    return exited;
 }
 
 static HRESULT IrStartCapture(IrEngine *e)
 {
-    IrStopCapture(e);
+    if (!IrStopCapture(e))
+    {
+        DeleteCriticalSection(&e->encoder_cs);
+        InitializeCriticalSection(&e->encoder_cs);
+    }
     if (e->method == IR_CAPTURE_EXTERNAL)
         return S_OK;
     if (e->method == IR_CAPTURE_DXGI)
@@ -5631,10 +5738,16 @@ static IrSaveJob *IrEnqueueSave(IrEngine *e, const wchar_t *path, int seconds_ba
     j->fps = e->fps;
     j->segmented = (e->pref & 0x200) != 0;
     j->subtype = IrCodecSubtype((e->pref >> 15) & 3);
-    j->width = e->encoded_width >= 2 ? e->encoded_width
-                                     : (int)(e->config.VideoMaxWidth ? e->config.VideoMaxWidth : 1920);
-    j->height = e->encoded_height >= 2 ? e->encoded_height
-                                      : (int)(e->config.VideoMaxHeight ? e->config.VideoMaxHeight : 1080);
+    // The replay must use the greatest frame size that occurred while buffering,
+    // not the size of the most recent frame after a hybrid source switch.
+    int64_t peak_area = (int64_t)e->peak_width * e->peak_height;
+    int64_t current_area = (int64_t)e->encoded_width * e->encoded_height;
+    int save_w = peak_area >= current_area ? e->peak_width : e->encoded_width;
+    int save_h = peak_area >= current_area ? e->peak_height : e->encoded_height;
+    j->width = save_w >= 2 ? save_w
+                           : (int)(e->config.VideoMaxWidth ? e->config.VideoMaxWidth : 1920);
+    j->height = save_h >= 2 ? save_h
+                            : (int)(e->config.VideoMaxHeight ? e->config.VideoMaxHeight : 1080);
     if (j->width < 2) j->width = 2;
     if (j->height < 2) j->height = 2;
 
@@ -6054,23 +6167,23 @@ static DWORD WINAPI IrSaveThread(LPVOID arg)
 static void IrStopEngine(IrEngine *e)
 {
     if (!e) return;
+    BOOL stuck = FALSE;
     InterlockedExchange(&e->running, 0);
     if (e->hb_stop)
     {
         SetEvent(e->hb_stop);
         if (e->hb_thread)
         {
-            WaitForSingleObject(e->hb_thread, INFINITE);
+            if (!IrWaitThreadExit(e->hb_thread)) stuck = TRUE;
             CloseHandle(e->hb_thread);
             e->hb_thread = NULL;
         }
         CloseHandle(e->hb_stop);
         e->hb_stop = NULL;
     }
-    IrStopCapture(e);
+    if (!IrStopCapture(e)) stuck = TRUE;
 
-    if (e->mic.running || e->mic.thread)
-        IrMic_Stop(&e->mic);
+    if ((e->mic.running || e->mic.thread) && !IrMic_Stop(&e->mic)) stuck = TRUE;
 
     if (e->audio_running)
     {
@@ -6079,7 +6192,7 @@ static void IrStopEngine(IrEngine *e)
             SetEvent(e->audio_stop);
             if (e->audio_thread)
             {
-                WaitForSingleObject(e->audio_thread, INFINITE);
+                if (!IrWaitThreadExit(e->audio_thread)) stuck = TRUE;
                 CloseHandle(e->audio_thread);
                 e->audio_thread = NULL;
             }
@@ -6087,7 +6200,7 @@ static void IrStopEngine(IrEngine *e)
             e->audio_stop = NULL;
         }
         IrAudio_Flush(&e->audio);
-        IrAudio_Stop(&e->audio);
+        if (!IrAudio_Stop(&e->audio)) stuck = TRUE;
         memset(&e->audio, 0, sizeof(e->audio));
         e->audio_running = FALSE;
     }
@@ -6098,6 +6211,13 @@ static void IrStopEngine(IrEngine *e)
     {
         IrLive_FlushEncoder(&e->live, e);
         IrLive_Release(&e->live);
+    }
+
+    // A terminated thread may have died while holding the encoder lock.
+    if (stuck)
+    {
+        DeleteCriticalSection(&e->encoder_cs);
+        InitializeCriticalSection(&e->encoder_cs);
     }
 
     // Do not free the rings here. They survive IR_Stop until the next IR_Start
@@ -6282,8 +6402,8 @@ IR_EXPORT void __cdecl IR_Destroy(IntPtr engine)
     IrStopEngine(e);
     if (e->save_thread)
     {
-        SetEvent(e->save_stop);
-        WaitForSingleObject(e->save_thread, INFINITE);
+        if (e->save_stop) SetEvent(e->save_stop);
+        IrWaitThreadExit(e->save_thread);
         CloseHandle(e->save_thread);
         e->save_thread = NULL;
     }
@@ -6366,6 +6486,8 @@ IR_EXPORT int __cdecl IR_Start(IntPtr engine, int monitor_index, int ring_second
     e->last_encoder_height = 0;
     e->encoded_width = 0;
     e->encoded_height = 0;
+    e->peak_width = 0;
+    e->peak_height = 0;
     InterlockedExchange(&e->force_idr, 1);
     e->captured = e->paced = e->rejected = 0;
     e->encoded = e->dropped = e->frames_encoded = 0;
@@ -6570,6 +6692,9 @@ IR_EXPORT int __cdecl IR_SetCaptureSource(IntPtr engine, int method, int monitor
     e->window = (HWND)window;
     IrApplyOptions(e, options);
     InterlockedExchange(&e->force_idr, 1);
+    // Source switches restart only the capture API. The compressed rings,
+    // including the peak frame size, stay intact across WGC <-> DXGI changes.
+    IrClearFrameFailure(e);
     HRESULT hr = S_OK;
     if (e->running) hr = IrStartCapture(e);
     LeaveCriticalSection(&e->cs);
