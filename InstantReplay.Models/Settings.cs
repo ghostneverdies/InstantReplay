@@ -29,18 +29,26 @@ public sealed class Settings
 
     public string QualityPreset { get; set; } = "Balanced";
 
+    // Hidden legacy field. Old files are migrated into GpuEncoder/GpuPreference on
+    // load; the settings page no longer exposes individual encoders.
     public string EncoderChoice { get; set; } = "Auto";
+    public bool GpuEncoder { get; set; } = true;
+    public string GpuPreference { get; set; } = "Prefer dGPU";
 
     [JsonPropertyName("buffer_method")]
     public string BufferMethod { get; set; } = "Continuous";
 
     public string VideoCodec { get; set; } = "H264";
 
-    public string RateControl { get; set; } = "Cbr";
+    public string RateControl { get; set; } = "Vbr";
 
     public string EncoderPreset { get; set; } = "Balanced";
 
     public string Container { get; set; } = "Mp4";
+
+    public string AudioCodec { get; set; } = "AAC";
+    public int AudioBitrate { get; set; } = 160;
+    public bool ApplicationLocalAudio { get; set; } = true;
 
     // Media Foundation writes MP4 only. Legacy container choices map to .mp4.
     public static string ContainerExtension(string container) => "mp4";
@@ -98,26 +106,41 @@ public sealed class Settings
                 {
                     if (loaded.CaptureTarget is "Window" or "ActiveWindow") loaded.CaptureTarget = "SpecificWindows";
                     if (loaded.CaptureTarget is not ("Display" or "SpecificWindows")) loaded.CaptureTarget = "Display";
-                    if (loaded.CaptureMethod is not ("Wgc" or "Dxgi")) loaded.CaptureMethod = "Dxgi";
+                    // Capture method is no longer user-facing; Game Capture still switches
+                    // between WGC and DXGI automatically inside the engine.
+                    loaded.CaptureMethod = "Dxgi";
                     loaded.SpecificWindows ??= [];
 
-                    // Legacy encoder choices from the retired external encoder stack
-                    // migrate to Auto; only Media Foundation choices remain valid.
-                    if (loaded.EncoderChoice is not ("Auto" or "MfQsv" or "MfVp12" or "MfNvenc" or "MfAmf" or
-                                                     "MfSoftware"))
-                        loaded.EncoderChoice = "Auto";
-                    if (loaded.VideoCodec is not ("Auto" or "Hevc" or "H264" or "Av1")) loaded.VideoCodec = "H264";
-                    if (loaded.Container != "Mp4") loaded.Container = "Mp4";
+                    // A stored software encoder maps to GPU off. Every other legacy encoder
+                    // maps to GPU on with the default dGPU preference.
+                    string storedEncoder = loaded.EncoderChoice ?? "Auto";
+                    loaded.GpuEncoder = !string.Equals(storedEncoder, "MfSoftware", StringComparison.OrdinalIgnoreCase);
+                    loaded.GpuPreference = loaded.GpuPreference is "Prefer iGPU" or "Prefer dGPU"
+                        ? loaded.GpuPreference : "Prefer dGPU";
+                    loaded.EncoderChoice = "Auto";
+
+                    loaded.VideoCodec = loaded.VideoCodec switch
+                    {
+                        "Hevc" or "H264" or "Av1" => loaded.VideoCodec,
+                        _ => "H264",
+                    };
+                    loaded.AudioCodec = string.Equals(loaded.AudioCodec, "FLAC", StringComparison.OrdinalIgnoreCase)
+                        ? "FLAC" : "AAC";
+                    if (loaded.AudioBitrate is not (96 or 128 or 160 or 192)) loaded.AudioBitrate = 160;
+
+                    // Hidden legacy values are pinned to safe equivalents: MP4 output,
+                    // VBR, continuous ring, formula-driven quality.
+                    loaded.Container = "Mp4";
+                    loaded.RateControl = "Vbr";
+                    loaded.BufferMethod = "Continuous";
 
                     // Migrate the old Speed/Balanced/Quality presets onto the
-                    // seven-level ultra-fast -> slowest scale.
-                    loaded.EncoderPreset = MigratePreset(loaded.EncoderPreset, "Balanced", speedScale: true);
-                    loaded.QualityPreset = MigratePreset(loaded.QualityPreset, "Balanced", speedScale: false);
+                    // seven-level ultra-fast -> slowest scale. The quality preset also
+                    // drives the native encoder quality now, so keep both in sync.
+                    loaded.QualityPreset = MigratePreset(loaded.QualityPreset ?? "Balanced", "Balanced", speedScale: false);
+                    loaded.EncoderPreset = loaded.QualityPreset;
 
                     if (loaded.FrameRate is not (30 or 60 or 120)) loaded.FrameRate = 60;
-                    loaded.RateControl = string.Equals(loaded.RateControl, "Vbr", StringComparison.OrdinalIgnoreCase)
-                        ? "Vbr" : "Cbr";
-                    if (loaded.BufferMethod is not ("Continuous" or "Segmented")) loaded.BufferMethod = "Continuous";
                     return loaded;
                 }
             }
