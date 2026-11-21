@@ -333,6 +333,7 @@ public partial class MainWindow : Window
         InitEncoderSettings();
         InitAudioSettings();
         InitCaptureTargets();
+        DebugLoggingToggle.IsOn = _settings.DebugLogging;
         UpdateHotkeyButtonDisplay();
 
         NavView.IsPaneOpen = _settings.NavigationPaneOpen;
@@ -656,20 +657,21 @@ public partial class MainWindow : Window
         string VideoCodec,
         bool GpuEncoder,
         string GpuPreference,
+        string BufferMethod,
         string CaptureTarget,
+        string CaptureMethod,
         int CaptureMonitorIndex,
         bool CaptureClientArea,
         bool CaptureCursor,
         bool CaptureBorder,
-        bool CaptureRoundedCorners,
-        bool CaptureSecondaryWindows,
         string Microphone,
         string SaveDestination,
         bool RecordSystemAudio,
         bool RecordMicrophone,
         string AudioCodec,
         int AudioBitrate,
-        bool ApplicationLocalAudio);
+        bool ApplicationLocalAudio,
+        bool DebugLogging);
 
     private PendingSettings CapturePending() => new(
         _settings.ReplayDurationSeconds,
@@ -678,20 +680,21 @@ public partial class MainWindow : Window
         _settings.VideoCodec,
         _settings.GpuEncoder,
         _settings.GpuPreference,
+        _settings.BufferMethod,
         _settings.CaptureTarget,
+        _settings.CaptureMethod,
         _settings.CaptureMonitorIndex,
         _settings.CaptureClientArea,
         _settings.CaptureCursor,
         _settings.CaptureBorder,
-        _settings.CaptureRoundedCorners,
-        _settings.CaptureSecondaryWindows,
         _settings.Microphone,
         _settings.SaveDestination,
         _settings.RecordSystemAudio,
         _settings.RecordMicrophone,
         _settings.AudioCodec,
         _settings.AudioBitrate,
-        _settings.ApplicationLocalAudio);
+        _settings.ApplicationLocalAudio,
+        _settings.DebugLogging);
 
     private static void PlayButtonSound() => Microsoft.UI.Xaml.ElementSoundPlayer.Play(Microsoft.UI.Xaml.ElementSoundKind.Invoke);
 
@@ -2460,10 +2463,18 @@ public partial class MainWindow : Window
     private void InitEncoderSettings()
     {
         CodecCombo.SelectedIndex = Math.Max(0, Array.IndexOf(CodecChoices, _settings.VideoCodec));
+        BufferMethodCombo.SelectedIndex = _settings.BufferMethod == "Segmented" ? 1 : 0;
         GpuEncoderCheck.IsChecked = _settings.GpuEncoder;
         GpuPreferenceCombo.SelectedIndex = _settings.GpuPreference == "Prefer iGPU" ? 0 : 1;
         UpdateGpuControls();
         RefreshBitrateDisplay();
+    }
+
+    private void BufferMethodCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_initializing) return;
+        _settings.BufferMethod = BufferMethodCombo.SelectedIndex == 1 ? "Segmented" : "Continuous";
+        CheckDirty();
     }
 
     private void UpdateGpuControls()
@@ -2543,11 +2554,10 @@ public partial class MainWindow : Window
             CaptureMonitorCombo.ItemsSource = _captureMonitors.Select(m => m.Name).ToList();
             int savedMonitor = _settings.CaptureMonitorIndex < 0 ? 0 : _captureMonitors.FindIndex(m => m.Index == _settings.CaptureMonitorIndex);
             CaptureMonitorCombo.SelectedIndex = savedMonitor < 0 ? 0 : savedMonitor;
+            CaptureMethodCombo.SelectedIndex = _settings.CaptureMethod == "Wgc" ? 1 : 0;
             CaptureCursorCheck.IsChecked = _settings.CaptureCursor;
             CaptureClientAreaCheck.IsChecked = _settings.CaptureClientArea;
             CaptureBorderCheck.IsChecked = _settings.CaptureBorder;
-            CaptureRoundedCornersCheck.IsChecked = _settings.CaptureRoundedCorners;
-            CaptureSecondaryWindowsCheck.IsChecked = _settings.CaptureSecondaryWindows;
             UpdateCaptureTargetControls();
         }
         finally { _syncingCaptureTargets = false; }
@@ -2556,6 +2566,7 @@ public partial class MainWindow : Window
     {
         bool window = _settings.CaptureTarget == "SpecificWindows";
         CaptureMonitorRow.Visibility = window ? Visibility.Collapsed : Visibility.Visible;
+        CaptureMethodRow.Visibility = window ? Visibility.Collapsed : Visibility.Visible;
         NavGamesItem.Visibility = window ? Visibility.Visible : Visibility.Collapsed;
         RecordAudioRow.Label = window ? "Record app audio" : "Record system audio";
     }
@@ -2643,14 +2654,26 @@ public partial class MainWindow : Window
             _settings.CaptureMonitorIndex = _captureMonitors[CaptureMonitorCombo.SelectedIndex].Index;
         CheckDirty();
     }
+    private void CaptureMethodCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_initializing || _syncingCaptureTargets) return;
+        _settings.CaptureMethod = CaptureMethodCombo.SelectedIndex == 1 ? "Wgc" : "Dxgi";
+        CheckDirty();
+    }
     private void WindowCaptureOption_Changed(object sender, RoutedEventArgs e)
     {
         if (_initializing || _syncingCaptureTargets) return;
         _settings.CaptureCursor = CaptureCursorCheck.IsChecked == true;
         _settings.CaptureClientArea = CaptureClientAreaCheck.IsChecked == true;
         _settings.CaptureBorder = CaptureBorderCheck.IsChecked == true;
-        _settings.CaptureRoundedCorners = CaptureRoundedCornersCheck.IsChecked == true;
-        _settings.CaptureSecondaryWindows = CaptureSecondaryWindowsCheck.IsChecked == true;
+        CheckDirty();
+    }
+
+    private void DebugLoggingToggle_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_initializing) return;
+        _settings.DebugLogging = DebugLoggingToggle.IsOn;
+        Logger.SetDebugMode(_settings.DebugLogging);
         CheckDirty();
     }
 
@@ -2950,12 +2973,12 @@ public partial class MainWindow : Window
         _settings.VideoCodec = previous.VideoCodec;
         _settings.GpuEncoder = previous.GpuEncoder;
         _settings.GpuPreference = previous.GpuPreference;
-        _settings.CaptureSecondaryWindows = previous.CaptureSecondaryWindows;
-        _settings.CaptureRoundedCorners = previous.CaptureRoundedCorners;
+        _settings.BufferMethod = previous.BufferMethod;
         _settings.CaptureBorder = previous.CaptureBorder;
         _settings.CaptureCursor = previous.CaptureCursor;
         _settings.CaptureClientArea = previous.CaptureClientArea;
         _settings.CaptureMonitorIndex = previous.CaptureMonitorIndex;
+        _settings.CaptureMethod = previous.CaptureMethod;
         _settings.CaptureTarget = previous.CaptureTarget;
         _settings.Microphone = previous.Microphone;
         _settings.SaveDestination = previous.SaveDestination;
@@ -2964,6 +2987,8 @@ public partial class MainWindow : Window
         _settings.AudioCodec = previous.AudioCodec;
         _settings.AudioBitrate = previous.AudioBitrate;
         _settings.ApplicationLocalAudio = previous.ApplicationLocalAudio;
+        _settings.DebugLogging = previous.DebugLogging;
+        Logger.SetDebugMode(_settings.DebugLogging);
 
         SyncControlsFromSettings();
 
@@ -2989,6 +3014,7 @@ public partial class MainWindow : Window
             InitEncoderSettings();
             InitAudioSettings();
             InitCaptureTargets();
+            DebugLoggingToggle.IsOn = _settings.DebugLogging;
         }
         finally
         {
@@ -3019,6 +3045,7 @@ public partial class MainWindow : Window
 
         bool ok = true;
         bool restarted = false;
+        bool restartTimedOut = false;
         try
         {
             _settings.Save();
@@ -3026,7 +3053,20 @@ public partial class MainWindow : Window
             if (_engine.IsRunning)
             {
                 restarted = true;
-                ok = await Task.Run(() => _engine.Restart(_tempDir, wipeSegments: true));
+                Task<bool> restart = Task.Run(() => _engine.Restart(_tempDir, wipeSegments: true));
+                Task finished = await Task.WhenAny(restart, Task.Delay(TimeSpan.FromSeconds(15)));
+                if (finished == restart)
+                {
+                    ok = await restart;
+                }
+                else
+                {
+                    // The settings are already on disk. Never leave the UI saying
+                    // "Saving changes" forever if native cleanup or start hangs.
+                    ok = false;
+                    restartTimedOut = true;
+                    Logger.Warn("Save changes: engine restart timed out after 15 seconds; continuing without waiting for it.");
+                }
             }
 
             _baseline = CapturePending();
@@ -3039,6 +3079,11 @@ public partial class MainWindow : Window
                     restarted
                         ? "Your changes were saved and the capture engine successfully started."
                         : "Your changes were saved. They take effect the next time you start recording.");
+            }
+            else if (restartTimedOut)
+            {
+                ShowInfoBar(InfoBarSeverity.Warning, "Settings saved",
+                    "Your settings were saved, but restarting the capture engine took too long. Check the debug log for details.");
             }
             else
             {
@@ -3192,8 +3237,15 @@ public partial class MainWindow : Window
         _recDotPulseTimer?.Stop();
         _hotkeyPulseTimer?.Stop();
         EnableWindow(_hwnd, true);
-        _engine.Stop();
-        _engine.Dispose();
+        // Native cleanup used to wait forever on capture threads. Bound it so
+        // the tray Exit item always terminates the process.
+        Task cleanup = Task.Run(() =>
+        {
+            try { _engine.Stop(); _engine.Dispose(); }
+            catch (Exception ex) { Logger.Warn($"Engine cleanup during exit failed: {ex.Message}"); }
+        });
+        if (Task.WhenAny(cleanup, Task.Delay(TimeSpan.FromSeconds(5))).GetAwaiter().GetResult() != cleanup)
+            Logger.Warn("Engine cleanup during exit timed out; forcing application exit.");
         ClipNotificationWindow.Shutdown();
 
         _taskbarBadge?.Dispose();
@@ -3208,5 +3260,10 @@ public partial class MainWindow : Window
         }
 
         if (!_dq.TryEnqueue(FinishExit)) FinishExit();
+        else _ = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromSeconds(2));
+            Environment.Exit(0);
+        });
     }
 }
