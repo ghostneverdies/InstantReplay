@@ -106,10 +106,13 @@ public sealed class Settings
                 {
                     if (loaded.CaptureTarget is "Window" or "ActiveWindow") loaded.CaptureTarget = "SpecificWindows";
                     if (loaded.CaptureTarget is not ("Display" or "SpecificWindows")) loaded.CaptureTarget = "Display";
-                    // Capture method is no longer user-facing; Game Capture still switches
-                    // between WGC and DXGI automatically inside the engine.
-                    loaded.CaptureMethod = "Dxgi";
+                    // Whole Desktop can choose its capture API. Game Capture ignores this
+                    // value and keeps switching between WGC and DXGI per detected window.
+                    loaded.CaptureMethod = string.Equals(loaded.CaptureMethod, "Wgc", StringComparison.OrdinalIgnoreCase)
+                        ? "Wgc" : "Dxgi";
                     loaded.SpecificWindows ??= [];
+                    // Rounded corners are always enabled for WGC now that the option is hidden.
+                    loaded.CaptureRoundedCorners = true;
 
                     // A stored software encoder maps to GPU off. Every other legacy encoder
                     // maps to GPU on with the default dGPU preference.
@@ -129,10 +132,11 @@ public sealed class Settings
                     if (loaded.AudioBitrate is not (96 or 128 or 160 or 192)) loaded.AudioBitrate = 160;
 
                     // Hidden legacy values are pinned to safe equivalents: MP4 output,
-                    // VBR, continuous ring, formula-driven quality.
+                    // VBR and formula-driven quality.
                     loaded.Container = "Mp4";
                     loaded.RateControl = "Vbr";
-                    loaded.BufferMethod = "Continuous";
+                    loaded.BufferMethod = string.Equals(loaded.BufferMethod, "Segmented", StringComparison.OrdinalIgnoreCase)
+                        ? "Segmented" : "Continuous";
 
                     // Migrate the old Speed/Balanced/Quality presets onto the
                     // seven-level ultra-fast -> slowest scale. The quality preset also
@@ -155,6 +159,7 @@ public sealed class Settings
     {
         try
         {
+            CaptureRoundedCorners = true;
             string path = PathOnDisk;
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             File.WriteAllText(path, JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true }));
