@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360" width="640" height="360" role="img" aria-label="Two release files: the Instant Replay installer and the portable ZIP">
+  <rect width="640" height="360" fill="#edf7f1"/>
+  <circle cx="540" cy="60" r="140" fill="#dff5e9"/>
+  <rect x="46" y="54" width="548" height="252" rx="14" fill="#ffffff" stroke="#d7dedb"/>
+  <path d="M46 68a14 14 0 0 1 14-14h520a14 14 0 0 1 14 14v26H46z" fill="#f3f5f4"/>
+  <circle cx="70" cy="74" r="4" fill="#cfd6d2"/><circle cx="84" cy="74" r="4" fill="#cfd6d2"/><circle cx="98" cy="74" r="4" fill="#cfd6d2"/>
+  <text x="320" y="79" fill="#5f6a64" font-family="Segoe UI,Arial,sans-serif" font-size="12" text-anchor="middle">Releases</text>
+  <g font-family="Segoe UI,Arial,sans-serif">
+    <rect x="76" y="122" width="230" height="148" rx="10" fill="#f8faf9" stroke="#d7dedb"/>
+    <rect x="96" y="144" width="64" height="64" rx="10" fill="#232323"/>
+    <path d="M128 158v32m-11-11 11 11 11-11" fill="none" stroke="#a1ffcb" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="96" y="232" fill="#232323" font-size="13" font-weight="600">InstantReplaySetup.exe</text>
+    <text x="96" y="250" fill="#66716b" font-size="11">Installer · x64</text>
+    <rect x="334" y="122" width="230" height="148" rx="10" fill="#f8faf9" stroke="#d7dedb"/>
+    <rect x="354" y="144" width="64" height="64" rx="10" fill="#e7efe9"/>
+    <path d="M367 160h10v9h12v9h12v18h-34z" fill="#232323"/>
+    <path d="M367 160h10v9h-10z" fill="#7ecfa8"/>
+    <text x="354" y="232" fill="#232323" font-size="13" font-weight="600">win64-portable.zip</text>
+    <text x="354" y="250" fill="#66716b" font-size="11">No install needed</text>
+  </g>
+</svg>

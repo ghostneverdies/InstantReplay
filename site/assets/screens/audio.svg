@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 300" width="560" height="300" role="img" aria-label="Instant Replay audio settings with game audio, system audio and microphone on separate tracks">
+  <rect width="560" height="300" rx="10" fill="#f0f2f4"/>
+  <rect x="18" y="18" width="524" height="264" rx="10" fill="#151a1f" stroke="#2d353d"/>
+  <text x="38" y="50" fill="#e8edf1" font-family="Segoe UI,Arial,sans-serif" font-size="14" font-weight="600">Audio</text>
+  <g font-family="Segoe UI,Arial,sans-serif" font-size="11">
+    <rect x="38" y="66" width="484" height="56" rx="8" fill="#1b2228" stroke="#2f3840"/>
+    <circle cx="60" cy="94" r="7" fill="#a1ffcb"/><text x="78" y="91" fill="#e4e9ed">Game audio</text>
+    <text x="78" y="108" fill="#8b959e" font-size="9">Follows the captured process and its child processes</text>
+    <rect x="38" y="130" width="484" height="56" rx="8" fill="#1b2228" stroke="#2f3840"/>
+    <circle cx="60" cy="158" r="7" fill="#6d8f9c"/><text x="78" y="155" fill="#e4e9ed">System audio</text>
+    <text x="78" y="172" fill="#8b959e" font-size="9">Used for Whole Desktop recordings</text>
+    <rect x="38" y="194" width="484" height="56" rx="8" fill="#24302a" stroke="#a1ffcb"/>
+    <circle cx="60" cy="222" r="7" fill="#a1ffcb"/><text x="78" y="219" fill="#a1ffcb">Microphone</text>
+    <text x="78" y="236" fill="#8fb9a6" font-size="9">Independent — keeps recording while the game is paused</text>
+  </g>
+</svg>

@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 450" width="640" height="360" role="img" aria-label="Instant Replay Home page with recording status, hotkey, Save Replay action and live CPU and memory cards">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#f6f7f8"/><stop offset="1" stop-color="#e8ebee"/></linearGradient>
+    <linearGradient id="spark" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#a1ffcb"/><stop offset="1" stop-color="#5fd0a2"/></linearGradient>
+  </defs>
+  <rect width="800" height="450" fill="url(#bg)"/>
+  <rect x="38" y="22" width="724" height="406" rx="12" fill="#12161a" stroke="#2b3239"/>
+  <path d="M38 34a12 12 0 0 1 12-12h700a12 12 0 0 1 12 12v22H38z" fill="#191e23"/>
+  <circle cx="58" cy="39" r="3.5" fill="#5c646c"/><circle cx="72" cy="39" r="3.5" fill="#5c646c"/><circle cx="86" cy="39" r="3.5" fill="#5c646c"/>
+  <text x="400" y="43" fill="#d9dee3" font-family="Segoe UI,Arial,sans-serif" font-size="12" text-anchor="middle">Instant Replay</text>
+  <path d="M38 56h724" stroke="#2b3239"/>
+  <rect x="38" y="56" width="86" height="372" fill="#15191e"/>
+  <path d="M124 56v372" stroke="#2b3239"/>
+  <g font-family="Segoe UI,Arial,sans-serif" font-size="11">
+    <rect x="48" y="74" width="66" height="28" rx="6" fill="#24302a"/>
+    <circle cx="61" cy="88" r="3" fill="#a1ffcb"/><text x="71" y="92" fill="#a1ffcb">Home</text>
+    <circle cx="61" cy="124" r="3" fill="#77818a"/><text x="71" y="128" fill="#929ba3">Gallery</text>
+    <circle cx="61" cy="160" r="3" fill="#77818a"/><text x="71" y="164" fill="#929ba3">Settings</text>
+    <circle cx="61" cy="196" r="3" fill="#77818a"/><text x="71" y="200" fill="#929ba3">Updates</text>
+  </g>
+  <g font-family="Segoe UI,Arial,sans-serif">
+    <rect x="150" y="82" width="128" height="26" rx="13" fill="#1e2b25" stroke="#355144"/>
+    <circle cx="165" cy="95" r="4" fill="#a1ffcb"/>
+    <text x="176" y="99" fill="#a1ffcb" font-size="11" letter-spacing="1">RECORDING</text>
+    <rect x="288" y="82" width="150" height="26" rx="13" fill="#1c2127" stroke="#303841"/>
+    <text x="302" y="99" fill="#aeb7bf" font-size="11" letter-spacing="1">CTRL + NUMPAD *</text>
+    <text x="150" y="160" fill="#eef2f5" font-size="27" font-weight="600">Record your last moments,</text>
+    <text x="150" y="191" fill="#eef2f5" font-size="27" font-weight="600">instantly.</text>
+    <text x="150" y="218" fill="#8d979f" font-size="12">Whole Desktop · 1080p · 60 FPS</text>
+    <rect x="150" y="238" width="136" height="36" rx="8" fill="#a1ffcb"/>
+    <text x="218" y="261" fill="#16231c" font-size="12" font-weight="600" text-anchor="middle">Save Replay</text>
+    <rect x="296" y="238" width="92" height="36" rx="8" fill="#20262c" stroke="#39424b"/>
+    <text x="342" y="261" fill="#d3dae0" font-size="12" text-anchor="middle">Stop</text>
+    <rect x="150" y="300" width="190" height="96" rx="10" fill="#1a1f25" stroke="#2b3239"/>
+    <rect x="352" y="300" width="190" height="96" rx="10" fill="#1a1f25" stroke="#2b3239"/>
+    <text x="166" y="324" fill="#8d979f" font-size="10" letter-spacing="1">CPU</text>
+    <text x="368" y="324" fill="#8d979f" font-size="10" letter-spacing="1">MEMORY</text>
+    <text x="166" y="354" fill="#f2f5f7" font-size="24" font-weight="600">12%</text>
+    <text x="368" y="354" fill="#f2f5f7" font-size="24" font-weight="600">348 MB</text>
+    <path d="M166 382 L184 378 L202 381 L220 372 L238 376 L256 367 L274 371 L292 365 L310 369 L328 363" fill="none" stroke="url(#spark)" stroke-width="2"/>
+    <path d="M368 382 L386 379 L404 375 L422 378 L440 370 L458 373 L476 366 L494 370 L512 364 L530 367" fill="none" stroke="url(#spark)" stroke-width="2"/>
+  </g>
+</svg>
