@@ -50,6 +50,26 @@ jobs:
         with:
           path: .
 
+      # The artifact API can lag a few seconds behind the upload step.
+      # deploy-pages fails if it queries before the artifact is visible.
+      - name: Wait for Pages artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for i in $(seq 1 24); do
+            count="$(gh api --paginate \
+              "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts" \
+              --jq '.artifacts[] | select(.name == "github-pages") | .id' | wc -l | tr -d ' ')"
+            if [ "$count" -eq 1 ]; then
+              echo "Pages artifact is available"
+              exit 0
+            fi
+            echo "Waiting for Pages artifact (count=$count, attempt $i/24)"
+            sleep 5
+          done
+          echo "Pages artifact did not become available" >&2
+          exit 1
+
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
