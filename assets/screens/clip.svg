@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 450" width="640" height="360" role="img" aria-label="The clip card that appears after a replay is saved, showing Clipped Last 30 Seconds and a completed encode">
+  <defs>
+    <linearGradient id="scene" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#1a2530"/><stop offset="1" stop-color="#0c1116"/></linearGradient>
+    <linearGradient id="card" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#20272e"/><stop offset="1" stop-color="#171d23"/></linearGradient>
+  </defs>
+  <rect width="800" height="450" fill="url(#scene)"/>
+  <g opacity=".34" fill="none" stroke="#3d5666" stroke-width="2">
+    <path d="M0 330 L120 260 L240 300 L360 210 L500 270 L640 190 L800 250"/>
+    <path d="M0 370 L140 310 L280 350 L420 260 L560 320 L700 240 L800 290"/>
+    <circle cx="640" cy="110" r="54"/>
+  </g>
+  <rect x="44" y="52" width="300" height="124" rx="12" fill="url(#card)" stroke="#3c4650"/>
+  <rect x="44" y="52" width="300" height="4" rx="2" fill="#a1ffcb"/>
+  <circle cx="76" cy="90" r="15" fill="#a1ffcb"/>
+  <path d="M69 90l5 5 9-10" fill="none" stroke="#16231c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <g font-family="Segoe UI,Arial,sans-serif">
+    <text x="102" y="88" fill="#f0f4f7" font-size="15" font-weight="600">Clipped Last 30 Seconds</text>
+    <text x="102" y="108" fill="#96a0a9" font-size="11">replay_20261122_171116.mp4</text>
+    <rect x="76" y="132" width="236" height="6" rx="3" fill="#303941"/>
+    <rect x="76" y="132" width="236" height="6" rx="3" fill="#a1ffcb"/>
+    <text x="312" y="158" fill="#a1ffcb" font-size="11" text-anchor="end">100%</text>
+  </g>
+  <rect x="44" y="196" width="300" height="46" rx="10" fill="#151b21" stroke="#333c45"/>
+  <g font-family="Segoe UI,Arial,sans-serif" font-size="11">
+    <circle cx="70" cy="219" r="6" fill="#a1ffcb"/>
+    <text x="86" y="223" fill="#cbd3da">Whole Desktop</text>
+    <text x="286" y="223" fill="#8d979f">1920 × 1080</text>
+  </g>
+</svg>

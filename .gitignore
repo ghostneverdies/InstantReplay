@@ -1,0 +1,6 @@
+# Local design-check and browser artifacts. The published site is only the
+# static files in this folder; none of these are needed on GitHub Pages.
+.taste-skill/
+*.log
+.DS_Store
+Thumbs.db

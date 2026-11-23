@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 300" width="560" height="300" role="img" aria-label="Capture target selector showing Whole Desktop or Game Capture, with a monitor and a game window">
+  <rect width="560" height="300" rx="10" fill="#f0f2f4"/>
+  <rect x="18" y="18" width="524" height="264" rx="10" fill="#151a1f" stroke="#2d353d"/>
+  <text x="38" y="50" fill="#e8edf1" font-family="Segoe UI,Arial,sans-serif" font-size="14" font-weight="600">Capture target</text>
+  <rect x="38" y="66" width="216" height="40" rx="8" fill="#24302a" stroke="#a1ffcb"/>
+  <circle cx="58" cy="86" r="6" fill="none" stroke="#a1ffcb" stroke-width="2"/><circle cx="58" cy="86" r="2.5" fill="#a1ffcb"/>
+  <text x="74" y="91" fill="#a1ffcb" font-family="Segoe UI,Arial,sans-serif" font-size="12">Whole Desktop</text>
+  <rect x="266" y="66" width="216" height="40" rx="8" fill="#1c2228" stroke="#343d46"/>
+  <circle cx="286" cy="86" r="6" fill="none" stroke="#7d8891" stroke-width="2"/>
+  <text x="302" y="91" fill="#aab4bc" font-family="Segoe UI,Arial,sans-serif" font-size="12">Game Capture</text>
+  <rect x="38" y="122" width="216" height="136" rx="8" fill="#0d1115" stroke="#39434c"/>
+  <rect x="56" y="140" width="180" height="100" rx="4" fill="#1f3540"/>
+  <path d="M56 222 L104 192 L148 208 L196 174 L236 198 L236 240 L56 240Z" fill="#2b5260"/>
+  <circle cx="204" cy="162" r="16" fill="#3a6b78"/>
+  <rect x="266" y="122" width="216" height="136" rx="8" fill="#0d1115" stroke="#39434c"/>
+  <rect x="284" y="140" width="180" height="16" rx="4" fill="#242c34"/>
+  <text x="294" y="152" fill="#9aa4ad" font-family="Segoe UI,Arial,sans-serif" font-size="9">Display 1 · 2560 × 1440</text>
+  <text x="294" y="178" fill="#7f8a93" font-family="Segoe UI,Arial,sans-serif" font-size="9">Recording method</text>
+  <rect x="294" y="188" width="140" height="24" rx="5" fill="#212830" stroke="#39434c"/>
+  <text x="304" y="204" fill="#cbd3da" font-family="Segoe UI,Arial,sans-serif" font-size="10">Graphics Capture</text>
+  <text x="294" y="238" fill="#7f8a93" font-family="Segoe UI,Arial,sans-serif" font-size="9">System audio included</text>
+</svg>
