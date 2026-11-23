@@ -94,7 +94,7 @@ jobs:
         shell: pwsh
         run: |
           $name = "InstantReplay-${{ steps.version.outputs.version }}-win64-portable"
-          # 7z keeps the WinUI payload fast and memory-friendly; fall back to Compress-Archive.
+          # 7z keeps the WPF payload fast and memory-friendly; fall back to Compress-Archive.
           $sevenZip = Join-Path $env:ProgramFiles "7-Zip\7z.exe"
           if (Test-Path $sevenZip) {
             & $sevenZip a -tzip -mx=5 -bso0 -bsp0 "$name.zip" ".\bin\publish\win-x64\*"

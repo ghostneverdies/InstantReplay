@@ -58,7 +58,7 @@ internal static class WindowDetectionService
         }
         finally
         {
-            if (previousDpi != IntPtr.Zero) SetThreadDpiAwarenessContext(previousDpi);
+            if (previousDpi != IntPtr.Zero) _ = SetThreadDpiAwarenessContext(previousDpi);
         }
     }
 
@@ -92,7 +92,7 @@ internal static class WindowDetectionService
     public static List<IntPtr> EnumerateMonitors()
     {
         var found = new List<(IntPtr Handle, bool Primary)>();
-        EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, (IntPtr handle, IntPtr hdc, ref Rect rect, IntPtr data) =>
+        _ = EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, (IntPtr handle, IntPtr hdc, ref Rect rect, IntPtr data) =>
         {
             var info = new MonitorInfoEx { Size = Marshal.SizeOf<MonitorInfoEx>(), Device = string.Empty };
             bool primary = GetMonitorInfoW(handle, ref info) && (info.Flags & 1) != 0;

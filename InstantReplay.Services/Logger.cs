@@ -66,11 +66,21 @@ public static class Logger
         OverlayBridge.Refresh();
     }
 
-    public static void Info(string message) => Write("INFO", message);
-    public static void Warn(string message) => Write("WARN", message);
+    public static void Info(string message)
+    {
+        Write("INFO", message);
+    }
 
-    public static void Error(string message, Exception? ex = null) =>
+    public static void Warn(string message)
+    {
+        Write("WARN", message);
+    }
+
+    public static void Error(string message, Exception? ex = null)
+    {
         Write("ERROR", ex is null ? message : $"{message}\n{ex}");
+    }
+
 
     public static void Debug(string message)
     {
@@ -84,7 +94,7 @@ public static class Logger
         lock (s_lock)
         {
             if (s_handle is null || s_handle.IsInvalid) return;
-            WriteFile(s_handle, line, (uint)line.Length, out _, IntPtr.Zero);
+            _ = WriteFile(s_handle, line, (uint)line.Length, out _, IntPtr.Zero);
         }
     }
 

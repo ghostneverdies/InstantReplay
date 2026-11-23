@@ -63,7 +63,8 @@ internal static class AntiCheatGames
             {
                 string exe = Path.GetFileName(entry.Executable?.Trim() ?? "");
                 if (exe.Length == 0) continue;
-                games.TryAdd(exe, string.IsNullOrWhiteSpace(entry.Name) ? exe : entry.Name.Trim());
+                if (!games.ContainsKey(exe))
+                    games[exe] = string.IsNullOrWhiteSpace(entry.Name) ? exe : entry.Name!.Trim();
             }
             Logger.Info($"Anti-cheat game list loaded: {games.Count} executables will never be injected.");
             return new Catalog(games, false);

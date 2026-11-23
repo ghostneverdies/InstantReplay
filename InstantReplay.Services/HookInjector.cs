@@ -32,8 +32,11 @@ internal static class HookInjector
     public static string OverlayDllPath =>
         Path.Combine(AppContext.BaseDirectory, "engine", "hooks", "bin", OverlayDll);
 
-    public static bool HasModule(uint processId, string moduleName) =>
-        IsModuleLoaded(processId, moduleName);
+    public static bool HasModule(uint processId, string moduleName)
+    {
+        return IsModuleLoaded(processId, moduleName);
+    }
+
 
     public static bool RequestShutdown(uint processId, out string error)
     {
@@ -72,7 +75,7 @@ internal static class HookInjector
             shutdown = new IntPtr(remote.BaseAddress.ToInt64() +
                 (localExport.ToInt64() - local.ToInt64()));
         }
-        finally { FreeLibrary(local); }
+        finally { _ = FreeLibrary(local); }
 
         IntPtr process = OpenProcess(ProcessCreateThread | ProcessVmOperation | ProcessVmRead |
             ProcessQueryInformation, false, (int)processId);
@@ -99,12 +102,12 @@ internal static class HookInjector
                     return false;
                 }
             }
-            finally { CloseHandle(thread); }
+            finally { _ = CloseHandle(thread); }
         }
-        finally { CloseHandle(process); }
+        finally { _ = CloseHandle(process); }
 
-        long deadline = Environment.TickCount64 + 7000;
-        while (Environment.TickCount64 < deadline)
+        long deadline = Environment.TickCount + 7000;
+        while (Environment.TickCount < deadline)
         {
             if (!IsModuleLoaded(processId, remote.Name))
             {
@@ -224,7 +227,7 @@ internal static class HookInjector
         }
         finally
         {
-            CloseHandle(handle);
+            _ = CloseHandle(handle);
         }
 
         return true;
@@ -271,8 +274,8 @@ internal static class HookInjector
                 return false;
             }
 
-            long deadline = Environment.TickCount64 + 5000;
-            while (Environment.TickCount64 < deadline)
+            long deadline = Environment.TickCount + 5000;
+            while (Environment.TickCount < deadline)
             {
                 if (IsModuleLoaded(processId, name))
                 {
@@ -287,15 +290,15 @@ internal static class HookInjector
         }
         finally
         {
-            if (hook != IntPtr.Zero) UnhookWindowsHookEx(hook);
-            FreeLibrary(local);
+            if (hook != IntPtr.Zero) _ = UnhookWindowsHookEx(hook);
+            _ = FreeLibrary(local);
         }
     }
 
     private static bool WaitForEvent(string name, int timeoutMs)
     {
-        long deadline = Environment.TickCount64 + timeoutMs;
-        while (Environment.TickCount64 < deadline)
+        long deadline = Environment.TickCount + timeoutMs;
+        while (Environment.TickCount < deadline)
         {
             try
             {
@@ -343,14 +346,17 @@ internal static class HookInjector
                     } while (Module32NextW(snapshot, ref entry));
                 }
             }
-            finally { CloseHandle(snapshot); }
+            finally { _ = CloseHandle(snapshot); }
         }
         found = default;
         return false;
     }
 
-    private static IEnumerable<string> EnumerateModules(uint processId) =>
-        EnumerateModules(processId, out _);
+    private static IEnumerable<string> EnumerateModules(uint processId)
+    {
+        return EnumerateModules(processId, out _);
+    }
+
 
     private static List<string> EnumerateModules(uint processId, out string diagnostic)
     {
@@ -376,7 +382,7 @@ internal static class HookInjector
                 }
                 else snapshotError = Marshal.GetLastWin32Error();
             }
-            finally { CloseHandle(snapshot); }
+            finally { _ = CloseHandle(snapshot); }
             if (modules.Count > 0) break;
             if (snapshotError == 24) Thread.Sleep(10); else break;
         }

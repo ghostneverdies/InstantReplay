@@ -1,6 +1,9 @@
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Media;
+using Wpf.Ui.Controls;
 using System.ComponentModel;
 using System.Globalization;
-using Microsoft.UI.Xaml.Media;
 using InstantReplay.Core;
 
 namespace InstantReplay.Models;
@@ -20,7 +23,7 @@ public sealed class ReplayItem : INotifyPropertyChanged
     private int _videoWidth;
     private int _videoHeight;
     private double _fps;
-    private ImageSource? _thumbnail;
+    private System.Windows.Media.ImageSource? _thumbnail;
 
     public ReplayItem(string folderPath, string videoPath, DateTime created, long sizeBytes)
     {
@@ -41,7 +44,7 @@ public sealed class ReplayItem : INotifyPropertyChanged
     internal int PrepareState;
     internal bool QueuedAsVisible;
     internal int Failures;
-    internal readonly TaskCompletionSource Prepared =
+    internal readonly TaskCompletionSource<bool> Prepared =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     public volatile bool MetadataLoaded;
@@ -64,10 +67,10 @@ public sealed class ReplayItem : INotifyPropertyChanged
     public int VideoHeight => _videoHeight;
     public double Fps => _fps;
 
-    public ImageSource? Thumbnail => _thumbnail;
+    public System.Windows.Media.ImageSource? Thumbnail => _thumbnail;
 
     internal void ApplyPrepared(bool hasMetadata, TimeSpan duration, int width, int height, double fps,
-        ImageSource? thumbnail)
+        System.Windows.Media.ImageSource? thumbnail)
     {
         if (hasMetadata)
         {
@@ -113,5 +116,9 @@ public sealed class ReplayItem : INotifyPropertyChanged
         return mb >= 1024 ? $"{mb / 1024.0:0.0} GB" : $"{mb:0.0} MB";
     }
 
-    private void Raise(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+    private void Raise(string name)
+    {
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+    }
+
 }

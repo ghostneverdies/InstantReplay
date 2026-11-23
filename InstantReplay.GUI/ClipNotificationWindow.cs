@@ -1,23 +1,19 @@
+using System.Diagnostics;
 using System.Runtime.InteropServices;
-using Microsoft.UI;
-using Microsoft.UI.Windowing;
-using Microsoft.UI.Xaml;
-using Microsoft.UI.Xaml.Controls;
-using Microsoft.UI.Xaml.Media;
-using Microsoft.UI.Xaml.Media.Animation;
-using Windows.Graphics;
-using Windows.System;
-using Windows.UI;
-using WinRT.Interop;
-using InstantReplay.GUI.Helpers;
+using System.Windows;
+using System.Windows.Interop;
+using System.Windows.Media.Imaging;
 using InstantReplay.Services;
+using Wpf.Ui.Controls;
+using Color = System.Windows.Media.Color;
+using Image = System.Windows.Controls.Image;
+using TextBlock = System.Windows.Controls.TextBlock;
 
 namespace InstantReplay.GUI;
 
-public sealed class ClipNotificationWindow : Window
+public sealed class ClipNotificationWindow : FluentWindow
 {
     private static ClipNotificationWindow? _instance;
-    private readonly AppWindow _appWindow;
     private readonly IntPtr _hwnd;
     private readonly Border _card;
     private readonly TextBlock _message;
@@ -26,13 +22,13 @@ public sealed class ClipNotificationWindow : Window
     private readonly TranslateTransform _textShift = new();
     private readonly Border _accent;
     private readonly Image _staticIcon;
-    private readonly CompositeTransform _iconTransform = new();
-    private readonly Microsoft.UI.Xaml.Shapes.Ellipse _pulse;
-    private readonly CompositeTransform _pulseTransform = new();
+    private readonly ScaleTransform _iconTransform = new();
+    private readonly System.Windows.Shapes.Ellipse _pulse;
+    private readonly ScaleTransform _pulseTransform = new();
     private readonly Grid _checkBadge;
-    private readonly CompositeTransform _badgeTransform = new();
+    private readonly ScaleTransform _badgeTransform = new();
     private readonly Grid _progressTrack;
-    private readonly Microsoft.UI.Xaml.Shapes.Rectangle _progressFill;
+    private readonly System.Windows.Shapes.Rectangle _progressFill;
     private readonly DispatcherTimer _lifetime = new() { Interval = TimeSpan.FromMilliseconds(2700) };
     private long _motionStart;
     private int _motionFrom, _motionTo, _motionDuration, _currentX, _shownX, _hiddenX, _y;
@@ -54,31 +50,47 @@ public sealed class ClipNotificationWindow : Window
     private ClipNotificationWindow()
     {
         Title = "Instant Replay clip notification";
+        WindowBackdropType = Wpf.Ui.Controls.WindowBackdropType.None;
+        WindowStyle = System.Windows.WindowStyle.None;
+        ResizeMode = System.Windows.ResizeMode.NoResize;
+        ShowInTaskbar = false;
+        WindowStartupLocation = System.Windows.WindowStartupLocation.Manual;
+        Background = Brushes.Transparent;
+        Width = 382;
+        Height = 108;
+
         _message = new TextBlock
         {
             FontSize = 19,
-            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
-            Foreground = new SolidColorBrush(Colors.White)
+            FontWeight = FontWeights.SemiBold,
+            Foreground = new SolidColorBrush(Colors.White),
+            Margin = new Thickness(0, 0, 0, 5),
         };
-        _textStack = new StackPanel { Spacing = 5, VerticalAlignment = VerticalAlignment.Center };
+        // WPF StackPanel has no Spacing/Grid has no ColumnSpacing; approximate with margins.
+        _textStack = new StackPanel
+        {
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(16, 0, 0, 0),
+        };
         _textStack.RenderTransform = _textShift;
-        _textStack.Children.Add(new TextBlock
+        _ = _textStack.Children.Add(new TextBlock
         {
             Text = "INSTANT REPLAY",
             FontSize = 10,
-            CharacterSpacing = 140,
-            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
-            Foreground = new SolidColorBrush(Color.FromArgb(255, 151, 174, 205))
+            FontWeight = FontWeights.SemiBold,
+            Foreground = new SolidColorBrush(Color.FromArgb(255, 151, 174, 205)),
+            Margin = new Thickness(0, 0, 0, 5),
         });
-        _textStack.Children.Add(_message);
+        _ = _textStack.Children.Add(_message);
         _detail = new TextBlock
         {
             Text = "Saved to your gallery",
             FontSize = 12,
-            Foreground = new SolidColorBrush(Color.FromArgb(255, 171, 185, 207))
+            Foreground = new SolidColorBrush(Color.FromArgb(255, 171, 185, 207)),
         };
-        _textStack.Children.Add(_detail);
-        var content = new Grid { ColumnSpacing = 16, Margin = new Thickness(22, 16, 20, 16) };
+        _ = _textStack.Children.Add(_detail);
+
+        var content = new Grid { Margin = new Thickness(22, 16, 20, 16) };
         content.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         content.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         _staticIcon = new Image
@@ -86,7 +98,7 @@ public sealed class ClipNotificationWindow : Window
             Width = 54,
             Height = 54,
             Stretch = Stretch.Uniform,
-            RenderTransformOrigin = new Windows.Foundation.Point(0.5, 0.5),
+            RenderTransformOrigin = new Point(0.5, 0.5),
             RenderTransform = _iconTransform
         };
         string[] iconPaths = {
@@ -97,16 +109,16 @@ public sealed class ClipNotificationWindow : Window
         };
         string? iconPath = Array.Find(iconPaths, File.Exists);
         if (iconPath != null)
-            _staticIcon.Source = new Microsoft.UI.Xaml.Media.Imaging.BitmapImage(new Uri(iconPath));
+            _staticIcon.Source = new BitmapImage(new Uri(iconPath));
 
-        _pulse = new Microsoft.UI.Xaml.Shapes.Ellipse
+        _pulse = new System.Windows.Shapes.Ellipse
         {
             Width = 54,
             Height = 54,
             Stroke = new SolidColorBrush(SuccessAccent),
             StrokeThickness = 2,
             Opacity = 0,
-            RenderTransformOrigin = new Windows.Foundation.Point(0.5, 0.5),
+            RenderTransformOrigin = new Point(0.5, 0.5),
             RenderTransform = _pulseTransform,
             IsHitTestVisible = false
         };
@@ -119,25 +131,31 @@ public sealed class ClipNotificationWindow : Window
             HorizontalAlignment = HorizontalAlignment.Right,
             VerticalAlignment = VerticalAlignment.Bottom,
             Opacity = 0,
-            RenderTransformOrigin = new Windows.Foundation.Point(0.5, 0.5),
+            RenderTransformOrigin = new Point(0.5, 0.5),
             RenderTransform = _badgeTransform,
             IsHitTestVisible = false
         };
-        _checkBadge.Children.Add(new Microsoft.UI.Xaml.Shapes.Ellipse
+        _ = _checkBadge.Children.Add(new System.Windows.Shapes.Ellipse
         {
             Fill = new SolidColorBrush(SuccessAccent)
         });
         var checkStroke = new SolidColorBrush(Colors.White);
-        _checkBadge.Children.Add(new Microsoft.UI.Xaml.Shapes.Line
+        _ = _checkBadge.Children.Add(new System.Windows.Shapes.Line
         {
-            X1 = 4, Y1 = 10, X2 = 8, Y2 = 14,
+            X1 = 4,
+            Y1 = 10,
+            X2 = 8,
+            Y2 = 14,
             Stroke = checkStroke,
             StrokeThickness = 2.2,
             StrokeLineJoin = PenLineJoin.Round
         });
-        _checkBadge.Children.Add(new Microsoft.UI.Xaml.Shapes.Line
+        _ = _checkBadge.Children.Add(new System.Windows.Shapes.Line
         {
-            X1 = 8, Y1 = 14, X2 = 16, Y2 = 5,
+            X1 = 8,
+            Y1 = 14,
+            X2 = 16,
+            Y2 = 5,
             Stroke = checkStroke,
             StrokeThickness = 2.2,
             StrokeLineJoin = PenLineJoin.Round
@@ -149,15 +167,16 @@ public sealed class ClipNotificationWindow : Window
             Height = 54,
             VerticalAlignment = VerticalAlignment.Center
         };
-        iconContent.Children.Add(_pulse);
-        iconContent.Children.Add(_staticIcon);
-        iconContent.Children.Add(_checkBadge);
-        content.Children.Add(iconContent);
+        _ = iconContent.Children.Add(_pulse);
+        _ = iconContent.Children.Add(_staticIcon);
+        _ = iconContent.Children.Add(_checkBadge);
+        _ = content.Children.Add(iconContent);
         Grid.SetColumn(_textStack, 1);
-        content.Children.Add(_textStack);
+        _ = content.Children.Add(_textStack);
+
         var background = new SolidColorBrush(Color.FromArgb(255, 36, 46, 64));
         var layout = new Grid();
-        layout.Children.Add(content);
+        _ = layout.Children.Add(content);
         _accent = new Border
         {
             Width = 3,
@@ -166,7 +185,7 @@ public sealed class ClipNotificationWindow : Window
             HorizontalAlignment = HorizontalAlignment.Left,
             Background = new SolidColorBrush(Color.FromArgb(255, 111, 237, 205))
         };
-        layout.Children.Add(_accent);
+        _ = layout.Children.Add(_accent);
         _progressTrack = new Grid
         {
             Height = 3,
@@ -174,7 +193,7 @@ public sealed class ClipNotificationWindow : Window
             Opacity = 0,
             Background = new SolidColorBrush(Color.FromArgb(70, 111, 237, 205))
         };
-        _progressFill = new Microsoft.UI.Xaml.Shapes.Rectangle
+        _progressFill = new System.Windows.Shapes.Rectangle
         {
             Width = 0,
             HorizontalAlignment = HorizontalAlignment.Left,
@@ -183,32 +202,27 @@ public sealed class ClipNotificationWindow : Window
             RadiusY = 1.5,
             Fill = new SolidColorBrush(Color.FromArgb(255, 111, 237, 205))
         };
-        _progressTrack.Children.Add(_progressFill);
+        _ = _progressTrack.Children.Add(_progressFill);
         _progressTrack.SizeChanged += (_, _) => ApplyProgressWidth();
-        layout.Children.Add(_progressTrack);
+        _ = layout.Children.Add(_progressTrack);
         _card = new Border
         {
             Background = background,
             CornerRadius = new CornerRadius(12),
             BorderThickness = new Thickness(0),
             Child = layout,
-            RequestedTheme = ElementTheme.Dark,
             IsHitTestVisible = false
         };
         Content = _card;
-        _hwnd = WindowNative.GetWindowHandle(this);
-        _appWindow = AppWindow.GetFromWindowId(Win32Interop.GetWindowIdFromWindow(_hwnd));
-        if (_appWindow.Presenter is OverlappedPresenter presenter)
-        {
-            presenter.SetBorderAndTitleBar(false, false);
-            presenter.IsResizable = presenter.IsMaximizable = presenter.IsMinimizable = false;
-        }
-        SetStyle(_hwnd, -20, new IntPtr((GetStyle(_hwnd, -20).ToInt64() | 0x08000080L) & ~0x00040000L));
-        TitleBarButtons.StripWindowFrame(_hwnd);
+
+        _hwnd = new WindowInteropHelper(this).EnsureHandle();
+        _ = SetStyle(_hwnd, -20, new IntPtr((GetStyle(_hwnd, -20).ToInt64() | 0x08000080L) & ~0x00040000L));
+        StripFrame();
         int noNonClientRendering = 2;
         _ = DwmSetWindowAttribute(_hwnd, 2, ref noNonClientRendering, sizeof(int));
-        TitleBarButtons.SetCornerPreference(_hwnd, round: true);
+        SetCornerPreference(round: false);
         if (!SetWindowDisplayAffinity(_hwnd, 0x11)) Logger.Debug("Clip notification capture exclusion unavailable.");
+
         _lifetime.Tick += (_, _) =>
         {
             _lifetime.Stop();
@@ -287,8 +301,17 @@ public sealed class ClipNotificationWindow : Window
         ShowResult(0, true);
     }
 
-    public static void Show(int seconds) => Complete(seconds);
-    public static void ShowError() => Fail();
+    public static void Show(int seconds)
+    {
+        Complete(seconds);
+    }
+
+
+    public static void ShowError()
+    {
+        Fail();
+    }
+
 
     private static void ShowResult(int seconds, bool failed)
     {
@@ -321,7 +344,7 @@ public sealed class ClipNotificationWindow : Window
     private void SetProgress(int percent)
     {
         if (_state != State.Encoding) return;
-        _progressPercent = Math.Clamp(percent, 0, 100);
+        _progressPercent = Clamp(percent, 0, 100);
         _detail.Text = _progressPercent <= 0 ? "Preparing clip…" : $"Encoding {_progressPercent}%";
         ApplyProgressWidth();
     }
@@ -377,7 +400,7 @@ public sealed class ClipNotificationWindow : Window
         var animation = new DoubleAnimationUsingKeyFrames();
         foreach (var (ms, value) in keys)
         {
-            animation.KeyFrames.Add(new EasingDoubleKeyFrame
+            _ = animation.KeyFrames.Add(new EasingDoubleKeyFrame
             {
                 KeyTime = KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(ms)),
                 Value = value,
@@ -385,7 +408,7 @@ public sealed class ClipNotificationWindow : Window
             });
         }
         Storyboard.SetTarget(animation, target);
-        Storyboard.SetTargetProperty(animation, property);
+        Storyboard.SetTargetProperty(animation, new PropertyPath(property));
         storyboard.Children.Add(animation);
     }
 
@@ -402,7 +425,7 @@ public sealed class ClipNotificationWindow : Window
         _detail.Text = detail;
         _accent.Background = new SolidColorBrush(accent);
         _progressFill.Fill = new SolidColorBrush(accent);
-        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(_card, message + ". " + detail);
+        System.Windows.Automation.AutomationProperties.SetName(_card, message + ". " + detail);
 
         var story = new Storyboard();
         var fade = new DoubleAnimation
@@ -413,7 +436,7 @@ public sealed class ClipNotificationWindow : Window
             EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
         };
         Storyboard.SetTarget(fade, _textStack);
-        Storyboard.SetTargetProperty(fade, "Opacity");
+        Storyboard.SetTargetProperty(fade, new PropertyPath("Opacity"));
         story.Children.Add(fade);
 
         var slide = new DoubleAnimation
@@ -424,7 +447,7 @@ public sealed class ClipNotificationWindow : Window
             EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
         };
         Storyboard.SetTarget(slide, _textShift);
-        Storyboard.SetTargetProperty(slide, "Y");
+        Storyboard.SetTargetProperty(slide, new PropertyPath("Y"));
         story.Children.Add(slide);
 
         var bar = new DoubleAnimation
@@ -434,7 +457,7 @@ public sealed class ClipNotificationWindow : Window
             EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
         };
         Storyboard.SetTarget(bar, _progressTrack);
-        Storyboard.SetTargetProperty(bar, "Opacity");
+        Storyboard.SetTargetProperty(bar, new PropertyPath("Opacity"));
         story.Children.Add(bar);
 
         story.Begin();
@@ -448,22 +471,36 @@ public sealed class ClipNotificationWindow : Window
             return;
         }
 
-        var foreground = GetForegroundWindow();
-        var display = DisplayArea.GetFromWindowId(foreground == IntPtr.Zero ? _appWindow.Id : Win32Interop.GetWindowIdFromWindow(foreground), DisplayAreaFallback.Primary);
-        var area = display.WorkArea;
+        System.Drawing.Rectangle workArea;
+        try
+        {
+            IntPtr foreground = GetForegroundWindow();
+            workArea = System.Windows.Forms.Screen.FromHandle(foreground == IntPtr.Zero ? _hwnd : foreground).WorkingArea;
+        }
+        catch
+        {
+            workArea = System.Windows.Forms.Screen.PrimaryScreen!.WorkingArea;
+        }
+        var area = new System.Windows.Rect(workArea.X, workArea.Y, workArea.Width, workArea.Height);
+
         double scale = Math.Max(1, GetDpiForWindow(_hwnd) / 96.0);
-        int width = Math.Min((int)Math.Round(382 * scale), area.Width - 24);
+        int width = (int)Math.Min((int)Math.Round(382 * scale), area.Width - 24);
         int height = (int)Math.Round(108 * scale);
         int margin = (int)Math.Round(24 * scale);
-        _shownX = area.X + margin;
-        _hiddenX = area.X - width - 16;
+        _shownX = (int)(area.X + margin);
+        _hiddenX = (int)(area.X - width - 16);
         _currentX = _hiddenX;
-        _y = area.Y + margin;
-        _appWindow.MoveAndResize(new RectInt32(_hiddenX, _y, width, height));
-        _appWindow.Show(false);
-        _visible = true;
+        _y = (int)(area.Y + margin);
+
+        Left = _hiddenX / scale;
+        Top = _y / scale;
+        Width = width / scale;
+        Height = height / scale;
+
+        if (!IsVisible) Show();
         if (!SetWindowPos(_hwnd, new IntPtr(-1), _hiddenX, _y, 0, 0, 0x0011))
             Logger.Debug("Clip notification could not be raised above fullscreen content.");
+        _visible = true;
         BeginSlide(_shownX, 320, leaving: false);
     }
 
@@ -473,18 +510,18 @@ public sealed class ClipNotificationWindow : Window
         _motionTo = destination;
         _motionDuration = Math.Max(1, milliseconds);
         _leaving = leaving;
-        _motionStart = System.Diagnostics.Stopwatch.GetTimestamp();
+        _motionStart = Stopwatch.GetTimestamp();
         if (_animating) return;
         _animating = true;
         CompositionTarget.Rendering += OnRenderFrame;
     }
 
-    private void OnRenderFrame(object? sender, object e)
+    private void OnRenderFrame(object? sender, EventArgs e)
     {
         try
         {
-            double elapsed = System.Diagnostics.Stopwatch.GetElapsedTime(_motionStart).TotalMilliseconds;
-            double progress = Math.Clamp(elapsed / _motionDuration, 0, 1);
+            double elapsed = (Stopwatch.GetTimestamp() - _motionStart) * 1000.0 / Stopwatch.Frequency;
+            double progress = Clamp(elapsed / _motionDuration, 0, 1);
             double eased = _leaving
                 ? progress * progress * progress
                 : 1 - Math.Pow(1 - progress, 3);
@@ -514,6 +551,7 @@ public sealed class ClipNotificationWindow : Window
         _animating = false;
         CompositionTarget.Rendering -= OnRenderFrame;
     }
+
     private void HideSafely()
     {
         _lifetime.Stop();
@@ -522,11 +560,35 @@ public sealed class ClipNotificationWindow : Window
         _visible = false;
         try
         {
-            _appWindow.Hide();
-            SetWindowPos(_hwnd, new IntPtr(-2), 0, 0, 0, 0, 0x0013);
+            Hide();
+            _ = SetWindowPos(_hwnd, new IntPtr(-2), 0, 0, 0, 0, 0x0013);
         }
         catch (Exception ex) { Logger.Debug($"Clip notification dismiss failed: {ex.Message}"); Shutdown(); }
     }
+
+    private void StripFrame()
+    {
+        try
+        {
+            long style = GetStyle(_hwnd, -20).ToInt64();
+            long next = (style & ~0x00040000L) | 0x80000000L;
+            _ = SetStyle(_hwnd, -20, new IntPtr(next));
+            int noBorder = unchecked((int)0xFFFFFFFE);
+            _ = DwmSetWindowAttribute(_hwnd, 34, ref noBorder, sizeof(int));
+        }
+        catch (Exception ex) { Logger.Debug($"Clip notification frame cleanup: {ex.Message}"); }
+    }
+
+    private void SetCornerPreference(bool round)
+    {
+        try
+        {
+            int preference = round ? 2 : 1;
+            _ = DwmSetWindowAttribute(_hwnd, 33, ref preference, sizeof(int));
+        }
+        catch (Exception ex) { Logger.Debug($"Clip notification corner preference: {ex.Message}"); }
+    }
+
     public static void Shutdown()
     {
         OverlayBridge.Reset();
@@ -560,7 +622,7 @@ public sealed class ClipNotificationWindow : Window
                     stream.Position += version == 1 ? 16 : 8;
                     uint timescale = U32(); ulong duration = version == 1 ? U64() : U32();
                     if (timescale == 0) break;
-                    return (int)Math.Clamp(Math.Round((double)duration / timescale), 1, int.MaxValue);
+                    return (int)Clamp(Math.Round((double)duration / timescale), 1, int.MaxValue);
                 }
                 stream.Position = start + (long)length;
             }

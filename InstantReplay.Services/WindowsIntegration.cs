@@ -102,7 +102,7 @@ public static class StartupManager
 
     private static string BuildCommand()
     {
-        string exe = Environment.ProcessPath ?? "InstantReplay.exe";
+        string exe = ProcessPath ?? "InstantReplay.exe";
         return $"\"{exe}\" --tray";
     }
 }

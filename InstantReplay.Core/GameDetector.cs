@@ -1,4 +1,7 @@
-using System.Collections.Frozen;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Media;
+using Wpf.Ui.Controls;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
@@ -9,15 +12,20 @@ namespace InstantReplay.Core;
 
 internal sealed class GameDetector
 {
-    private sealed record Catalog(FrozenDictionary<string, GameRule[]> Rules, int Count);
+    private sealed record Catalog(Dictionary<string, GameRule[]> Rules, int Count);
     private static Catalog SharedCatalog = LoadCatalog();
-    private readonly FrozenDictionary<string, GameRule[]> _custom;
+    private readonly Dictionary<string, GameRule[]> _custom;
     private readonly Dictionary<uint, (string Executable, long Expiry)> _processCache = [];
     public int CatalogCount => SharedCatalog.Count;
 
     public static int TotalCatalogCount => SharedCatalog.Count;
 
-    internal static void Preload() => _ = SharedCatalog;
+    internal static void Preload()
+    {
+        _ = SharedCatalog;
+    }
+
+
     private static readonly HashSet<string> Excluded = new(StringComparer.OrdinalIgnoreCase)
     {
         "explorer.exe", "dwm.exe", "sihost.exe", "ShellExperienceHost.exe", "StartMenuExperienceHost.exe",
@@ -30,15 +38,28 @@ internal sealed class GameDetector
     private static readonly HashSet<string> MinecraftGameClasses = new(StringComparer.OrdinalIgnoreCase)
     { "LWJGL", "GLFW30", "SDL_app" };
 
+    // net48 has no Environment.TickCount64; Stopwatch gives the same monotonic clock.
+    private static long NowMs()
+    {
+        long timestamp = System.Diagnostics.Stopwatch.GetTimestamp();
+        long frequency = System.Diagnostics.Stopwatch.Frequency;
+        return (timestamp / frequency) * 1000 + (timestamp % frequency) * 1000 / frequency;
+    }
+
     public GameDetector(IEnumerable<GameRule> custom)
     {
         _custom = custom.GroupBy(r => Path.GetFileName(r.Executable), StringComparer.OrdinalIgnoreCase)
-            .ToFrozenDictionary(g => g.Key, g => g.ToArray(), StringComparer.OrdinalIgnoreCase);
+            .ToDictionary(g => g.Key, g => g.ToArray(), StringComparer.OrdinalIgnoreCase);
     }
     internal static string UpdatedCatalogPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
         "InstantReplay", "games.json");
-    internal static void ReloadCatalog() => SharedCatalog = LoadCatalog();
+    internal static void ReloadCatalog()
+    {
+        SharedCatalog = LoadCatalog();
+    }
+
+
     private static Catalog LoadCatalog()
     {
         try
@@ -47,30 +68,34 @@ internal sealed class GameDetector
             string path = File.Exists(UpdatedCatalogPath) ? UpdatedCatalogPath : bundled;
             var rules = JsonSerializer.Deserialize<GameRule[]>(File.ReadAllText(path)) ?? [];
             var index = rules.GroupBy(r => Path.GetFileName(r.Executable), StringComparer.OrdinalIgnoreCase)
-                .ToFrozenDictionary(g => g.Key, g => g.ToArray(), StringComparer.OrdinalIgnoreCase);
+                .ToDictionary(g => g.Key, g => g.ToArray(), StringComparer.OrdinalIgnoreCase);
             return new Catalog(index, rules.Select(r => r.Name).Distinct().Count());
         }
         catch (Exception ex) { Logger.Warn($"Game catalog could not be loaded: {ex.Message}"); }
-        return new Catalog(new Dictionary<string, GameRule[]>().ToFrozenDictionary(StringComparer.OrdinalIgnoreCase), 0);
+        return new Catalog(new Dictionary<string, GameRule[]>(StringComparer.OrdinalIgnoreCase), 0);
     }
     public static bool IsAlive(CaptureWindow target)
     {
         if (!IsWindow(target.Handle)) return false;
-        GetWindowThreadProcessId(target.Handle, out uint pid);
+        _ = GetWindowThreadProcessId(target.Handle, out uint pid);
         return pid == target.ProcessId;
     }
-    public static bool IsForeground(CaptureWindow target) =>
-        GetAncestor(GetForegroundWindow(), 2) == target.Handle && IsAlive(target);
+    public static bool IsForeground(CaptureWindow target)
+    {
+        return GetAncestor(GetForegroundWindow(), 2) == target.Handle && IsAlive(target);
+    }
+
+
     public static bool IsForegroundProcess(uint processId)
     {
         IntPtr foreground = GetForegroundWindow();
         if (foreground == IntPtr.Zero) return false;
-        GetWindowThreadProcessId(foreground, out uint foregroundProcessId);
+        _ = GetWindowThreadProcessId(foreground, out uint foregroundProcessId);
         return foregroundProcessId == processId;
     }
     private string? Executable(uint pid)
     {
-        long now = Environment.TickCount64;
+        long now = NowMs();
         if (_processCache.TryGetValue(pid, out var cached) && cached.Expiry > now) return cached.Executable;
         IntPtr process = OpenProcess(0x1000, false, pid);
         if (process == IntPtr.Zero) return null;
@@ -84,7 +109,7 @@ internal sealed class GameDetector
             _processCache[pid] = (executable, now + 5000);
             return executable;
         }
-        finally { CloseHandle(process); }
+        finally { _ = CloseHandle(process); }
     }
 
     internal static bool Matches(GameRule rule, string executable, string title, bool builtIn)
@@ -95,9 +120,12 @@ internal sealed class GameDetector
         return keyword.Length == 0 || title.Contains(keyword, StringComparison.OrdinalIgnoreCase);
     }
 
-    internal static bool MatchesGameSurface(GameRule rule, string executable, string windowClass) =>
-        !((executable.Equals("java.exe", StringComparison.OrdinalIgnoreCase) || executable.Equals("javaw.exe", StringComparison.OrdinalIgnoreCase))
+    internal static bool MatchesGameSurface(GameRule rule, string executable, string windowClass)
+    {
+        return !((executable.Equals("java.exe", StringComparison.OrdinalIgnoreCase) || executable.Equals("javaw.exe", StringComparison.OrdinalIgnoreCase))
             && rule.Name.StartsWith("Minecraft", StringComparison.OrdinalIgnoreCase)) || MinecraftGameClasses.Contains(windowClass);
+    }
+
 
     internal GameRule? ListedRule(string executable, string title, string? windowClass = null)
     {
@@ -115,13 +143,13 @@ internal sealed class GameDetector
         {
             IntPtr window = GetAncestor(GetForegroundWindow(), 2);
             if (window == IntPtr.Zero || !IsWindowVisible(window) || IsIconic(window)) return null;
-            GetWindowThreadProcessId(window, out uint pid);
-            if (pid == 0 || pid == Environment.ProcessId) return null;
+            _ = GetWindowThreadProcessId(window, out uint pid);
+            if (pid == 0 || pid == (uint)System.Diagnostics.Process.GetCurrentProcess().Id) return null;
             long style = GetWindowLongPtrW(window, -20).ToInt64();
             if ((style & 0x80) != 0) return null;
             if (DwmGetWindowAttribute(window, 14, out int cloaked, sizeof(int)) == 0 && cloaked != 0) return null;
             var text = new StringBuilder(512);
-            GetWindowTextW(window, text, text.Capacity);
+            _ = GetWindowTextW(window, text, text.Capacity);
             string title = text.ToString().Trim();
             if (title.Length == 0 || title == "Program Manager" || title == "Windows Input Experience") return null;
             if (!GetClientRect(window, out var rect) || rect.Right - rect.Left < 2 || rect.Bottom - rect.Top < 2) return null;
@@ -129,7 +157,7 @@ internal sealed class GameDetector
             if (executable == null) return null;
             if (Excluded.Contains(executable)) return null;
             var className = new StringBuilder(256);
-            GetClassNameW(window, className, className.Capacity);
+            _ = GetClassNameW(window, className, className.Capacity);
             var rule = ListedRule(executable, title, className.ToString());
             if (rule == null) return null;
             IntPtr monitor = MonitorFromWindow(window, 2);
@@ -144,7 +172,7 @@ internal sealed class GameDetector
             return IsForeground(target) ? target : null;
         }
         catch (Exception ex) { Logger.Debug($"Foreground detection: {ex.Message}"); return null; }
-        finally { if (previousDpi != IntPtr.Zero) SetThreadDpiAwarenessContext(previousDpi); }
+        finally { if (previousDpi != IntPtr.Zero) _ = SetThreadDpiAwarenessContext(previousDpi); }
     }
 
     [StructLayout(LayoutKind.Sequential)] private struct MonitorInfo { public int Size; public Rect Monitor, Work; public uint Flags; }

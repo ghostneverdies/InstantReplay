@@ -1,5 +1,6 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.IO.MemoryMappedFiles;
+using Timer = System.Threading.Timer;
 
 namespace InstantReplay.Services;
 
@@ -59,7 +60,7 @@ internal static class OverlayBridge
             if (!EnsureOpenLocked()) return;
             InGame = active && overlayAvailable;
             _view!.Write(OffCaptureActive, active ? 1u : 0u);
-            _view.Write(OffCaptureFps, (uint)Math.Clamp(fps, 15, 240));
+            _view.Write(OffCaptureFps, (uint)Clamp(fps, 15, 240));
             RefreshDiagnosticsLocked();
             if (!active) ClearLocked();
             else
@@ -79,7 +80,7 @@ internal static class OverlayBridge
     {
         lock (Gate)
         {
-            int clamped = Math.Clamp(fps, 15, 240);
+            int clamped = Clamp(fps, 15, 240);
             if (available == _overlayOnly && clamped == _overlayFps && InGame == available) return;
             if (!EnsureOpenLocked()) return;
             _overlayOnly = available;
@@ -114,7 +115,7 @@ internal static class OverlayBridge
         lock (Gate)
         {
             if (_view == null || !InGame) return;
-            int value = Math.Clamp(percent, 0, 100);
+            int value = Clamp(percent, 0, 100);
             _view.Write(OffProgress, value);
             WriteStringLocked(OffDetail, 128, value <= 0 ? "Preparing clip…" : $"Encoding {value}%");
             BumpLocked();

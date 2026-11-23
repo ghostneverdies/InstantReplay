@@ -56,7 +56,10 @@ internal sealed record WindowSnapshot(
         ? $"wgc:{Handle.ToInt64()}"
         : $"dxgi:{MonitorIndex}";
 
-    public override string ToString() =>
-        $"{Mode} on display {MonitorIndex + 1}/{MonitorCount} ({DisplayWidth}x{DisplayHeight}, " +
+    public override string ToString()
+    {
+        return $"{Mode} on display {MonitorIndex + 1}/{MonitorCount} ({DisplayWidth}x{DisplayHeight}, " +
         $"native {NativeWidth}x{NativeHeight}, window {WindowWidth}x{WindowHeight}; {Reason})";
+    }
+
 }

@@ -1,5 +1,6 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.Net;
+using System.Net.Http;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -21,9 +22,17 @@ internal sealed class UpdateService
     internal Version CurrentVersion { get; }
     internal UpdateCheck State { get; private set; } = new(DateTimeOffset.MinValue, null, null);
     internal bool HasUpdate => State.Release is { } release && TryParseVersion(release.Version, out var version) && version > CurrentVersion;
-    internal bool IsDue(DateTimeOffset now) => State.LastAttemptUtc > now || now - State.LastAttemptUtc >= CheckInterval;
-    internal bool IsReminderDue(DateTimeOffset now) => HasUpdate && State.Error is null
-        && (State.LastReminderUtc > now || now - State.LastReminderUtc >= CheckInterval);
+    internal bool IsDue(DateTimeOffset now)
+    {
+        return State.LastAttemptUtc > now || now - State.LastAttemptUtc >= CheckInterval;
+    }
+
+    internal bool IsReminderDue(DateTimeOffset now)
+    {
+        return HasUpdate && State.Error is null
+            && (State.LastReminderUtc > now || now - State.LastReminderUtc >= CheckInterval);
+    }
+
 
     internal void MarkReminderShown(DateTimeOffset now)
     {
@@ -49,13 +58,18 @@ internal sealed class UpdateService
         catch (Exception ex) { Logger.Warn($"Update state could not be read: {ex.Message}"); }
     }
 
-    private static Version Normalize(Version version) => new(version.Major, version.Minor, Math.Max(0, version.Build), Math.Max(0, version.Revision));
+    private static Version Normalize(Version version)
+    {
+        return new(version.Major, version.Minor, Math.Max(0, version.Build), Math.Max(0, version.Revision));
+    }
+
 
     internal static bool TryParseVersion(string? tag, out Version version)
     {
         version = new Version(0, 0, 0, 0);
         string text = (tag ?? "").Trim();
-        if (text.StartsWith('v') || text.StartsWith('V')) text = text[1..];
+        if (text.StartsWith("v", StringComparison.Ordinal) || text.StartsWith("V", StringComparison.Ordinal))
+            text = text.Substring(1);
         if (!Regex.IsMatch(text, @"^\d+\.\d+(?:\.\d+){0,2}$") || !Version.TryParse(text, out var parsed)) return false;
         version = Normalize(parsed);
         return true;
@@ -78,16 +92,17 @@ internal sealed class UpdateService
                 State = State with { Release = null, Error = null };
             else
             {
-                if (response.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.TooManyRequests)
+                // 429 (TooManyRequests) is not named in the .NET Framework 4.8 BCL.
+                if (response.StatusCode == HttpStatusCode.Forbidden || (int)response.StatusCode == 429)
                     throw new InvalidOperationException("GitHub temporarily limited update checks. Try again later.");
-                response.EnsureSuccessStatusCode();
+                _ = response.EnsureSuccessStatusCode();
                 if (response.Content.Headers.ContentLength > 1024 * 1024)
                     throw new InvalidDataException("The release response is too large.");
-                await using var input = await response.Content.ReadAsStreamAsync(timeout.Token).ConfigureAwait(false);
+                using var input = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
                 using var bytes = new MemoryStream();
                 byte[] buffer = new byte[16384];
                 int count;
-                while ((count = await input.ReadAsync(buffer, timeout.Token).ConfigureAwait(false)) > 0)
+                while ((count = await input.ReadAsync(buffer, 0, buffer.Length, timeout.Token).ConfigureAwait(false)) > 0)
                 {
                     if (bytes.Length + count > 1024 * 1024) throw new InvalidDataException("The release response is too large.");
                     bytes.Write(buffer, 0, count);
@@ -115,10 +130,10 @@ internal sealed class UpdateService
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
         request.Headers.UserAgent.ParseAdd($"InstantReplay/{CurrentVersion.ToString(3)}");
         using var response = await _client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false);
-        response.EnsureSuccessStatusCode();
+        _ = response.EnsureSuccessStatusCode();
         if (response.Content.Headers.ContentLength > 4 * 1024 * 1024)
             throw new InvalidDataException("The game database response is too large.");
-        byte[] bytes = await response.Content.ReadAsByteArrayAsync(timeout.Token).ConfigureAwait(false);
+        byte[] bytes = await response.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
         if (bytes.Length > 4 * 1024 * 1024)
             throw new InvalidDataException("The game database response is too large.");
         GameRule[] rules = JsonSerializer.Deserialize<GameRule[]>(bytes)
@@ -127,10 +142,13 @@ internal sealed class UpdateService
             || string.IsNullOrWhiteSpace(rule.Executable)))
             throw new InvalidDataException("The downloaded game database is invalid.");
         string path = GameDetector.UpdatedCatalogPath;
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        _ = Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         string temporary = path + ".tmp";
-        await File.WriteAllBytesAsync(temporary, bytes, timeout.Token).ConfigureAwait(false);
-        File.Move(temporary, path, true);
+        using (var output = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None, 81920, true))
+        {
+            await output.WriteAsync(bytes, 0, bytes.Length, timeout.Token).ConfigureAwait(false);
+        }
+        ReplaceFile(temporary, path);
         GameDetector.ReloadCatalog();
     }
 
@@ -143,7 +161,7 @@ internal sealed class UpdateService
         string tag = root.GetProperty("tag_name").GetString() ?? "";
         if (!TryParseVersion(tag, out var version)) throw new InvalidDataException("The latest release has an unsupported version tag.");
         string notes = root.TryGetProperty("body", out var body) ? body.GetString() ?? "" : "";
-        if (notes.Length > 12000) notes = notes[..12000] + "…";
+        if (notes.Length > 12000) notes = notes.Substring(0, 12000) + "\u2026";
         string? url = null, digest = null;
         long size = 0;
         foreach (var asset in root.GetProperty("assets").EnumerateArray())
@@ -154,19 +172,26 @@ internal sealed class UpdateService
             url = candidate;
             size = asset.GetProperty("size").GetInt64();
             string? rawDigest = asset.TryGetProperty("digest", out var value) ? value.GetString() : null;
-            if (rawDigest is not null && Regex.IsMatch(rawDigest, "^sha256:[0-9a-fA-F]{64}$")) digest = rawDigest[7..].ToLowerInvariant();
+            if (rawDigest is not null && Regex.IsMatch(rawDigest, "^sha256:[0-9a-fA-F]{64}$")) digest = rawDigest.Substring(7).ToLowerInvariant();
             break;
         }
         return new(tag, version.ToString(version.Revision == 0 ? 3 : 4), notes, url, size, digest);
     }
 
-    private static bool IsReleaseDownload(string value) => Uri.TryCreate(value, UriKind.Absolute, out var uri)
+    private static bool IsReleaseDownload(string value)
+    {
+        return Uri.TryCreate(value, UriKind.Absolute, out var uri)
         && uri.Scheme == "https" && uri.IsDefaultPort && uri.UserInfo.Length == 0 && uri.Host.Equals("github.com", StringComparison.OrdinalIgnoreCase)
         && uri.AbsolutePath.StartsWith($"/{Repository}/releases/download/", StringComparison.Ordinal);
+    }
 
-    private static bool IsDownloadHost(Uri uri) => uri.Scheme == "https" && uri.IsDefaultPort && uri.UserInfo.Length == 0
+    private static bool IsDownloadHost(Uri uri)
+    {
+        return uri.Scheme == "https" && uri.IsDefaultPort && uri.UserInfo.Length == 0
         && (uri.Host.Equals("github.com", StringComparison.OrdinalIgnoreCase) || uri.Host.Equals("release-assets.githubusercontent.com", StringComparison.OrdinalIgnoreCase)
             || uri.Host.Equals("objects.githubusercontent.com", StringComparison.OrdinalIgnoreCase) || uri.Host.Equals("releases.githubusercontent.com", StringComparison.OrdinalIgnoreCase));
+    }
+
 
     internal async Task<string> DownloadAsync(UpdateRelease release, string directory, IProgress<double>? progress, CancellationToken cancellationToken)
     {
@@ -176,7 +201,7 @@ internal sealed class UpdateService
             throw new InvalidOperationException($"The release does not contain {InstallerName}.");
         if (release.Size <= 0 || release.Size > MaxInstallerSize || release.Sha256 is null || !Regex.IsMatch(release.Sha256, "^[0-9a-fA-F]{64}$"))
             throw new InvalidDataException("The release is missing a valid installer size or SHA-256 checksum.");
-        Directory.CreateDirectory(directory);
+        _ = Directory.CreateDirectory(directory);
         string path = Path.Combine(directory, InstallerName);
         string partial = path + ".partial";
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -186,28 +211,28 @@ internal sealed class UpdateService
             using var request = new HttpRequestMessage(HttpMethod.Get, release.DownloadUrl);
             request.Headers.UserAgent.ParseAdd($"InstantReplay/{CurrentVersion.ToString(3)}");
             using var response = await _client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false);
-            response.EnsureSuccessStatusCode();
+            _ = response.EnsureSuccessStatusCode();
             if (response.RequestMessage?.RequestUri is not { } finalUri || !IsDownloadHost(finalUri))
                 throw new InvalidDataException("The installer download redirected outside GitHub.");
             if (response.Content.Headers.ContentLength is { } length && length != release.Size)
                 throw new InvalidDataException("The installer size does not match the release.");
-            await using (var input = await response.Content.ReadAsStreamAsync(timeout.Token).ConfigureAwait(false))
-            await using (var output = new FileStream(partial, FileMode.CreateNew, FileAccess.Write, FileShare.None, 131072, true))
+            using (var input = await response.Content.ReadAsStreamAsync().ConfigureAwait(false))
+            using (var output = new FileStream(partial, FileMode.CreateNew, FileAccess.Write, FileShare.None, 131072, true))
             using (var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256))
             {
                 byte[] buffer = new byte[131072];
                 long downloaded = 0;
                 int count;
-                while ((count = await input.ReadAsync(buffer, timeout.Token).ConfigureAwait(false)) > 0)
+                while ((count = await input.ReadAsync(buffer, 0, buffer.Length, timeout.Token).ConfigureAwait(false)) > 0)
                 {
                     downloaded += count;
                     if (downloaded > release.Size) throw new InvalidDataException("The installer exceeds the expected size.");
                     hash.AppendData(buffer, 0, count);
-                    await output.WriteAsync(buffer.AsMemory(0, count), timeout.Token).ConfigureAwait(false);
+                    await output.WriteAsync(buffer, 0, count, timeout.Token).ConfigureAwait(false);
                     progress?.Report(downloaded * 100.0 / release.Size);
                 }
                 if (downloaded != release.Size) throw new InvalidDataException("The installer download was incomplete.");
-                if (!CryptographicOperations.FixedTimeEquals(hash.GetHashAndReset(), Convert.FromHexString(release.Sha256)))
+                if (!FixedTimeEquals(hash.GetHashAndReset(), HexToBytes(release.Sha256)))
                     throw new InvalidDataException("The installer checksum does not match. Nothing was installed.");
             }
             File.Move(partial, path);
@@ -220,16 +245,46 @@ internal sealed class UpdateService
     {
         try
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(_statePath)!);
+            _ = Directory.CreateDirectory(Path.GetDirectoryName(_statePath)!);
             string temp = _statePath + "." + Guid.NewGuid().ToString("N") + ".tmp";
             try
             {
                 File.WriteAllText(temp, JsonSerializer.Serialize(State), Encoding.UTF8);
-                File.Move(temp, _statePath, true);
+                ReplaceFile(temp, _statePath);
             }
             finally { if (File.Exists(temp)) File.Delete(temp); }
         }
         catch (Exception ex) { Logger.Warn($"Update state could not be saved: {ex.Message}"); }
+    }
+
+    // File.Move(source, destination, overwrite) is not available on .NET Framework 4.8.
+    private static void ReplaceFile(string source, string destination)
+    {
+        if (File.Exists(destination)) File.Delete(destination);
+        File.Move(source, destination);
+    }
+
+    // Convert.FromHexString / CryptographicOperations.FixedTimeEquals are not available on .NET Framework 4.8.
+    private static byte[] HexToBytes(string hex)
+    {
+        var bytes = new byte[hex.Length / 2];
+        for (int i = 0; i < bytes.Length; i++)
+            bytes[i] = (byte)((HexNibble(hex[i * 2]) << 4) | HexNibble(hex[i * 2 + 1]));
+        return bytes;
+    }
+
+    private static int HexNibble(char c)
+    {
+        return c <= '9' ? c - '0' : (c | 0x20) - 'a' + 10;
+    }
+
+
+    private static bool FixedTimeEquals(byte[] left, byte[] right)
+    {
+        if (left.Length != right.Length) return false;
+        int difference = 0;
+        for (int i = 0; i < left.Length; i++) difference |= left[i] ^ right[i];
+        return difference == 0;
     }
 
     internal static string ResultPath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "InstantReplay", "update-result.json");
@@ -240,11 +295,11 @@ internal sealed class UpdateService
         string script = Path.Combine(directory, "install-update.ps1");
         string configuration = Path.Combine(directory, "install-update.json");
         string ready = Path.Combine(directory, "ready");
-        string exe = Environment.ProcessPath ?? throw new InvalidOperationException("The application path is unavailable.");
+        string exe = ProcessPath ?? throw new InvalidOperationException("The application path is unavailable.");
         using var parent = Process.GetCurrentProcess();
         File.WriteAllText(configuration, JsonSerializer.Serialize(new
         {
-            ParentId = Environment.ProcessId,
+            ParentId = parent.Id,
             ParentStartTicks = parent.StartTime.ToUniversalTime().Ticks,
             Installer = installer,
             Sha256 = release.Sha256,
@@ -262,8 +317,7 @@ internal sealed class UpdateService
             WindowStyle = ProcessWindowStyle.Hidden,
             WorkingDirectory = directory
         };
-        foreach (string argument in new[] { "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script, "-UpdateConfiguration", configuration })
-            start.ArgumentList.Add(argument);
+        start.Arguments = $"-NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"{script}\" -UpdateConfiguration \"{configuration}\"";
         using var helper = Process.Start(start) ?? throw new InvalidOperationException("The update helper could not start.");
         try
         {

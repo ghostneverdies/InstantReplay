@@ -51,6 +51,7 @@ public sealed class TaskbarBadge : IDisposable
     private struct FLASHWINFO
     {
         public int cbSize;
+        public IntPtr hwnd;
         public uint dwFlags;
         public uint uCount;
         public uint dwTimeout;
@@ -111,9 +112,16 @@ public sealed class TaskbarBadge : IDisposable
         }
     }
 
-    public void Clear() => SetOverlay(IntPtr.Zero, BadgeKind.None);
+    public void Clear()
+    {
+        SetOverlay(IntPtr.Zero, BadgeKind.None);
+    }
 
-    public void Reset() => _kind = BadgeKind.None;
+    public void Reset()
+    {
+        _kind = BadgeKind.None;
+    }
+
 
     public void Flash()
     {
@@ -124,11 +132,12 @@ public sealed class TaskbarBadge : IDisposable
             var info = new FLASHWINFO
             {
                 cbSize = Marshal.SizeOf<FLASHWINFO>(),
-                dwFlags = (int)(FlashwTray | FlashwTimer),
+                hwnd = _hwnd,
+                dwFlags = FlashwTray | FlashwTimer,
                 uCount = uint.MaxValue,
                 dwTimeout = 0,
             };
-            FlashWindowEx(_hwnd, ref info);
+            _ = FlashWindowEx(_hwnd, ref info);
         }
         catch (Exception ex)
         {
@@ -144,9 +153,10 @@ public sealed class TaskbarBadge : IDisposable
             var info = new FLASHWINFO
             {
                 cbSize = Marshal.SizeOf<FLASHWINFO>(),
-                dwFlags = (int)FlashwStop,
+                hwnd = _hwnd,
+                dwFlags = FlashwStop,
             };
-            FlashWindowEx(_hwnd, ref info);
+            _ = FlashWindowEx(_hwnd, ref info);
         }
         catch (Exception ex)
         {
@@ -164,7 +174,7 @@ public sealed class TaskbarBadge : IDisposable
         {
             Logger.Warn($"Taskbar overlay cleanup failed: {ex.Message}");
         }
-        if (_taskbar != null && Marshal.IsComObject(_taskbar)) Marshal.ReleaseComObject(_taskbar);
+        if (_taskbar != null && Marshal.IsComObject(_taskbar)) _ = Marshal.ReleaseComObject(_taskbar);
         _taskbar = null;
     }
 }

@@ -1,4 +1,8 @@
-﻿using System.Text.Json;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Media;
+using Wpf.Ui.Controls;
+using System.Text.Json;
 using InstantReplay.Models;
 using InstantReplay.Services;
 
@@ -131,12 +135,12 @@ public sealed class RecorderEngine : IDisposable
                 out long encoded, out long dropped, out int encoder, out long lastPts))
             return;
 
-        _engine.TryGetTiming(out double mapMs, out double encodeMs, out double renderMs,
+        _ = _engine.TryGetTiming(out double mapMs, out double encodeMs, out double renderMs,
             out double submitMs, out double snapshotMs, out double unmapMs, out long timedFrames);
-        _engine.TryGetAudioDiagnostics(0, out long sysActivate, out long sysInit, out long sysStart,
+        _ = _engine.TryGetAudioDiagnostics(0, out long sysActivate, out long sysInit, out long sysStart,
             out int sysTag, out int sysRate, out int sysChannels, out int sysBits,
             out int sysFloat, out int sysConvertFailures, out long sysFail);
-        _engine.TryGetAudioDiagnostics(1, out long micActivate, out long micInit, out long micStart,
+        _ = _engine.TryGetAudioDiagnostics(1, out long micActivate, out long micInit, out long micStart,
             out int micTag, out int micRate, out int micChannels, out int micBits,
             out int micFloat, out int micConvertFailures, out long micFail);
 
@@ -571,7 +575,7 @@ public sealed class RecorderEngine : IDisposable
         int desired = _target != null || _candidate != IntPtr.Zero ? 250 : 500;
         if (desired == _pollMs) return;
         _pollMs = desired;
-        _targetTimer?.Change(desired, desired);
+        _ = (_targetTimer?.Change(desired, desired));
     }
 
     private bool ProbeAntiCheatModule(uint processId, out string module)
@@ -637,8 +641,11 @@ public sealed class RecorderEngine : IDisposable
         public required string VideoPath { get; init; }
     }
 
-    public SaveReplayResult SaveReplay(string tempDir, string destDir) =>
-        Task.Run(() => SaveReplayAsync(tempDir, destDir)).GetAwaiter().GetResult();
+    public SaveReplayResult SaveReplay(string tempDir, string destDir)
+    {
+        return Task.Run(() => SaveReplayAsync(tempDir, destDir)).GetAwaiter().GetResult();
+    }
+
 
     public async Task<SaveReplayResult> SaveReplayAsync(string tempDir, string destDir)
     {
@@ -660,8 +667,8 @@ public sealed class RecorderEngine : IDisposable
         {
             Logger.Error("SaveReplay: async save failed", ex);
             CleanupFailedSaveFolder(job!.SaveFolder);
-            Interlocked.Exchange(ref _activeSaveJobId, 0L);
-            Interlocked.Exchange(ref _saveInFlight, 0);
+            _ = Interlocked.Exchange(ref _activeSaveJobId, 0L);
+            _ = Interlocked.Exchange(ref _saveInFlight, 0);
             return ProbeWriteBlocked(job.DestDir, ex);
         }
     }
@@ -700,13 +707,13 @@ public sealed class RecorderEngine : IDisposable
         string saveFolder = Path.Combine(destDir, $"replay_{DateTime.Now:yyyyMMdd_HHmmss}");
         try
         {
-            Directory.CreateDirectory(destDir);
-            Directory.CreateDirectory(saveFolder);
+            _ = Directory.CreateDirectory(destDir);
+            _ = Directory.CreateDirectory(saveFolder);
             string destVideo = Path.Combine(saveFolder, "replay." + Settings.ContainerExtension(_settings.Container));
             int rc = _engine.BeginSaveReplay(destVideo, Math.Max(_settings.ReplayDurationSeconds, 1), out ulong jobId);
             if (rc != ReplayEngine.SaveOk)
             {
-                Interlocked.Exchange(ref _saveInFlight, 0);
+                _ = Interlocked.Exchange(ref _saveInFlight, 0);
                 CleanupFailedSaveFolder(saveFolder);
                 failure = ClassifySaveStartFailure(rc, destDir);
                 return false;
@@ -719,13 +726,13 @@ public sealed class RecorderEngine : IDisposable
                 SaveFolder = saveFolder,
                 VideoPath = destVideo,
             };
-            Interlocked.Exchange(ref _activeSaveJobId, (long)jobId);
+            _ = Interlocked.Exchange(ref _activeSaveJobId, (long)jobId);
             return true;
         }
         catch (Exception ex)
         {
             Logger.Error("SaveReplay: failed creating save folder", ex);
-            Interlocked.Exchange(ref _saveInFlight, 0);
+            _ = Interlocked.Exchange(ref _saveInFlight, 0);
             CleanupFailedSaveFolder(saveFolder);
             failure = ProbeWriteBlocked(destDir, ex);
             return false;
@@ -747,8 +754,8 @@ public sealed class RecorderEngine : IDisposable
 
     private SaveReplayResult FinishSave(PendingSaveJob job, int rc)
     {
-        Interlocked.Exchange(ref _activeSaveJobId, 0L);
-        Interlocked.Exchange(ref _saveInFlight, 0);
+        _ = Interlocked.Exchange(ref _activeSaveJobId, 0L);
+        _ = Interlocked.Exchange(ref _saveInFlight, 0);
 
         if (rc == ReplayEngine.SaveOk && File.Exists(job.VideoPath))
         {
@@ -791,7 +798,7 @@ public sealed class RecorderEngine : IDisposable
         }
         catch (UnauthorizedAccessException)
         {
-            Logger.Warn($"SaveReplay: write to '{dir}' blocked (UnauthorizedAccessException) — " +
+            Logger.Warn($"SaveReplay: write to '{dir}' blocked (UnauthorizedAccessException) � " +
                         "likely Controlled Folder Access or antivirus.");
             return new SaveReplayResult(SaveReplayOutcome.WriteBlocked);
         }

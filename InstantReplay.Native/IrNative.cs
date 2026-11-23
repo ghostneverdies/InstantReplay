@@ -1,5 +1,4 @@
-﻿using System.Reflection;
-using System.Runtime.InteropServices;
+﻿using System.Runtime.InteropServices;
 using System.Text;
 
 namespace InstantReplay.Native;
@@ -16,30 +15,23 @@ internal static class IrNative
 
     static IrNative()
     {
+        // .NET Framework has no DllImportResolver. Add engine\bin to the DLL
+        // search path so DllImport("engine") finds the shipped native payload
+        // (and its dependencies) whether the app runs from ship\ or a ZIP.
         try
         {
-            NativeLibrary.SetDllImportResolver(typeof(IrNative).Assembly, ResolveEngine);
+            string engineDir = Path.Combine(AppContext.BaseDirectory, "engine", "bin");
+            if (File.Exists(Path.Combine(engineDir, "engine.dll")))
+                SetDllDirectory(engineDir);
         }
-        catch (InvalidOperationException)
+        catch
         {
+            // DllImport will still search the executable directory.
         }
     }
 
-    private static IntPtr ResolveEngine(string name, Assembly assembly, DllImportSearchPath? path)
-    {
-        if (!string.Equals(name, Dll, StringComparison.OrdinalIgnoreCase)) return IntPtr.Zero;
-
-        string baseDir = AppContext.BaseDirectory;
-        foreach (string candidate in new[]
-        {
-            Path.Combine(baseDir, "engine", "bin", "engine.dll"),
-            Path.Combine(baseDir, "engine.dll"),
-        })
-        {
-            if (File.Exists(candidate)) return NativeLibrary.Load(candidate);
-        }
-        return IntPtr.Zero;
-    }
+    [DllImport("kernel32.dll", EntryPoint = "SetDllDirectoryW", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool SetDllDirectory(string pathName);
 
     [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
     internal static extern int IR_Create(out IntPtr engine);

@@ -37,8 +37,8 @@
 ## Requirements
 
 - Windows 10 version 2004 (build 19041) or later, x64
-- .NET 8 Desktop Runtime (the build is framework-dependent)
-- [Microsoft Edge WebView2 Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/) (required for both inline and fullscreen playback)
+- .NET Framework 4.8 (preinstalled on supported Windows systems; no .NET installer is needed)
+- [Microsoft Edge WebView2 Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/) (required for both inline and fullscreen playback; the app shows an in-app warning when it is missing)
 
 ## Install
 
@@ -53,7 +53,7 @@ Program Files\Instant Replay\
    ├─ engine\bin\engine.dll
    ├─ engine\hooks\bin\*.dll
    ├─ assets\  mediaplayer\
-   └─ WinUI runtime, locales, meta\, symbols\
+   └─ WPF-UI/WebView2 DLLs, meta\, symbols\
 ```
 
 The uninstall entry in Settings > Apps points at `ship\Uninstall.exe`; it removes the launcher, the `ship` folder and the registry entries, and can optionally delete recordings.
@@ -85,14 +85,13 @@ The publish output is reorganized by `InstantReplay.csproj` so the app folder st
 
 ```
 InstantReplay.exe
-InstantReplay.dll, *.json, resources.pri, WinUI/WinAppSDK DLLs   (must sit next to the exe)
-<locale>\*.mui                                                   (must stay here, see below)
+InstantReplay.dll, *.json, WPF-UI/WebView2 DLLs                 (must sit next to the exe)
 engine\bin\engine.dll
 engine\hooks\bin\capture_hook.dll, overlay_hook.dll
-assets\  mediaplayer\  meta\*.winmd  symbols\*.pdb
+assets\  mediaplayer\  meta\  symbols\*.pdb
 ```
 
-The WinUI and Windows App SDK DLLs, `resources.pri`, the `.deps.json`/`.runtimeconfig.json` files and the `<locale>` folders cannot move: Windows resolves the DLLs and the `.mui` resources from the executable's own directory before any app code runs, and relocating the locale folders makes `Microsoft.UI.Xaml.dll` fail at startup. Everything that is safe to group is grouped.
+The app uses .NET Framework 4.8 and WPF-UI, so there are no `.deps.json`/`.runtimeconfig.json` files, `resources.pri`, WinUI/Windows App SDK DLLs, or locale resource folders to relocate. All managed dependencies sit next to the executable.
 
 This is the publish layout. The installer keeps it intact but nests it under `ship\` in the install root, which is why the app still finds every file relative to its own executable. The portable ZIP keeps the flat layout.
 
@@ -100,7 +99,7 @@ The source tree is grouped by responsibility, and small related types share one 
 
 | Folder | Contents |
 |---|---|
-| `InstantReplay.GUI` | WinUI pages, shell (`TrayIcon`, `TaskbarBadge`, `ToastCenter`), controls and helpers (`TitleBarButtons` + `Chrome`) |
+| `InstantReplay.GUI` | WPF/WPF-UI main window and views, shell (`TrayIcon`, `TaskbarBadge`), and controls/helpers |
 | `InstantReplay.Core` | Replay engine front end, capture target management and `GameDetector` |
 | `InstantReplay.Models` | Settings and shared records/enums: `CaptureModels.cs`, `UpdateModels.cs`, `VideoSettings.cs`, `SaveReplayResult.cs`, `GameRule.cs` |
 | `InstantReplay.Services` | Windows integration (`WindowsTheme` + `StartupManager`), updates, update install, audio device watching, window detection and hook injection |
@@ -184,7 +183,7 @@ Minecraft Java runs inside `java.exe` or `javaw.exe`; its launcher executable is
 
 Capture follows the game window in real time. Windowed and borderless-fullscreen games are recorded with Windows Graphics Capture on the game window; exclusive fullscreen is recorded with DXGI desktop duplication of the display the game is running on (the display is detected, so multi-monitor setups work). Both sources feed one encoder through a fixed canvas at the highest resolution the game can show, and smaller sources are centred with black bars, so switching modes mid-game produces one seamless video. `engine\hooks\bin\capture_hook.dll` is not injected for video capture. `engine\hooks\bin\overlay_hook.dll` is loaded when an in-game card can be drawn; it hooks the game's present calls itself (D3D9/11/12/OpenGL), never reads frames, and shows the in-game clip notification. The overlay is loaded through a `WH_GETMESSAGE` hook on the game's window thread (no remote threads), and never into games on the anti-cheat list; there the regular popup notification is used.
 
-Direct3D 9, Direct3D 11, Direct3D 12 and OpenGL additionally use `engine\hooks\bin\overlay_hook.dll` to draw the clip card after capture and before the real present, so the card is not recorded. The D3D12 overlay submits its own fenced command list on the tracked direct queue. Vulkan retains the external WinUI notification while its synchronized in-process renderer is unfinished. The overlay hook appends `[DEBUG]` lines to the app's debug log when debug logging is enabled.
+Direct3D 9, Direct3D 11, Direct3D 12 and OpenGL additionally use `engine\hooks\bin\overlay_hook.dll` to draw the clip card after capture and before the real present, so the card is not recorded. The D3D12 overlay submits its own fenced command list on the tracked direct queue. Vulkan retains the external WPF popup notification while its synchronized in-process renderer is unfinished. The overlay hook appends `[DEBUG]` lines to the app's debug log when debug logging is enabled.
 
 Game Capture uses Windows Graphics Capture and, for supported Direct3D 9/11/12 and OpenGL games, loads the overlay into the game process to draw the clip card. Both request square window corners regardless of the stored rounded-corner preference; the previous Windows corner preference is restored when capture stops. Game Capture ignores the stored recording method and switches between WGC and DXGI automatically; the chosen method applies to Whole Desktop and exclusive fullscreen. Auto tries Media Foundation MFTs in vendor order: Intel Quick Sync, Intel Gen12 / Arc VP12, NVIDIA, AMD, then the software MFT. Process audio requires Windows build 20348 or later (Windows 11 supported); a process-audio failure is reported rather than falling back to system audio.
 
@@ -194,7 +193,7 @@ In hook mode, client-size, window-style, monitor and display-size changes rebuil
 
 Capture follows fresh compositor/desktop timestamps, skips superseded frames and rejects duplicate or out-of-order timestamps. It does not create filler frames on a timer. During a stationary scene, the container holds the last valid image. The FPS setting is a maximum, so static scenes produce fewer encoded frames. Encoders are Media Foundation MFTs, and GPU sample buffers are recycled only after the encoder releases them.
 
-Replay saves show a compact card at the top left with the app icon. Successful saves show **Clipped Last N Seconds**, using the saved duration; failed saves show **Failed To Clip** and **See debug log for more details**, with the reason recorded in the log. When a Direct3D 9, Direct3D 11, Direct3D 12 or OpenGL hook is active the card is drawn inside the game with the same colors, icon, live encode percentage and morph/slide transitions as the WinUI popup; otherwise the popup is a WinUI window over the foreground display. The card slides in from the left, remains visible for four seconds, then slides out without activating or stealing game focus. The WinUI popup requests capture exclusion and is raised above borderless/fullscreen windows on a best-effort basis; legacy exclusive fullscreen can prevent it from appearing, and a popup failure never invalidates the saved clip. Other warnings retain their existing notification path.
+Replay saves show a compact card at the top left with the app icon. Successful saves show **Clipped Last N Seconds**, using the saved duration; failed saves show **Failed To Clip** and **See debug log for more details**, with the reason recorded in the log. When a Direct3D 9, Direct3D 11, Direct3D 12 or OpenGL hook is active the card is drawn inside the game with the same colors, icon, live encode percentage and morph/slide transitions as the WPF popup; otherwise the popup is a WPF window over the foreground display. The card slides in from the left, remains visible for four seconds, then slides out without activating or stealing game focus. The WPF popup requests capture exclusion and is raised above borderless/fullscreen windows on a best-effort basis; legacy exclusive fullscreen can prevent it from appearing, and a popup failure never invalidates the saved clip. Other warnings use in-app WPF-UI notifications.
 
 Click a gallery replay to play inside the app. The fullscreen button or F switches views; Escape returns from fullscreen. Switching preserves playback position, play/pause state, volume and mute. The inline player follows the recorded aspect ratio with rounded video corners; fullscreen includes an exit control in the corner. Volume waves fade in sequence as volume decreases: outer wave first, then inner wave, then the muted indicator.
 
@@ -202,7 +201,7 @@ Click a gallery replay to play inside the app. The fullscreen button or F switch
 
 The **Updates** page sits at the bottom of navigation. **Check for updates** reads the latest stable release from `ghostneverdies/InstantReplay` on GitHub. Numeric version comparison treats `v1.5` and `1.5.0` as equal and offers only newer versions, never a downgrade. Automatic checks run when due at startup and every 24 hours while the app runs; the last attempt is persisted across restarts. Failed checks do not interrupt recording, and manual checks can retry immediately.
 
-When a newer release is found, a WinUI dialog over the app offers **Update now** or **Not now**. The reminder appears at most once per 24 hours, including across restarts and repeated manual checks. Reminders wait until the app is in foreground use rather than bringing it above a game or opening it from the tray. Declining keeps recording and leaves the update available on the Updates page.
+When a newer release is found, an in-app update prompt offers **Update now** or **Not now**. The reminder appears at most once per 24 hours, including across restarts and repeated manual checks. Reminders wait until the app is in foreground use rather than bringing it above a game or opening it from the tray. Declining keeps recording and leaves the update available on the Updates page.
 
 **Download and install** asks before restarting, downloads the complete `InstantReplaySetup.exe`, and verifies its byte count and GitHub-provided SHA-256 digest. Recording continues during download. After verification, a temporary local PowerShell helper waits for the app to fully exit, runs the installer with `/S -quiet /UPDATE=1 /D=<current app directory>`, waits for installation to finish, and reopens the app as the original user. Windows administrator approval can still appear. Save any replay you want before installing: the in-memory buffer is cleared on exit. Cancellation or download failure leaves the running app untouched; cancelling elevation reopens the existing app and reports the failure on the Updates page.
 

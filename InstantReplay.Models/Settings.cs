@@ -51,7 +51,11 @@ public sealed class Settings
     public bool ApplicationLocalAudio { get; set; } = true;
 
     // Media Foundation writes MP4 only. Legacy container choices map to .mp4.
-    public static string ContainerExtension(string container) => "mp4";
+    public static string ContainerExtension(string container)
+    {
+        return "mp4";
+    }
+
 
     public string CaptureMethod { get; set; } = "Dxgi";
     public string CaptureTarget { get; set; } = "Display";
@@ -69,10 +73,13 @@ public sealed class Settings
 
     public string BackgroundNotice { get; set; } = "Once";
 
-    public string GetEffectiveSaveDestination() =>
-        string.IsNullOrWhiteSpace(SaveDestination)
+    public string GetEffectiveSaveDestination()
+    {
+        return string.IsNullOrWhiteSpace(SaveDestination)
             ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyPictures), "Instant Replay")
             : SaveDestination;
+    }
+
 
     private static string PathOnDisk => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
@@ -161,7 +168,7 @@ public sealed class Settings
         {
             CaptureRoundedCorners = true;
             string path = PathOnDisk;
-            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            _ = Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             File.WriteAllText(path, JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true }));
         }
         catch (Exception ex)
@@ -176,7 +183,7 @@ public sealed class Settings
         try
         {
             string path = PathOnDisk;
-            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            _ = Directory.CreateDirectory(Path.GetDirectoryName(path)!);
 
             Dictionary<string, JsonElement>? onDisk = null;
             if (File.Exists(path))

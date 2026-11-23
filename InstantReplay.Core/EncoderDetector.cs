@@ -45,7 +45,7 @@ public static class EncoderDetector
         }
         finally
         {
-            Gate.Release();
+            _ = Gate.Release();
         }
     }
 

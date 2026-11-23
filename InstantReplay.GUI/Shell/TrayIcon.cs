@@ -1,5 +1,3 @@
-using System;
-using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using InstantReplay.Services;
 
@@ -91,7 +89,7 @@ public sealed class TrayIcon : IDisposable
 
         try
         {
-            SetPreferredAppMode(PreferredAppMode.AllowDark);
+            _ = SetPreferredAppMode(PreferredAppMode.AllowDark);
             FlushMenuThemes();
         }
         catch { }
@@ -175,18 +173,18 @@ public sealed class TrayIcon : IDisposable
         int id = 1000;
         foreach (var item in items)
         {
-            if (item.IsSeparator) { AppendMenuW(menu, MfSeparator, 0, ""); continue; }
+            if (item.IsSeparator) { _ = AppendMenuW(menu, MfSeparator, 0, ""); continue; }
             uint flags = MfString | (item.IsChecked ? MfChecked : 0) | (item.IsEnabled ? 0u : MfGrayed);
-            AppendMenuW(menu, flags, (uint)id, item.Text);
+            _ = AppendMenuW(menu, flags, (uint)id, item.Text);
             actions[id] = item.OnClick;
             id++;
         }
 
-        GetCursorPos(out var pt);
-        SetForegroundWindow(_hwnd);
+        _ = GetCursorPos(out var pt);
+        _ = SetForegroundWindow(_hwnd);
         int cmd = TrackPopupMenuEx(menu, TpmRightButton | TpmReturnCmd, pt.X, pt.Y, _hwnd, IntPtr.Zero);
-        PostMessage(_hwnd, 0, IntPtr.Zero, IntPtr.Zero);
-        DestroyMenu(menu);
+        _ = PostMessage(_hwnd, 0, IntPtr.Zero, IntPtr.Zero);
+        _ = DestroyMenu(menu);
 
         if (cmd != 0 && actions.TryGetValue(cmd, out var action)) action?.Invoke();
     }
@@ -196,7 +194,7 @@ public sealed class TrayIcon : IDisposable
         if (_disposed) return;
         _disposed = true;
         var data = new NOTIFYICONDATA { cbSize = Marshal.SizeOf<NOTIFYICONDATA>(), hWnd = _hwnd, uID = 1 };
-        Shell_NotifyIcon(NimDelete, ref data);
+        _ = Shell_NotifyIcon(NimDelete, ref data);
     }
 }
 
@@ -211,5 +209,9 @@ public sealed class TrayMenuItem
     public bool IsChecked { get; init; }
     public bool IsEnabled { get; init; } = true;
 
-    public static TrayMenuItem Separator() => new() { IsSeparator = true };
+    public static TrayMenuItem Separator()
+    {
+        return new() { IsSeparator = true };
+    }
+
 }
