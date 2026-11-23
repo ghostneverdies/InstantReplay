@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: read
+  actions: write
   pages: write
   id-token: write
 
@@ -30,6 +31,19 @@ jobs:
 
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
+
+      # A re-run keeps artifacts from earlier attempts, which makes
+      # deploy-pages fail with "Multiple artifacts named github-pages".
+      - name: Remove previous Pages artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ids="$(gh api --paginate \
+            "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts" \
+            --jq '.artifacts[] | select(.name == "github-pages") | .id')"
+          for id in $ids; do
+            gh api -X DELETE "repos/${{ github.repository }}/actions/artifacts/$id"
+          done
 
       - name: Upload site
         uses: actions/upload-pages-artifact@v3
