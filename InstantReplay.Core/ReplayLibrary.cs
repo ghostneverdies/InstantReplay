@@ -463,10 +463,6 @@ internal readonly struct ShellVideoInfo
     public double Fps { get; }
 }
 
-/// <summary>
-/// Video metadata and thumbnails straight from the Windows shell (the same providers Explorer uses).
-/// Replaces the WinRT StorageFile/VideoProperties/GetThumbnailAsync calls, which .NET Framework 4.8 cannot use.
-/// </summary>
 internal static class ShellMedia
 {
     private static readonly Guid IidShellItem = new Guid("43826D1E-E718-42EE-BC55-A1E261C37BFE");
@@ -490,7 +486,6 @@ internal static class ShellMedia
         public uint Pid;
     }
 
-    // PROPVARIANT: 2-byte type, 6 reserved bytes, then a union (8 bytes on x86, 16 on x64).
     [StructLayout(LayoutKind.Sequential)]
     private struct PropVariantNative
     {
@@ -539,11 +534,11 @@ internal static class ShellMedia
         {
             switch (value.Vt)
             {
-                case 21: // VT_UI8
-                case 20: // VT_I8
+                case 21:
+                case 20:
                     return value.Value;
-                case 19: // VT_UI4
-                case 3:  // VT_I4
+                case 19:
+                case 3:
                     return (uint)(value.Value & 0xFFFFFFFF);
                 default:
                     return 0;
@@ -559,10 +554,10 @@ internal static class ShellMedia
         if (hr != 0) throw new COMException("The shell could not read the video properties.", hr);
         try
         {
-            ulong duration100ns = ReadUInt64(store, FmtidMedia, 3);   // System.Media.Duration
-            ulong width = ReadUInt64(store, FmtidVideo, 3);           // System.Video.FrameWidth
-            ulong height = ReadUInt64(store, FmtidVideo, 4);          // System.Video.FrameHeight
-            ulong frameRate = ReadUInt64(store, FmtidVideo, 6);       // System.Video.FrameRate (frames per 1000 s)
+            ulong duration100ns = ReadUInt64(store, FmtidMedia, 3);
+            ulong width = ReadUInt64(store, FmtidVideo, 3);
+            ulong height = ReadUInt64(store, FmtidVideo, 4);
+            ulong frameRate = ReadUInt64(store, FmtidVideo, 6);
             return new ShellVideoInfo(
                 TimeSpan.FromTicks((long)Math.Min(duration100ns, (ulong)long.MaxValue)),
                 (int)Math.Min(width, int.MaxValue), (int)Math.Min(height, int.MaxValue),

@@ -161,16 +161,6 @@ public sealed class RecorderEngine : IDisposable
 
     private static readonly int[] AudioBitrates = [96, 128, 160, 192];
 
-    // Native pref layout (see engine.c):
-    //   bits  0..7  encoder ordinal (Auto lets MF pick; 11 requests software)
-    //   bit   8     rate control, always VBR now
-    //   bit   9     segmented ring
-    //   bit  10     GPU encoder enabled
-    //   bit  11     GPU encoder prefers iGPU
-    //   bits 12..14 quality/speed preset 0..6
-    //   bits 15..16 codec (1 HEVC, 2 H264, 3 AV1)
-    // No availability bits are sent: MFT_ENUM_FLAG_SORTANDFILTER chooses the MFT
-    // attached to the selected adapter, exactly like wcap.
     private static int ResolveEncoderPreference(Settings s)
     {
         int codecBits = s.VideoCodec switch { "Hevc" => 1, "H264" => 2, "Av1" => 3, _ => 2 };
@@ -262,8 +252,6 @@ public sealed class RecorderEngine : IDisposable
     {
         int index = Array.IndexOf(AudioBitrates, _captureSettings.AudioBitrate);
         if (index < 0) index = Array.IndexOf(AudioBitrates, 160);
-        // Rounded corners are hidden in the UI but stay enabled for WGC.
-        // Include-secondary-windows is hidden and remains off for migration only.
         uint options = (uint)((_captureSettings.CaptureClientArea ? 1 : 0) | (_captureSettings.CaptureCursor ? 2 : 0) |
                               (_captureSettings.CaptureBorder ? 4 : 0) |
                               8 |
@@ -282,15 +270,12 @@ public sealed class RecorderEngine : IDisposable
         (int srcW, int srcH) = canvasW > 0 && canvasH > 0
             ? (canvasW, canvasH)
             : ReplayEngine.MonitorSize(monitor);
-        // Bitrate is always derived from the quality preset, frame rate and source size.
         int bitrateKbps = VideoQualityProfile.TargetBitrateKbps(
             _captureSettings.QualityPreset, _captureSettings.FrameRate, srcW, srcH);
         Logger.Debug($"[Encoder] GPU={(_captureSettings.GpuEncoder ? _captureSettings.GpuPreference : "off")}, " +
                      $"codec={_captureSettings.VideoCodec}, audio={_captureSettings.AudioCodec}/" +
                      $"{_captureSettings.AudioBitrate}kbps, target bitrate {bitrateKbps} kbps " +
                      $"from {_captureSettings.QualityPreset} at {_captureSettings.FrameRate} fps, source {srcW}x{srcH}.");
-        // Game Capture is hybrid and follows the detected window mode. Whole Desktop
-        // uses the capture method selected in settings (DXGI by default).
         CaptureMethod method;
         if (snap == null)
         {

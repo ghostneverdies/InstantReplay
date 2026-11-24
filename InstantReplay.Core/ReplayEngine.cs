@@ -128,7 +128,6 @@ public sealed class ReplayEngine : IDisposable
             int hwHr = IrNative.IR_HwInitHr(_engine);
             string encName = active switch
             {
-                // Media Foundation MFTs, split by codec and vendor.
                 20 => "MF HEVC (Intel Quick Sync)",
                 21 => "MF HEVC (Intel Gen12 / Arc, VP12)",
                 22 => "MF HEVC (NVIDIA NVENC)",
@@ -187,8 +186,6 @@ public sealed class ReplayEngine : IDisposable
         lock (_opLock)
         {
             if (_engine == IntPtr.Zero) return false;
-            // Update the capture canvas before restarting the native capture
-            // thread, so the new source is captured at its full resolution.
             if (canvasWidth > 0 && canvasHeight > 0)
                 IrNative.IR_SetCanvasHint(_engine, canvasWidth, canvasHeight);
             int rc = IrNative.IR_SetCaptureSource(_engine, (int)method, monitorIndex, window, options);
@@ -244,8 +241,6 @@ public sealed class ReplayEngine : IDisposable
         if (_engine == IntPtr.Zero || jobId == 0) return false;
         try
         {
-            // IR_PollSave returns IR_OK (0) when the job exists, even while it is
-            // still pending. A non-zero code means the job is gone or the call failed.
             int pollRc = IrNative.IR_PollSave(_engine, jobId, out progress, out result);
             bool alive = pollRc == IrNative.OK;
             if (!alive)

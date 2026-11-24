@@ -110,14 +110,8 @@ public partial class App : Application
     }
 }
 
-/// <summary>
-/// Theme plumbing that WinUI provided through ThemeDictionaries and SystemAccentColor* keys.
-/// WPF-UI owns its own light/dark control resources; this class layers the app palette (Theme.xaml) and
-/// the Windows accent shades on top, and points WPF-UI's WinUI-named control brushes at that palette.
-/// </summary>
 internal static class AppTheme
 {
-    // WinUI lightweight-styling keys that WPF-UI also reads, mapped to the palette brush they should use.
     private static readonly (string Key, string Source)[] ControlBrushMap =
     {
         ("ButtonBackground", "SurfaceBorderBrush"),
@@ -152,7 +146,6 @@ internal static class AppTheme
         ("ToggleSwitchKnobFillOn", "AccentTextBrush"),
     };
 
-    /// <summary>Windows accent palette, WinUI naming: Light3, Light2, Light1, Base, Dark1, Dark2, Dark3.</summary>
     public readonly struct AccentShades
     {
         public AccentShades(Color light3, Color light2, Color light1, Color accent, Color dark1, Color dark2, Color dark3)

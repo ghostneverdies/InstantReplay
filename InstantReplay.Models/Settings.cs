@@ -35,8 +35,6 @@ public sealed class Settings
 
     public string QualityPreset { get; set; } = "Balanced";
 
-    // Hidden legacy field. Old files are migrated into GpuEncoder/GpuPreference on
-    // load; the settings page no longer exposes individual encoders.
     public string EncoderChoice { get; set; } = "Auto";
     public bool GpuEncoder { get; set; } = true;
     public string GpuPreference { get; set; } = "Prefer dGPU";
@@ -56,7 +54,6 @@ public sealed class Settings
     public int AudioBitrate { get; set; } = 160;
     public bool ApplicationLocalAudio { get; set; } = true;
 
-    // Media Foundation writes MP4 only. Legacy container choices map to .mp4.
     public static string ContainerExtension(string container) => "mp4";
 
     public string CaptureMethod { get; set; } = "Dxgi";
@@ -84,7 +81,6 @@ public sealed class Settings
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
         "InstantReplay", "settings.json");
 
-    /// <summary>Maps a stored preset (including legacy names) to a valid seven-level name.</summary>
     private static string MigratePreset(string stored, string fallback, bool speedScale)
     {
         if (VideoQualityProfile.PresetNames.Contains(stored)) return stored;
@@ -112,16 +108,11 @@ public sealed class Settings
                 {
                     if (loaded.CaptureTarget is "Window" or "ActiveWindow") loaded.CaptureTarget = "SpecificWindows";
                     if (loaded.CaptureTarget is not ("Display" or "SpecificWindows")) loaded.CaptureTarget = "Display";
-                    // Whole Desktop can choose its capture API. Game Capture ignores this
-                    // value and keeps switching between WGC and DXGI per detected window.
                     loaded.CaptureMethod = string.Equals(loaded.CaptureMethod, "Wgc", StringComparison.OrdinalIgnoreCase)
                         ? "Wgc" : "Dxgi";
                     loaded.SpecificWindows ??= new List<GameRule>();
-                    // Rounded corners are always enabled for WGC now that the option is hidden.
                     loaded.CaptureRoundedCorners = true;
 
-                    // A stored software encoder maps to GPU off. Every other legacy encoder
-                    // maps to GPU on with the default dGPU preference.
                     string storedEncoder = loaded.EncoderChoice ?? "Auto";
                     loaded.GpuEncoder = !string.Equals(storedEncoder, "MfSoftware", StringComparison.OrdinalIgnoreCase);
                     loaded.GpuPreference = loaded.GpuPreference is "Prefer iGPU" or "Prefer dGPU"
@@ -137,16 +128,11 @@ public sealed class Settings
                         ? "FLAC" : "AAC";
                     if (loaded.AudioBitrate is not (96 or 128 or 160 or 192)) loaded.AudioBitrate = 160;
 
-                    // Hidden legacy values are pinned to safe equivalents: MP4 output,
-                    // VBR and formula-driven quality.
                     loaded.Container = "Mp4";
                     loaded.RateControl = "Vbr";
                     loaded.BufferMethod = string.Equals(loaded.BufferMethod, "Segmented", StringComparison.OrdinalIgnoreCase)
                         ? "Segmented" : "Continuous";
 
-                    // Migrate the old Speed/Balanced/Quality presets onto the
-                    // seven-level ultra-fast -> slowest scale. The quality preset also
-                    // drives the native encoder quality now, so keep both in sync.
                     loaded.QualityPreset = MigratePreset(loaded.QualityPreset ?? "Balanced", "Balanced", speedScale: false);
                     loaded.EncoderPreset = loaded.QualityPreset;
 

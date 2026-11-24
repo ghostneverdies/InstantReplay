@@ -23,8 +23,6 @@ internal static class IrNative
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern IntPtr LoadLibraryW(string fileName);
 
-    // .NET Framework has no NativeLibrary.SetDllImportResolver. Pre-loading the engine by full path registers
-    // the module as "engine.dll", so the DllImport("engine") binding below resolves to that already-loaded copy.
     static IrNative()
     {
         try

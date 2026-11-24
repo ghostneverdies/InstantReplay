@@ -15,8 +15,6 @@
     <Thickness x:Key="ContentFrameMargin">20,16,20,12</Thickness>
     <Thickness x:Key="ApplyButtonMargin">20,0,20,12</Thickness>
 
-    <!-- Segoe UI variants first (including the Variable fonts on Windows 11), with the
-         classic Segoe UI fallback on older Windows builds. -->
     <FontFamily x:Key="AppFontFamily">Segoe UI Variable Text, Segoe UI Variable, Segoe UI</FontFamily>
     <FontFamily x:Key="MonoFontFamily">Cascadia Mono, Consolas</FontFamily>
 
@@ -24,7 +22,6 @@
     <sys:Double x:Key="BodyFontSize">14</sys:Double>
     <sys:Double x:Key="HelperFontSize">12</sys:Double>
 
-    <!-- Compact typography for data-heavy lists/tables. -->
     <sys:Double x:Key="DenseHeaderFontSize">12</sys:Double>
     <sys:Double x:Key="DenseCellFontSize">13</sys:Double>
 
@@ -32,7 +29,6 @@
     <sys:Double x:Key="NavItemHeight">40</sys:Double>
     <Thickness x:Key="ButtonPadding">16,8</Thickness>
 
-    <!-- Dense view conventions: one step down from the 14pt default. -->
     <Style x:Key="DenseColumnHeaderStyle" TargetType="TextBlock">
         <Setter Property="FontSize" Value="{StaticResource DenseHeaderFontSize}"/>
         <Setter Property="FontWeight" Value="SemiBold"/>
@@ -50,8 +46,6 @@
         <Setter Property="Foreground" Value="{DynamicResource TextFillColorTertiaryBrush}"/>
     </Style>
 
-    <!-- Icon+text ui:Button content: set weight on the inner ui:TextBlock, never
-         FontSize on the button (that would scale the icon). -->
     <Style x:Key="IconButtonLabelStyle" TargetType="ui:TextBlock">
         <Setter Property="FontTypography" Value="BodyStrong"/>
     </Style>

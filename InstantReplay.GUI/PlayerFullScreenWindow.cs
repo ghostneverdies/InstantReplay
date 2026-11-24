@@ -13,7 +13,6 @@ using Microsoft.Web.WebView2.Wpf;
 
 namespace InstantReplay.GUI;
 
-/// <summary>A rectangle in physical screen pixels (replaces Windows.Graphics.RectInt32).</summary>
 public readonly struct ScreenRect
 {
     public ScreenRect(int x, int y, int width, int height)

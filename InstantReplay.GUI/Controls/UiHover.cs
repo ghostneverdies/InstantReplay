@@ -7,10 +7,6 @@ using System.Windows.Media.Animation;
 
 namespace InstantReplay.GUI.Controls;
 
-/// <summary>
-/// Opt-in hover "grow" for buttons (controls:UiHover.IsEnabled="True"). The WinUI build ran a spring on the
-/// composition visual; WPF has no composition layer, so a ScaleTransform is eased instead.
-/// </summary>
 public static class UiHover
 {
     private const double HoverScale = 1.04;

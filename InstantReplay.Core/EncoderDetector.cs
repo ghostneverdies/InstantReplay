@@ -10,20 +10,13 @@ using InstantReplay.Services;
 
 namespace InstantReplay.Core;
 
-/// <summary>
-/// Runs the engine's encoder probe. The probe opens every Media Foundation hardware and software
-/// MFT and pushes real frames through each one, so an encoder is only reported as available when it
-/// actually produced output on this machine.
-/// </summary>
 public static class EncoderDetector
 {
     private static readonly SemaphoreSlim Gate = new(1, 1);
     private static Dictionary<string, bool>? _lastResult;
 
-    /// <summary>Last probe result, keyed by Media Foundation encoder key. Kept in memory only.</summary>
     public static Dictionary<string, bool>? LastResult => Volatile.Read(ref _lastResult);
 
-    /// <summary>Returns the per-encoder result keyed by Media Foundation encoder key, or null if the probe could not run.</summary>
     public static async Task<Dictionary<string, bool>?> DetectAsync()
     {
         await Gate.WaitAsync().ConfigureAwait(false);
@@ -54,10 +47,8 @@ public static class EncoderDetector
         }
     }
 
-    /// <summary>True when the in-memory result has an entry for every known encoder.</summary>
     public static bool HasResult => EncoderAvailabilityMap.IsComplete(LastResult);
 
-    /// <summary>User-selectable encoders (Auto always is) that have at least one working codec variant.</summary>
     public static bool IsSelectable(EncoderPreference preference, IReadOnlyDictionary<string, bool>? detected)
     {
         if (preference == EncoderPreference.Auto || !EncoderAvailabilityMap.IsComplete(detected)) return true;

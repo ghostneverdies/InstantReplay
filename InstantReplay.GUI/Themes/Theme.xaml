@@ -2,10 +2,6 @@
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
 
-    <!-- WPF has no per-theme ResourceDictionary.ThemeDictionaries and no SystemAccentColorDark2/Light3 style
-         keys. The DarkPalette / LightPalette dictionaries below are not merged: AppTheme.Apply (App.xaml.cs)
-         copies the active palette into Application.Resources, and rewrites the accent-derived brushes from the
-         Windows accent palette. Every consumer uses DynamicResource so a theme or accent change repaints live. -->
 
     <FontFamily x:Key="SymbolThemeFontFamily">Segoe Fluent Icons, Segoe MDL2 Assets</FontFamily>
 
@@ -13,12 +9,10 @@
     <SolidColorBrush x:Key="RecBrush" Color="#B84A4F"/>
     <SolidColorBrush x:Key="HeartRedBrush" Color="#ED4956"/>
 
-    <!-- Placeholders; AppTheme.Apply overwrites these from the Windows accent palette. -->
     <SolidColorBrush x:Key="AccentBrush" Color="#0078D4"/>
     <SolidColorBrush x:Key="AccentDimBrush" Color="#004E8C"/>
     <SolidColorBrush x:Key="HeroBackgroundBrush" Color="#003A6A"/>
 
-    <!-- Defaults (dark) so designer and first paint are never unresolved. -->
     <SolidColorBrush x:Key="BgBrush" Color="#00131116"/>
     <SolidColorBrush x:Key="SurfaceBrush" Color="#661C1922"/>
     <SolidColorBrush x:Key="SurfaceBorderBrush" Color="#702E2838"/>

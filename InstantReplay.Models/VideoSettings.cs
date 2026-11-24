@@ -10,8 +10,6 @@ namespace InstantReplay.Models;
 public enum EncoderPreference
 {
     Auto = 0,
-    // Legacy ordinals 1..4 and 9..10 are retired with the old external encoder
-    // stack. They are kept only so stored settings can be migrated to Auto.
     MfQsv = 5,
     MfVp12 = 6,
     MfNvenc = 7,
@@ -19,10 +17,6 @@ public enum EncoderPreference
     MfSoftware = 11,
 }
 
-/// <summary>
-/// Bits returned by the engine's encoder probe. Keep in sync with the ENC_* constants in
-/// engine/engine_core/src/engine.h. All encoders are Media Foundation MFTs.
-/// </summary>
 [Flags]
 public enum EncoderAvailability : uint
 {
@@ -45,7 +39,6 @@ public enum EncoderAvailability : uint
     All = (1 << 23) - 1,
 }
 
-/// <summary>Compact per-codec availability packed into IR_Start pref bits 24..31.</summary>
 public static class CompactAvailability
 {
     public const uint MfQsv = 1u << 4;
@@ -82,7 +75,6 @@ public static class EncoderAvailabilityMap
         return map;
     }
 
-    /// <summary>Returns None when the map is missing or has no entry for any known encoder.</summary>
     public static EncoderAvailability FromDictionary(IReadOnlyDictionary<string, bool>? map)
     {
         if (map is null || map.Count == 0) return EncoderAvailability.None;
@@ -95,11 +87,6 @@ public static class EncoderAvailabilityMap
     public static bool IsComplete(IReadOnlyDictionary<string, bool>? map) =>
         map is not null && Entries.All(e => map.ContainsKey(e.Key));
 
-    /// <summary>
-    /// Packs the full probe mask into the single per-codec byte the native
-    /// encoder sees in IR_Start's pref bits 24..31. Software MFT availability is
-    /// inferred from these vendor bits by the native engine.
-    /// </summary>
     public static uint Compact(EncoderAvailability mask, string codec)
     {
         uint r = 0;
@@ -119,14 +106,10 @@ public static class EncoderAvailabilityMap
 
 public readonly record struct VideoQualityProfile(string Name, int BitrateKbps, int MaxWidth, int MaxHeight)
 {
-    // Seven levels, ultra fast (0) -> slowest (6). The ordinal is the value
-    // the native engine receives in IR_Start pref bits 12..14.
     public static readonly string[] PresetNames =
         ["UltraFast", "VeryFast", "Fast", "Balanced", "Slow", "Slower", "Slowest"];
     private static readonly string[] PresetLabels =
         ["Ultra fast", "Very fast", "Fast", "Balanced", "Slow", "Slower", "Slowest"];
-    // Base 1080p/60 kbps. Higher quality (slower preset) gets a higher target;
-    // TargetBitrateKbps scales this by pixel count and frame rate.
     private static readonly int[] BaseKbps60 = [12000, 14000, 16000, 20000, 24000, 27000, 30000];
 
     public static int PresetIndex(string preset) => preset switch
@@ -138,8 +121,6 @@ public readonly record struct VideoQualityProfile(string Name, int BitrateKbps, 
         "Slow" => 4,
         "Slower" => 5,
         "Slowest" => 6,
-        // Legacy stored values. Old encoder "Speed"/"Quality" become
-        // Fast/Slow; old quality "Low"/"High" become UltraFast/Slowest.
         "Low" => 0,
         "Speed" => 2,
         "Quality" => 4,
@@ -153,9 +134,6 @@ public readonly record struct VideoQualityProfile(string Name, int BitrateKbps, 
         int rate = Compat.Clamp(fps, 15, 240);
         return new VideoQualityProfile(PresetNames[idx], BaseKbps60[idx] * rate / 60, 3840, 2160);
     }
-    // Bitrate is derived from the quality preset, target FPS and the actual output resolution.
-    // Values are calibrated so 1080p60 matches the documented Low/Balanced/High table; other
-    // resolutions scale with pixel count, clamped so 4K does not demand an unreasonable rate.
     public static int TargetBitrateKbps(string preset, int fps, int width, int height)
     {
         int baseKbps = FromPreset(preset, fps).BitrateKbps;

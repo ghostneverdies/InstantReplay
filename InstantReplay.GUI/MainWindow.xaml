@@ -260,7 +260,6 @@
                     </RadioButton>
                 </StackPanel>
 
-                <!-- Single shared WinUI-style selection pill, animated between items. -->
                 <Canvas x:Name="NavSelectionOverlay"
                         Grid.RowSpan="3"
                         IsHitTestVisible="False"
@@ -1595,7 +1594,6 @@
             </Grid>
         </Grid>
 
-        <!-- WPF-UI Tray: Fluent animated context menu with glyphs. -->
         <tray:NotifyIcon x:Name="AppTrayIcon"
                          TooltipText="Instant Replay"
                          MenuOnRightClick="True"

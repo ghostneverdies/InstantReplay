@@ -529,7 +529,6 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
 
     private void ApplyBackdrop()
     {
-        // The Mica backdrop and transparent window background come from FluentWindow / ApplicationThemeManager.
         try
         {
             TitleBarButtons.SetCornerPreference(_hwnd, round: true);
@@ -690,7 +689,6 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             EndHotkeyCapture();
     }
 
-    // ---- Sidebar (RadioButton items + collapsible pane; WPF-UI's NavigationView only navigates to Page types) ----
 
     private const double NavPaneOpenWidth = 220;
     private const double NavPaneCompactWidth = 48;
@@ -715,10 +713,6 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
 
     private RadioButton? SelectedNav() => NavItems().FirstOrDefault(n => n.IsChecked == true);
 
-    /// <summary>
-    /// Glides the single shared selection pill to the active sidebar item. The
-    /// static per-item indicator is disabled in App.xaml so only this pill shows.
-    /// </summary>
     private void MoveSelectionPill(RadioButton item, bool animate = true)
     {
         if (SelectionPill is null || PillTransform is null) return;
@@ -733,10 +727,8 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
 
             Point origin;
             try { origin = item.TransformToAncestor(NavPane).Transform(new Point(0, 0)); }
-            catch (InvalidOperationException) { return; } // item detached from the visual tree
+            catch (InvalidOperationException) { return; }
             double targetY = origin.Y + (item.ActualHeight - SelectionPillHeight) / 2.0;
-            // Nested items indent their indicator; our items are flat but keep the
-            // pill hugging the same 4px inset used by the nav item template.
             Canvas.SetLeft(SelectionPill, Math.Max(0, origin.X + 4));
 
             if (_lastPillY < 0 || !animate)
@@ -796,7 +788,6 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             : ReferenceEquals(item, NavGalleryItem) ? GalleryPage
             : HomePage;
 
-        // Clicking Gallery while a clip is open returns to the gallery (the viewer lives under Gallery).
         if (ReferenceEquals(item, NavGalleryItem) && ReferenceEquals(_currentPage, ViewerPage))
         {
             CloseViewer();
@@ -1001,8 +992,6 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
                 double chromeH = clientH - PlayerViewport.ActualHeight;
                 if (chromeW < 160 || chromeH < 80)
                 {
-                    // First viewer open (or an unexpected layout): use the measured
-                    // navigation/title/back-button allowance instead of a bad delta.
                     chromeW = 260;
                     chromeH = 104;
                 }
@@ -1689,8 +1678,6 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         DependencyProperty? dp = AnimationProperty(property);
         if (dp == null || !(target is IAnimatable animatable)) return;
 
-        // FillBehavior.Stop + writing the final value locally keeps later direct assignments (Opacity = 1, ...)
-        // effective; a held animation clock would otherwise override them.
         var anim = new DoubleAnimation { From = from, To = to, Duration = duration, EasingFunction = easing, FillBehavior = FillBehavior.Stop };
         if (beginTime.HasValue) anim.BeginTime = beginTime.Value;
         anim.Completed += (_, _) =>
@@ -1774,8 +1761,6 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
 
         try
         {
-            // Pick the 16x16 frame from the multi-resolution .ico. Letting WPF
-            // decode the 256x256 frame and downscale it produces a mushy tray icon.
             var decoder = BitmapDecoder.Create(new Uri(iconPath, UriKind.Absolute),
                 BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.OnLoad);
             BitmapFrame? best = null;
@@ -1793,8 +1778,6 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         }
         _defaultTrayIcon = LoadImageW(IntPtr.Zero, iconPath, 2, 16, 16, 0x10);
 
-        // The WPF-UI control owns the tray icon and its animated menu; the
-        // adapter adds balloon/badge support the control doesn't expose.
         AppTrayIcon.Loaded += (_, _) =>
         {
             if (!AppTrayIcon.IsRegistered) AppTrayIcon.Register();
@@ -2446,7 +2429,6 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         _syncingAudioToggles = false;
     }
 
-    // Combo indices map straight to these arrays (keep in sync with MainWindow.xaml).
     private static readonly string[] CodecChoices = { "H264", "Hevc", "Av1" };
     private static readonly int[] AudioBitrates = { 96, 128, 160, 192 };
 
@@ -2777,7 +2759,6 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             });
         }
 
-        // 4 px between key pills (WinUI StackPanel.Spacing).
         for (int i = 1; i < HotkeyKeys.Children.Count; i++)
             ((FrameworkElement)HotkeyKeys.Children[i]).Margin = new Thickness(4, 0, 0, 0);
     }
@@ -3057,8 +3038,6 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
                 }
                 else
                 {
-                    // The settings are already on disk. Never leave the UI saying
-                    // "Saving changes" forever if native cleanup or start hangs.
                     ok = false;
                     restartTimedOut = true;
                     Logger.Warn("Save changes: engine restart timed out after 15 seconds; continuing without waiting for it.");
@@ -3233,8 +3212,6 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         _recDotPulseTimer?.Stop();
         _hotkeyPulseTimer?.Stop();
         EnableWindow(_hwnd, true);
-        // Native cleanup used to wait forever on capture threads. Bound it so
-        // the tray Exit item always terminates the process.
         Task cleanup = Task.Run(() =>
         {
             try { _engine.Stop(); _engine.Dispose(); }
@@ -3264,7 +3241,6 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     }
 }
 
-/// <summary>Marshals work onto the UI thread (stands in for WinUI's DispatcherQueue.TryEnqueue).</summary>
 internal sealed class UiQueue
 {
     private readonly Dispatcher _dispatcher;
@@ -3292,7 +3268,6 @@ internal sealed class UiQueue
     }
 }
 
-/// <summary>Vista-style folder picker (IFileOpenDialog with FOS_PICKFOLDERS); .NET Framework's FolderBrowserDialog is the old tree.</summary>
 internal static class FolderPicker
 {
     [ComImport, Guid("DC1C5A9C-E88A-4DDE-A5A1-60F82A20AEF7")]

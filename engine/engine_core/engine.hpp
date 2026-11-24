@@ -8,19 +8,16 @@
 #define IR_API extern "C"
 #endif
 
-// Result codes used by the managed IR_* ABI.
 #define IR_OK 0
 #define IR_FAIL (-1)
 #define IR_NOT_ENOUGH_DATA (-30)
 #define IR_LOW_MEMORY (-31)
 #define IR_PENDING (-999)
 
-// Capture source codes.
 #define IR_CAPTURE_WGC 0
 #define IR_CAPTURE_DXGI 1
 #define IR_CAPTURE_EXTERNAL 3
 
-// Startup failure stages.
 #define IR_FAIL_NONE 0
 #define IR_FAIL_DEVICE 1
 #define IR_FAIL_CAPTURE 2
@@ -29,7 +26,6 @@
 #define IR_FAIL_FRAME 5
 #define IR_FAIL_SAVE 6
 
-// Active encoder codes.
 #define IR_ENC_HEVC_QSV 20
 #define IR_ENC_HEVC_VP12 21
 #define IR_ENC_HEVC_NVENC 22
@@ -46,7 +42,6 @@
 #define IR_ENC_AV1_AMF 43
 #define IR_ENC_AV1_SOFTWARE 44
 
-// Encoder probe bits (kept in sync with InstantReplay.Models.VideoSettings).
 #define IR_ENC_H264_QSV_BIT (1u << 8)
 #define IR_ENC_HEVC_QSV_BIT (1u << 9)
 #define IR_ENC_H264_VP12_BIT (1u << 10)
@@ -63,7 +58,6 @@
 #define IR_ENC_HEVC_SOFTWARE_BIT (1u << 21)
 #define IR_ENC_AV1_SOFTWARE_BIT (1u << 22)
 
-// Capture option bits understood by IR_SetCaptureTarget / IR_SetCaptureSource.
 #define IR_CAP_CLIENT_AREA 0x00000001u
 #define IR_CAP_CURSOR 0x00000002u
 #define IR_CAP_BORDER 0x00000004u

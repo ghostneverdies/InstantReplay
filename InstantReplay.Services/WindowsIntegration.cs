@@ -113,18 +113,15 @@ public static class StartupManager
 
 namespace System.Runtime.CompilerServices
 {
-    // Lets C# 9+ records and init-only setters compile against .NET Framework 4.8.
     internal static class IsExternalInit { }
 }
 
 namespace InstantReplay.Services
 {
-    /// <summary>Stand-ins for .NET 8 APIs that .NET Framework 4.8 does not have.</summary>
     public static class Compat
     {
         private static readonly System.Diagnostics.Stopwatch Clock = System.Diagnostics.Stopwatch.StartNew();
 
-        /// <summary>Monotonic milliseconds since process start (Compat.TickCount64 replacement).</summary>
         public static long TickCount64 => Clock.ElapsedMilliseconds;
 
         public static string? ProcessPath

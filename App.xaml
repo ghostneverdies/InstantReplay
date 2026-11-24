@@ -14,14 +14,7 @@
                 <ResourceDictionary Source="InstantReplay.GUI/Themes/Styles.xaml"/>
             </ResourceDictionary.MergedDictionaries>
 
-            <!-- Crisp text and images everywhere. TextOptions/RenderOptions are
-                 inherited attached properties, so these flow into every control,
-                 glyph and image (including WPF-UI's own templates) unless a child
-                 explicitly overrides them. Display formatting pixel-snaps glyphs;
-                 ClearType keeps subpixel antialiasing on the Mica-transparent
-                 background; HighQuality adds proper filtering for scaled icons. -->
 
-            <!-- Implicit TextBlock style (keeps WPF-UI's base style via BasedOn). -->
             <Style TargetType="{x:Type TextBlock}"
                    BasedOn="{StaticResource {x:Type TextBlock}}">
                 <Setter Property="FontFamily" Value="{StaticResource AppFontFamily}"/>
@@ -31,9 +24,6 @@
                 <Setter Property="SnapsToDevicePixels" Value="True"/>
             </Style>
 
-            <!-- WPF-UI v4.0.2+ calls SetResourceReference(StyleProperty, ...) in the
-                 ui:TextBlock constructor, which wins over an implicit ui:TextBlock
-                 style. Override the named typography styles after the dictionaries. -->
             <Style x:Key="BodyTextBlockStyle" TargetType="{x:Type TextBlock}"
                    BasedOn="{StaticResource {x:Type TextBlock}}">
                 <Setter Property="FontFamily" Value="{StaticResource AppFontFamily}"/>
@@ -41,7 +31,6 @@
                 <Setter Property="FontWeight" Value="Normal"/>
             </Style>
 
-            <!-- Standard WPF controls (Buttons, TextBoxes, ComboBoxes, ...). -->
             <Style TargetType="{x:Type Control}">
                 <Setter Property="FontFamily" Value="{StaticResource AppFontFamily}"/>
                 <Setter Property="FontSize" Value="{StaticResource BodyFontSize}"/>
@@ -52,7 +41,6 @@
                 <Setter Property="UseLayoutRounding" Value="True"/>
             </Style>
 
-            <!-- A single shared animated pill replaces each item's static indicator. -->
             <SolidColorBrush x:Key="NavigationViewSelectionIndicatorForeground" Color="Transparent"/>
         </ResourceDictionary>
     </Application.Resources>

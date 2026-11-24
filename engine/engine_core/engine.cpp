@@ -1,9 +1,3 @@
-// InstantReplay native engine.
-//
-// Implemented with C++20, WinRT (Windows Graphics Capture), DXGI desktop
-// duplication, Media Foundation and WASAPI.  The exported IR_* ABI is C and
-// cdecl so it can be consumed directly by the managed app.
-
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
@@ -14,8 +8,6 @@
 #include <dxgi.h>
 #include <dxgi1_2.h>
 
-// mmdeviceapi.h defines DEFINE_PROPERTYKEY based on whether INITGUID is set.
-// functiondiscoverykeys_devpkey.h uses that macro for PKEY_Device_FriendlyName.
 #define INITGUID
 #include <mmdeviceapi.h>
 #include <functiondiscoverykeys_devpkey.h>
@@ -65,16 +57,13 @@ using Microsoft::WRL::ComPtr;
 namespace
 {
 
-    constexpr uint64_t kEngineMagic = 0x4952454e47494e45ull; // "IRENGINE"
+    constexpr uint64_t kEngineMagic = 0x4952454e47494e45ull;
     constexpr size_t kRingByteBudget = 320ull * 1024 * 1024;
     constexpr size_t kAudioByteBudget = 24ull * 1024 * 1024;
     constexpr size_t kMaxSaveFrames = 5400;
     constexpr int kMaxOutputWidth = 3840;
     constexpr int kMaxOutputHeight = 2160;
 
-    // ---------------------------------------------------------------------------
-    // Error text and small helpers
-    // ---------------------------------------------------------------------------
 
     std::mutex g_errorMutex;
     std::string g_lastErrorUtf8;
@@ -146,9 +135,6 @@ namespace
         destination[count] = L'\0';
     }
 
-    // ---------------------------------------------------------------------------
-    // Ring payloads
-    // ---------------------------------------------------------------------------
 
     struct VideoFrame
     {
@@ -161,7 +147,7 @@ namespace
     struct AudioBlock
     {
         int64_t pts100ns = 0;
-        std::vector<int16_t> pcm; // 48 kHz, stereo, interleaved
+        std::vector<int16_t> pcm;
     };
 
     struct AudioDiag
@@ -176,7 +162,7 @@ namespace
         std::atomic<int> bits{0};
         std::atomic<int> isFloat{0};
         std::atomic<int> convertFailures{0};
-        std::atomic<long> failCode{0}; // -1 COM, -2 stream, -3 no device
+        std::atomic<long> failCode{0};
         std::atomic<int> peak{0};
         std::atomic<int64_t> frames{0};
         std::atomic<int64_t> events{0};
@@ -187,9 +173,6 @@ namespace
 
     struct Engine;
 
-    // ---------------------------------------------------------------------------
-    // WASAPI capture
-    // ---------------------------------------------------------------------------
 
     class AudioCapture
     {
@@ -241,9 +224,6 @@ namespace
         void ConvertAndAppend(const BYTE *data, UINT32 frames, DWORD flags);
     };
 
-    // ---------------------------------------------------------------------------
-    // Engine state
-    // ---------------------------------------------------------------------------
 
     struct CaptureConfig
     {
@@ -270,12 +250,10 @@ namespace
         ComPtr<ID3D11Texture2D> staging;
         D3D11_TEXTURE2D_DESC stagingDesc{};
 
-        // WGC objects live only on the capture thread.
         winrt::Windows::Graphics::Capture::GraphicsCaptureItem item{nullptr};
         winrt::Windows::Graphics::Capture::Direct3D11CaptureFramePool pool{nullptr};
         winrt::Windows::Graphics::Capture::GraphicsCaptureSession session{nullptr};
 
-        // DXGI objects live only on the capture thread.
         ComPtr<IDXGIOutputDuplication> duplication;
 
         int64_t lastSourceTick = -1;
@@ -412,9 +390,6 @@ namespace
         engine->ring.push_back(std::move(frame));
     }
 
-    // ---------------------------------------------------------------------------
-    // Display / window / device enumeration
-    // ---------------------------------------------------------------------------
 
     BOOL CALLBACK MonitorEnumProc(HMONITOR monitor, HDC, LPRECT, LPARAM param)
     {
@@ -493,9 +468,6 @@ namespace
         return devices;
     }
 
-    // ---------------------------------------------------------------------------
-    // AudioCapture implementation
-    // ---------------------------------------------------------------------------
 
     bool AudioCapture::Start()
     {
@@ -504,9 +476,6 @@ namespace
             m_comInitializedInStart = true;
         else if (hr != S_FALSE && hr != RPC_E_CHANGED_MODE)
         {
-            // RPC_E_CHANGED_MODE means the managed UI thread already initialised
-            // COM as STA.  That is fine for WASAPI; we just must not uninitialise
-            // a mode this function did not initialise.
             m_diag.failCode.store(-1);
             m_diag.activateHr.store(hr);
             SetIrError("CoInitializeEx failed for %s audio: 0x%08lX", m_microphone ? "mic" : "system", hr);
@@ -795,9 +764,6 @@ namespace
             CoUninitialize();
     }
 
-    // ---------------------------------------------------------------------------
-    // BGRA -> NV12 conversion (CPU staging path)
-    // ---------------------------------------------------------------------------
 
     void ComputeOutputSize(int sourceWidth, int sourceHeight, const CaptureConfig &config, int &outW, int &outH)
     {
@@ -814,7 +780,6 @@ namespace
         if (outH > kMaxOutputHeight)
             scale = std::min(scale, static_cast<double>(kMaxOutputHeight) / outH);
 
-        // Encoders are happiest with multiples of 16.
         outW = Align16(std::max(16, static_cast<int>(std::floor(outW * scale))));
         outH = Align16(std::max(16, static_cast<int>(std::floor(outH * scale))));
         outW = std::min(outW, kMaxOutputWidth);
@@ -878,9 +843,6 @@ namespace
     const GUID IID_IDxgiInterfaceAccessLocal =
         {0xA9B3D012, 0x3DF2, 0x4EE3, {0xB8, 0xD1, 0x86, 0x95, 0xF4, 0x57, 0xD3, 0xC1}};
 
-    // ---------------------------------------------------------------------------
-    // D3D11 + capture threads
-    // ---------------------------------------------------------------------------
 
     HRESULT CreateD3D11Device(ComPtr<ID3D11Device> &device, ComPtr<ID3D11DeviceContext> &context, long *hwHr)
     {
@@ -1073,7 +1035,6 @@ namespace
             }
             catch (...)
             {
-                // Optional on older Windows builds.
             }
 
             ctx.session.StartCapture();
@@ -1369,9 +1330,6 @@ namespace
         engine.captureThread = std::thread(CaptureThreadMain, context);
     }
 
-    // ---------------------------------------------------------------------------
-    // Media Foundation save worker
-    // ---------------------------------------------------------------------------
 
     template <typename T>
     void SetAttribute(IMFAttributes *attributes, const GUID &key, T value)
@@ -1407,7 +1365,7 @@ namespace
         return sample;
     }
 
-    ComPtr<IMFActivate> FindEncoderActivate(int codec, int vendorIndex); // defined in encoder probe section
+    ComPtr<IMFActivate> FindEncoderActivate(int codec, int vendorIndex);
 
     GUID OutputSubtypeForCodec(int codec)
     {
@@ -1418,10 +1376,6 @@ namespace
         return MFVideoFormat_H264;
     }
 
-    // Frames captured before and after a hybrid source switch can have different
-    // sizes.  Normalise the clip to the largest size seen and center smaller frames
-    // on a black NV12 canvas, so a 1280x720 segment inside a 1920x1080 replay gets
-    // black borders instead of forcing the whole video down to 720p.
     std::vector<uint8_t> LetterboxFrame(const VideoFrame &frame, int baseW, int baseH)
     {
         std::vector<uint8_t> canvas(static_cast<size_t>(baseW) * baseH * 3 / 2);
@@ -1435,7 +1389,7 @@ namespace
 
         int x = (baseW - frame.width) / 2;
         int y = (baseH - frame.height) / 2;
-        x &= ~1; // NV12 chroma is subsampled by two in both directions.
+        x &= ~1;
         y &= ~1;
 
         const uint8_t *src = frame.nv12.data();
@@ -1488,8 +1442,6 @@ namespace
                                                writer.GetAddressOf());
         if (FAILED(hr) && sinkAttributes)
         {
-            // A hardware MFT can refuse the media type (or fail to initialise on
-            // this adapter).  Retry with the default software encoder.
             sinkAttributes.Reset();
             hr = MFCreateSinkWriterFromURL(path.c_str(), nullptr, nullptr, writer.GetAddressOf());
         }
@@ -1662,8 +1614,6 @@ namespace
         HRESULT hr = WriteMp4(path, video, audio, fps, bitrate, codec, vendorIndex, job->progress);
         if (FAILED(hr) && vendorIndex >= 0 && vendorIndex < 4)
         {
-            // Hardware path can fail at WriteSample/Finalize as well as at startup;
-            // retry the whole clip with the software encoder rather than lose it.
             ClearIrError();
             hr = WriteMp4(path, video, audio, fps, bitrate, codec, 4, job->progress);
         }
@@ -1671,9 +1621,6 @@ namespace
         g_saveProgress.store(job->progress.load(std::memory_order_relaxed), std::memory_order_relaxed);
     }
 
-    // ---------------------------------------------------------------------------
-    // Encoder probe / selection
-    // ---------------------------------------------------------------------------
 
     uint32_t EncoderBit(int codec, int vendor)
     {
@@ -1704,11 +1651,6 @@ namespace
 
     std::wstring ReadMftFriendlyName(IMFActivate *activation)
     {
-        // GetString returns HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER) from the
-        // length-query call, even though it writes the required length.  Treat a
-        // non-zero length as authoritative and pass length+1 (the terminator) on
-        // the second call; the original code rejected the name entirely here,
-        // which made every encoder look like a software MFT.
         UINT32 length = 0;
         activation->GetString(MFT_FRIENDLY_NAME_Attribute, nullptr, 0, &length);
         if (!length)
@@ -1725,8 +1667,6 @@ namespace
 
     uint32_t ProbeOneSubtype(const GUID &subtype, int codec)
     {
-        // Encoders take uncompressed input and emit the compressed subtype, so the
-        // subtype must be supplied as the MFT output type, not the input type.
         MFT_REGISTER_TYPE_INFO output{};
         output.guidMajorType = MFMediaType_Video;
         output.guidSubtype = subtype;
@@ -1791,7 +1731,7 @@ namespace
     {
         const int codec = ((preference >> 15) & 3);
         const int vendor = preference & 0xFF;
-        int index = 4; // software default
+        int index = 4;
         if (vendor == 5)
             index = 0;
         else if (vendor == 6)
@@ -1802,7 +1742,6 @@ namespace
             index = 3;
         else if (vendor == 0)
         {
-            // Auto: documented vendor order is QSV, VP12, NVENC, AMF, software.
             const int codecIndex = codec == 1 ? 1 : codec == 3 ? 2
                                                                : 0;
             if (probe & EncoderBit(codecIndex, 0))
@@ -1822,11 +1761,8 @@ namespace
         return IR_ENC_H264_QSV + index;
     }
 
-} // namespace
+}
 
-// ---------------------------------------------------------------------------
-// Exported ABI
-// ---------------------------------------------------------------------------
 
 IR_API int IR_Create(void **out_engine)
 {
@@ -2139,7 +2075,6 @@ IR_API int IR_BeginSave(void *handle, const wchar_t *out_path, int seconds_back,
             fps = engine->config.fps;
             bitrate = engine->bitrateKbps;
             codec = (engine->encoderPreference >> 15) & 3;
-            // Active encoder codes are <codec base> + vendor ordinal (0..4).
             if (engine->activeEncoder >= 20)
                 vendorIndex = std::clamp(engine->activeEncoder % 10, 0, 4);
         }
@@ -2228,9 +2163,6 @@ IR_API int IR_PollSave(void *handle, uint64_t job_id, int *progress, int *result
                 found = *it;
                 if (found->result.load(std::memory_order_acquire) != IR_PENDING)
                 {
-                    // The worker has published its result; join before the job
-                    // object can be destroyed so std::thread is never joinable
-                    // at destruction (which would call std::terminate).
                     if (found->worker.joinable())
                         found->worker.join();
                     engine->jobs.erase(it);

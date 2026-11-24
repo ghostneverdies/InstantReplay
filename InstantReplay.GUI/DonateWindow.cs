@@ -69,7 +69,6 @@ public sealed class DonateWindow : Wpf.Ui.Controls.FluentWindow
         RenderOptions.SetBitmapScalingMode(this, BitmapScalingMode.HighQuality);
 
         var view = new SupportView();
-        // The donate card was always rendered with the dark theme: scope the dark palette to this view.
         if (Application.Current.Resources["DarkPalette"] is ResourceDictionary dark)
         {
             var scoped = new ResourceDictionary();

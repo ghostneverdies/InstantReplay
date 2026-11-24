@@ -5,11 +5,6 @@ using InstantReplay.Services;
 
 namespace InstantReplay.GUI.Shell;
 
-/// <summary>
-/// Shell notification adapter for the WPF-UI Tray NotifyIcon. WPF-UI owns the
-/// tray icon and its animated Fluent context menu; this class only supplies the
-/// pieces WPF-UI does not expose: balloon tips, balloon clicks and badge icons.
-/// </summary>
 public sealed class TrayIcon : IDisposable
 {
     public const int IconInfo = 1, IconWarning = 2, IconError = 3;
