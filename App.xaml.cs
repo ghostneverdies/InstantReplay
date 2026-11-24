@@ -124,7 +124,10 @@ internal static class AppTheme
         ("ComboBoxBackgroundPointerOver", "BgBrush"),
         ("ComboBoxForeground", "TextPrimaryBrush"),
         ("ComboBoxBorderBrush", "SurfaceBorderBrush"),
-        ("ComboBoxDropDownBackground", "SurfaceBrush"),
+        ("ComboBoxDropDownBackground", "ComboPopupBrush"),
+        ("ComboBoxDropDownBorderBrush", "ComboPopupBorderBrush"),
+        ("ComboBoxDropDownGlyphForeground", "TextPrimaryBrush"),
+        ("ComboBoxItemForeground", "TextPrimaryBrush"),
         ("ComboBoxItemBackgroundSelected", "AccentDimBrush"),
         ("ComboBoxItemForegroundSelected", "TextPrimaryBrush"),
         ("TextControlBackground", "BgBrush"),
@@ -136,11 +139,15 @@ internal static class AppTheme
         ("TextControlFocusedBorderBrush", "AccentBrush"),
         ("TextControlForeground", "TextPrimaryBrush"),
         ("TextControlForegroundFocused", "TextPrimaryBrush"),
-        ("ToggleSwitchFillOff", "SurfaceBorderBrush"),
-        ("ToggleSwitchFillOffPointerOver", "SurfaceBorderBrush"),
+        ("ToggleSwitchFillOff", "ToggleTrackOffBrush"),
+        ("ToggleSwitchFillOffPointerOver", "ToggleTrackOffBrush"),
+        ("ToggleSwitchFillOffPressed", "ToggleTrackOffBrush"),
         ("ToggleSwitchFillOn", "AccentBrush"),
         ("ToggleSwitchFillOnPointerOver", "AccentBrush"),
-        ("ToggleSwitchStrokeOff", "SurfaceBorderBrush"),
+        ("ToggleSwitchFillOnPressed", "AccentBrush"),
+        ("ToggleSwitchStrokeOff", "ToggleStrokeOffBrush"),
+        ("ToggleSwitchStrokeOffPointerOver", "ToggleStrokeOffBrush"),
+        ("ToggleSwitchStrokeOffPressed", "ToggleStrokeOffBrush"),
         ("ToggleSwitchStrokeOn", "AccentBrush"),
         ("ToggleSwitchKnobFillOff", "TextMutedBrush"),
         ("ToggleSwitchKnobFillOn", "AccentTextBrush"),
@@ -229,5 +236,9 @@ internal static class AppTheme
             if (app.Resources[source] is Brush brush)
                 app.Resources[key] = brush;
         }
+
+        // WPF-UI's default toggle stroke is zero-width in the off state, which
+        // makes the control look like a floating dot instead of a track.
+        app.Resources["ToggleSwitchBorderThemeThickness"] = new Thickness(1);
     }
 }
