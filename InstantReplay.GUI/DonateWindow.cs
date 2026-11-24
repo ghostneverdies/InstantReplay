@@ -6,6 +6,7 @@ using System.Windows;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Interop;
+using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using InstantReplay.Models;
@@ -61,6 +62,11 @@ public sealed class DonateWindow : Wpf.Ui.Controls.FluentWindow
         WindowCornerPreference = Wpf.Ui.Controls.WindowCornerPreference.Round;
         WindowStartupLocation = WindowStartupLocation.Manual;
         UseLayoutRounding = true;
+        SnapsToDevicePixels = true;
+        TextOptions.SetTextFormattingMode(this, TextFormattingMode.Display);
+        TextOptions.SetTextRenderingMode(this, TextRenderingMode.ClearType);
+        RenderOptions.SetClearTypeHint(this, ClearTypeHint.Enabled);
+        RenderOptions.SetBitmapScalingMode(this, BitmapScalingMode.HighQuality);
 
         var view = new SupportView();
         // The donate card was always rendered with the dark theme: scope the dark palette to this view.
