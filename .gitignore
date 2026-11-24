@@ -3,7 +3,6 @@ bin/
 obj/
 publish/
 tests/
-.vscode/
 
 # ---- Rust build output ----
 # Unanchored so it also matches engine/core/target (a root-only `target/*` does not).
