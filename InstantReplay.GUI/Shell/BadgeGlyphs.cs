@@ -147,7 +147,7 @@ public static class BadgeGlyphs
             oldBmp = SelectObject(dc, dib);
 
             var white = new byte[size * size * 4];
-            Array.Fill(white, (byte)0xFF);
+            for (int i = 0; i < white.Length; i++) white[i] = 0xFF;
             Marshal.Copy(white, 0, bits, white.Length);
 
             font = CreateFont(-size, 0, 0, 0, 400, NoItalic, NoUnderline, NoStrikeOut,
