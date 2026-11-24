@@ -375,9 +375,10 @@ public sealed class RecorderEngine : IDisposable
         if (now - _pendingKeySince < TimeSpan.FromMilliseconds(350) || now < _switchRetryAt) return;
 
         uint options = CaptureOptions();
+        var (canvasW, canvasH) = snap.CanvasSize;
         bool toWgc = snap.Source == CaptureSource.Wgc;
         bool ok = _engine.SwitchSource(toWgc ? CaptureMethod.Wgc : CaptureMethod.Dxgi,
-            snap.MonitorIndex, snap.Handle, options);
+            snap.MonitorIndex, snap.Handle, options, canvasW, canvasH);
         if (ok)
         {
             _activeKey = key;
@@ -385,7 +386,8 @@ public sealed class RecorderEngine : IDisposable
             Logger.Info($"Capture source follows window mode: {snap}.");
             return;
         }
-        if (toWgc && _engine.SwitchSource(CaptureMethod.Dxgi, snap.MonitorIndex, snap.Handle, options))
+        if (toWgc && _engine.SwitchSource(CaptureMethod.Dxgi, snap.MonitorIndex, snap.Handle,
+                options, canvasW, canvasH))
         {
             _activeKey = $"dxgi:{snap.MonitorIndex}";
             _switchRetryAt = now.AddSeconds(5);
