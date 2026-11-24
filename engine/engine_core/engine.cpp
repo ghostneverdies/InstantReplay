@@ -40,12 +40,14 @@
 #include <cstring>
 #include <cwchar>
 #include <deque>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <new>
 #include <optional>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -59,6 +61,7 @@ namespace
 
     constexpr uint64_t kEngineMagic = 0x4952454e47494e45ull;
     constexpr size_t kRingByteBudget = 320ull * 1024 * 1024;
+    constexpr size_t kGpuTextureBudget = 384ull * 1024 * 1024;
     constexpr size_t kAudioByteBudget = 24ull * 1024 * 1024;
     constexpr size_t kMaxSaveFrames = 5400;
     constexpr int kMaxOutputWidth = 3840;
@@ -94,16 +97,32 @@ namespace
         return g_lastErrorUtf8;
     }
 
+    void EnsureMfStartup() noexcept
+    {
+        std::call_once(g_mfOnce, []
+                       { MFStartup(MF_VERSION, MFSTARTUP_LITE); });
+    }
+
+    int64_t QpcFrequency() noexcept
+    {
+        static const int64_t frequency = []
+        {
+            LARGE_INTEGER value{};
+            return QueryPerformanceFrequency(&value) && value.QuadPart > 0 ? value.QuadPart : 0;
+        }();
+        return frequency;
+    }
+
     int64_t Qpc100Ns() noexcept
     {
         LARGE_INTEGER counter{};
-        LARGE_INTEGER frequency{};
-        if (!QueryPerformanceCounter(&counter) || !QueryPerformanceFrequency(&frequency) || frequency.QuadPart == 0)
+        const int64_t frequency = QpcFrequency();
+        if (!frequency || !QueryPerformanceCounter(&counter))
             return static_cast<int64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
                                             std::chrono::steady_clock::now().time_since_epoch())
                                             .count() /
                                         100);
-        return static_cast<int64_t>((counter.QuadPart * 10000000ll) / frequency.QuadPart);
+        return static_cast<int64_t>((counter.QuadPart * 10000000ll) / frequency);
     }
 
     double QpcMs(int64_t start) noexcept
@@ -136,13 +155,91 @@ namespace
     }
 
 
+    class GpuPipeline;
+    struct VideoFrame;
+
+    // A pooled NV12 render target. Frames hold shared references so a save job
+    // can keep the texture alive after the ring evicts it.
+    struct GpuTexture
+    {
+        ComPtr<ID3D11Texture2D> texture;
+        int width = 0;
+        int height = 0;
+        std::weak_ptr<GpuPipeline> pool;
+        ~GpuTexture();
+    };
+
+    struct GpuConverter
+    {
+        ComPtr<ID3D11VideoProcessor> processor;
+        ComPtr<ID3D11VideoProcessorEnumerator> enumerator;
+    };
+
+    // Zero-copy pipeline: capture textures stay on the GPU, are converted to
+    // NV12 with the D3D11 video processor, and are handed to Media Foundation
+    // as DXGI surface buffers. No per-frame CPU readback or BGRA conversion.
+    class GpuPipeline : public std::enable_shared_from_this<GpuPipeline>
+    {
+    public:
+        ComPtr<ID3D11Device> device;
+        ComPtr<ID3D11DeviceContext> context;
+        ComPtr<ID3D11VideoDevice> videoDevice;
+        ComPtr<ID3D11VideoContext> videoContext;
+        ComPtr<IMFDXGIDeviceManager> mfManager;
+        UINT mfToken = 0;
+        std::atomic<bool> available{false};
+        std::atomic<int64_t> convertedFrames{0};
+        std::atomic<int64_t> readbacks{0};
+
+        bool Initialize(bool hardwareEncoder);
+        void ReleaseTexture(int width, int height, ComPtr<ID3D11Texture2D> texture);
+        std::shared_ptr<GpuTexture> AcquireTexture(int width, int height);
+        HRESULT Convert(ID3D11Texture2D *source, DXGI_FORMAT sourceFormat,
+                        int srcW, int srcH, int outW, int outH,
+                        GpuTexture *destination, const RECT *destinationRect, bool bt709);
+        HRESULT Readback(const GpuTexture &source, std::vector<uint8_t> &nv12);
+        ComPtr<IMFSample> MakeSample(const ComPtr<ID3D11Texture2D> &texture,
+                                     int64_t time100ns, int64_t duration100ns);
+
+    private:
+        struct FreeTexture
+        {
+            ComPtr<ID3D11Texture2D> texture;
+            int width = 0;
+            int height = 0;
+        };
+
+        std::mutex mutex;
+        std::map<std::tuple<DXGI_FORMAT, int, int, int, int>, std::shared_ptr<GpuConverter>> converters;
+        std::vector<FreeTexture> freeTextures;
+        size_t freeBytes = 0;
+
+        std::shared_ptr<GpuConverter> GetConverterLocked(DXGI_FORMAT sourceFormat,
+                                                         int srcW, int srcH, int outW, int outH);
+    };
+
+    GpuTexture::~GpuTexture()
+    {
+        if (auto owner = pool.lock())
+            owner->ReleaseTexture(width, height, texture);
+    }
+
     struct VideoFrame
     {
         int64_t pts100ns = 0;
         int width = 0;
         int height = 0;
         std::vector<uint8_t> nv12;
+        std::shared_ptr<GpuTexture> gpu;
+
+        bool IsGpu() const noexcept { return gpu && gpu->texture; }
     };
+
+    size_t FrameBytes(const VideoFrame &frame)
+    {
+        return frame.IsGpu() ? static_cast<size_t>(frame.width) * frame.height * 3 / 2
+                             : frame.nv12.size();
+    }
 
     struct AudioBlock
     {
@@ -259,6 +356,10 @@ namespace
         int64_t lastSourceTick = -1;
         int outputWidth = 0;
         int outputHeight = 0;
+
+        // Updated live by IR_SetCanvasHint; the capture thread reads these.
+        std::atomic<int> capWidth{0};
+        std::atomic<int> capHeight{0};
     };
 
     struct SaveJob
@@ -266,6 +367,7 @@ namespace
         uint64_t id = 0;
         std::atomic<int> progress{0};
         std::atomic<int> result{IR_PENDING};
+        std::atomic<bool> joined{false};
         std::thread worker;
     };
 
@@ -276,7 +378,7 @@ namespace
 
         CaptureConfig config;
         bool running = false;
-        bool paused = false;
+        std::atomic<bool> paused{false};
         bool destroyRequested = false;
         int lastFailStage = IR_FAIL_NONE;
         long lastHresult = 0;
@@ -292,6 +394,7 @@ namespace
         bool captureMicRequested = false;
         std::wstring micRequested;
 
+        std::shared_ptr<GpuPipeline> gpu;
         std::shared_ptr<CaptureContext> capture;
         std::thread captureThread;
 
@@ -377,12 +480,12 @@ namespace
     void AppendVideo(Engine *engine, VideoFrame frame)
     {
         std::lock_guard<std::mutex> lock(engine->ringMutex);
-        const size_t bytes = frame.nv12.size();
+        const size_t bytes = FrameBytes(frame);
         const size_t maxFrames = std::max<size_t>(2, engine->maxRingFrames);
         while (!engine->ring.empty() &&
                (engine->ringBytes + bytes > kRingByteBudget || engine->ring.size() >= maxFrames))
         {
-            engine->ringBytes -= engine->ring.front().nv12.size();
+            engine->ringBytes -= FrameBytes(engine->ring.front());
             engine->ring.pop_front();
             engine->dropped.fetch_add(1, std::memory_order_relaxed);
         }
@@ -765,16 +868,16 @@ namespace
     }
 
 
-    void ComputeOutputSize(int sourceWidth, int sourceHeight, const CaptureConfig &config, int &outW, int &outH)
+    void ComputeOutputSize(int sourceWidth, int sourceHeight, int capWidth, int capHeight, int &outW, int &outH)
     {
         outW = std::max(2, sourceWidth);
         outH = std::max(2, sourceHeight);
 
         double scale = 1.0;
-        if (config.capWidth > 0 && outW > config.capWidth)
-            scale = std::min(scale, static_cast<double>(config.capWidth) / outW);
-        if (config.capHeight > 0 && outH > config.capHeight)
-            scale = std::min(scale, static_cast<double>(config.capHeight) / outH);
+        if (capWidth > 0 && outW > capWidth)
+            scale = std::min(scale, static_cast<double>(capWidth) / outW);
+        if (capHeight > 0 && outH > capHeight)
+            scale = std::min(scale, static_cast<double>(capHeight) / outH);
         if (outW > kMaxOutputWidth)
             scale = std::min(scale, static_cast<double>(kMaxOutputWidth) / outW);
         if (outH > kMaxOutputHeight)
@@ -860,6 +963,260 @@ namespace
         return hr;
     }
 
+    bool GpuPipeline::Initialize(bool hardwareEncoder)
+    {
+        available.store(false, std::memory_order_relaxed);
+        EnsureMfStartup();
+        if (!device)
+        {
+            long hwHr = 0;
+            if (FAILED(CreateD3D11Device(device, context, &hwHr)))
+                return false;
+        }
+        if (FAILED(device.As(&videoDevice)) || FAILED(context.As(&videoContext)))
+            return false;
+        if (FAILED(MFCreateDXGIDeviceManager(&mfToken, mfManager.GetAddressOf())))
+            return false;
+        if (FAILED(mfManager->ResetDevice(device.Get(), mfToken)))
+        {
+            mfManager.Reset();
+            return false;
+        }
+        available.store(hardwareEncoder, std::memory_order_relaxed);
+        return available.load(std::memory_order_relaxed);
+    }
+
+    std::shared_ptr<GpuConverter> GpuPipeline::GetConverterLocked(DXGI_FORMAT sourceFormat,
+                                                                  int srcW, int srcH, int outW, int outH)
+    {
+        auto key = std::make_tuple(sourceFormat, srcW, srcH, outW, outH);
+        auto found = converters.find(key);
+        if (found != converters.end())
+            return found->second;
+        if (!videoDevice || srcW <= 0 || srcH <= 0 || outW <= 0 || outH <= 0)
+            return {};
+
+        D3D11_VIDEO_PROCESSOR_CONTENT_DESC content{};
+        content.InputFrameFormat = D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE;
+        content.InputFrameRate.Numerator = 30;
+        content.InputFrameRate.Denominator = 1;
+        content.InputWidth = static_cast<UINT>(srcW);
+        content.InputHeight = static_cast<UINT>(srcH);
+        content.OutputFrameRate.Numerator = 30;
+        content.OutputFrameRate.Denominator = 1;
+        content.OutputWidth = static_cast<UINT>(outW);
+        content.OutputHeight = static_cast<UINT>(outH);
+        content.Usage = D3D11_VIDEO_USAGE_PLAYBACK_NORMAL;
+
+        ComPtr<ID3D11VideoProcessorEnumerator> enumerator;
+        if (FAILED(videoDevice->CreateVideoProcessorEnumerator(&content, enumerator.GetAddressOf())))
+            return {};
+
+        UINT inputSupport = 0;
+        UINT outputSupport = 0;
+        if (FAILED(enumerator->CheckVideoProcessorFormat(sourceFormat, &inputSupport)) ||
+            !(inputSupport & D3D11_VIDEO_PROCESSOR_FORMAT_SUPPORT_INPUT))
+            return {};
+        if (FAILED(enumerator->CheckVideoProcessorFormat(DXGI_FORMAT_NV12, &outputSupport)) ||
+            !(outputSupport & D3D11_VIDEO_PROCESSOR_FORMAT_SUPPORT_OUTPUT))
+            return {};
+
+        D3D11_VIDEO_PROCESSOR_CAPS caps{};
+        if (FAILED(enumerator->GetVideoProcessorCaps(&caps)) || caps.MaxInputStreams < 1)
+            return {};
+
+        ComPtr<ID3D11VideoProcessor> processor;
+        if (FAILED(videoDevice->CreateVideoProcessor(enumerator.Get(), 0, processor.GetAddressOf())))
+            return {};
+
+        auto converter = std::make_shared<GpuConverter>();
+        converter->enumerator = std::move(enumerator);
+        converter->processor = std::move(processor);
+        converters.emplace(std::move(key), converter);
+        return converter;
+    }
+
+    void GpuPipeline::ReleaseTexture(int width, int height, ComPtr<ID3D11Texture2D> texture)
+    {
+        if (!texture)
+            return;
+        const size_t bytes = static_cast<size_t>(width) * height * 3 / 2;
+        std::lock_guard<std::mutex> lock(mutex);
+        if (freeBytes + bytes <= kGpuTextureBudget)
+        {
+            freeTextures.push_back({std::move(texture), width, height});
+            freeBytes += bytes;
+        }
+    }
+
+    std::shared_ptr<GpuTexture> GpuPipeline::AcquireTexture(int width, int height)
+    {
+        if (!device || width <= 0 || height <= 0)
+            return {};
+
+        std::lock_guard<std::mutex> lock(mutex);
+        for (auto it = freeTextures.begin(); it != freeTextures.end(); ++it)
+        {
+            if (it->width == width && it->height == height)
+            {
+                auto result = std::make_shared<GpuTexture>();
+                result->texture = std::move(it->texture);
+                result->width = width;
+                result->height = height;
+                result->pool = shared_from_this();
+                freeBytes -= static_cast<size_t>(width) * height * 3 / 2;
+                freeTextures.erase(it);
+                return result;
+            }
+        }
+
+        D3D11_TEXTURE2D_DESC desc{};
+        desc.Width = static_cast<UINT>(width);
+        desc.Height = static_cast<UINT>(height);
+        desc.MipLevels = 1;
+        desc.ArraySize = 1;
+        desc.Format = DXGI_FORMAT_NV12;
+        desc.SampleDesc.Count = 1;
+        desc.Usage = D3D11_USAGE_DEFAULT;
+        desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+
+        ComPtr<ID3D11Texture2D> texture;
+        if (FAILED(device->CreateTexture2D(&desc, nullptr, texture.GetAddressOf())))
+            return {};
+
+        auto result = std::make_shared<GpuTexture>();
+        result->texture = std::move(texture);
+        result->width = width;
+        result->height = height;
+        result->pool = shared_from_this();
+        return result;
+    }
+
+    HRESULT GpuPipeline::Convert(ID3D11Texture2D *source, DXGI_FORMAT sourceFormat,
+                                 int srcW, int srcH, int outW, int outH,
+                                 GpuTexture *destination, const RECT *destinationRect, bool bt709)
+    {
+        if (!source || !destination || !destination->texture || !videoDevice || !videoContext)
+            return E_FAIL;
+
+        std::lock_guard<std::mutex> lock(mutex);
+        auto converter = GetConverterLocked(sourceFormat, srcW, srcH, outW, outH);
+        if (!converter)
+            return E_FAIL;
+
+        D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC inputDesc{};
+        inputDesc.ViewDimension = D3D11_VPIV_DIMENSION_TEXTURE2D;
+        ComPtr<ID3D11VideoProcessorInputView> inputView;
+        HRESULT hr = videoDevice->CreateVideoProcessorInputView(
+            source, converter->enumerator.Get(), &inputDesc, inputView.GetAddressOf());
+        if (FAILED(hr))
+            return hr;
+
+        D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC outputDesc{};
+        outputDesc.ViewDimension = D3D11_VPOV_DIMENSION_TEXTURE2D;
+        ComPtr<ID3D11VideoProcessorOutputView> outputView;
+        hr = videoDevice->CreateVideoProcessorOutputView(
+            destination->texture.Get(), converter->enumerator.Get(), &outputDesc, outputView.GetAddressOf());
+        if (FAILED(hr))
+            return hr;
+
+        ID3D11VideoProcessor *processor = converter->processor.Get();
+        RECT sourceRect{0, 0, srcW, srcH};
+        RECT outputRect{0, 0, outW, outH};
+        RECT destRect = destinationRect ? *destinationRect : outputRect;
+
+        videoContext->VideoProcessorSetStreamAutoProcessingMode(processor, 0, FALSE);
+        videoContext->VideoProcessorSetStreamFrameFormat(processor, 0, D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE);
+        videoContext->VideoProcessorSetStreamSourceRect(processor, 0, TRUE, &sourceRect);
+        videoContext->VideoProcessorSetStreamDestRect(processor, 0, TRUE, &destRect);
+        videoContext->VideoProcessorSetOutputTargetRect(processor, TRUE, &outputRect);
+        videoContext->VideoProcessorSetOutputAlphaFillMode(processor, D3D11_VIDEO_PROCESSOR_ALPHA_FILL_MODE_OPAQUE, 0);
+
+        D3D11_VIDEO_COLOR background{};
+        background.YCbCr = {16.0f, 128.0f, 128.0f, 1.0f};
+        videoContext->VideoProcessorSetOutputBackgroundColor(processor, TRUE, &background);
+
+        D3D11_VIDEO_PROCESSOR_COLOR_SPACE inputColor{};
+        inputColor.RGB_Range = 1; // full-range RGB from the capture API
+        inputColor.Nominal_Range = D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_0_255;
+        videoContext->VideoProcessorSetStreamColorSpace(processor, 0, &inputColor);
+
+        D3D11_VIDEO_PROCESSOR_COLOR_SPACE outputColor{};
+        outputColor.YCbCr_Matrix = bt709 ? 1u : 0u;
+        outputColor.Nominal_Range = D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_16_235;
+        videoContext->VideoProcessorSetOutputColorSpace(processor, &outputColor);
+
+        D3D11_VIDEO_PROCESSOR_STREAM stream{};
+        stream.Enable = TRUE;
+        stream.pInputSurface = inputView.Get();
+        hr = videoContext->VideoProcessorBlt(processor, outputView.Get(), 0, 1, &stream);
+        if (SUCCEEDED(hr))
+            convertedFrames.fetch_add(1, std::memory_order_relaxed);
+        return hr;
+    }
+
+    HRESULT GpuPipeline::Readback(const GpuTexture &source, std::vector<uint8_t> &nv12)
+    {
+        if (!source.texture || !device || !context)
+            return E_FAIL;
+
+        std::lock_guard<std::mutex> lock(mutex);
+        D3D11_TEXTURE2D_DESC sourceDesc{};
+        source.texture->GetDesc(&sourceDesc);
+
+        D3D11_TEXTURE2D_DESC stagingDesc{};
+        stagingDesc.Width = sourceDesc.Width;
+        stagingDesc.Height = sourceDesc.Height;
+        stagingDesc.MipLevels = 1;
+        stagingDesc.ArraySize = 1;
+        stagingDesc.Format = DXGI_FORMAT_NV12;
+        stagingDesc.SampleDesc.Count = 1;
+        stagingDesc.Usage = D3D11_USAGE_STAGING;
+        stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+
+        ComPtr<ID3D11Texture2D> staging;
+        if (FAILED(device->CreateTexture2D(&stagingDesc, nullptr, staging.GetAddressOf())))
+            return E_FAIL;
+        context->CopyResource(staging.Get(), source.texture.Get());
+
+        D3D11_MAPPED_SUBRESOURCE mapped{};
+        if (FAILED(context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped)))
+            return E_FAIL;
+
+        const size_t lumaBytes = static_cast<size_t>(source.width) * source.height;
+        nv12.resize(lumaBytes * 3 / 2);
+        const uint8_t *src = static_cast<const uint8_t *>(mapped.pData);
+        for (int row = 0; row < source.height; ++row)
+            std::memcpy(nv12.data() + static_cast<size_t>(row) * source.width,
+                        src + static_cast<size_t>(row) * mapped.RowPitch, source.width);
+        const uint8_t *uvSrc = src + static_cast<size_t>(source.height) * mapped.RowPitch;
+        uint8_t *uvDst = nv12.data() + lumaBytes;
+        for (int row = 0; row < source.height / 2; ++row)
+            std::memcpy(uvDst + static_cast<size_t>(row) * source.width,
+                        uvSrc + static_cast<size_t>(row) * mapped.RowPitch, source.width);
+
+        context->Unmap(staging.Get(), 0);
+        readbacks.fetch_add(1, std::memory_order_relaxed);
+        return S_OK;
+    }
+
+    ComPtr<IMFSample> GpuPipeline::MakeSample(const ComPtr<ID3D11Texture2D> &texture,
+                                              int64_t time100ns, int64_t duration100ns)
+    {
+        ComPtr<IMFSample> sample;
+        if (!texture || FAILED(MFCreateSample(sample.GetAddressOf())))
+            return {};
+        ComPtr<IMFMediaBuffer> buffer;
+        if (FAILED(MFCreateDXGISurfaceBuffer(IID_ID3D11Texture2D, texture.Get(), 0, FALSE,
+                                             buffer.GetAddressOf())))
+            return {};
+        if (FAILED(sample->AddBuffer(buffer.Get())))
+            return {};
+        sample->SetSampleTime(time100ns);
+        sample->SetSampleDuration(duration100ns);
+        return sample;
+    }
+
     HRESULT EnsureStaging(CaptureContext &ctx, const D3D11_TEXTURE2D_DESC &desc)
     {
         if (ctx.staging && ctx.stagingDesc.Width == desc.Width && ctx.stagingDesc.Height == desc.Height &&
@@ -886,7 +1243,6 @@ namespace
         if (!engine || !texture)
             return;
 
-        const int64_t stageStart = Qpc100Ns();
         engine->captured.fetch_add(1, std::memory_order_relaxed);
         if (sourceTick >= 0)
         {
@@ -903,42 +1259,72 @@ namespace
         if (!desc.Width || !desc.Height)
             return;
 
+        const int capWidth = ctx.capWidth.load(std::memory_order_relaxed);
+        const int capHeight = ctx.capHeight.load(std::memory_order_relaxed);
         int outW = 0, outH = 0;
-        ComputeOutputSize(static_cast<int>(desc.Width), static_cast<int>(desc.Height), ctx.config, outW, outH);
-        if (ctx.outputWidth != outW || ctx.outputHeight != outH)
-        {
-            ctx.outputWidth = outW;
-            ctx.outputHeight = outH;
-        }
+        ComputeOutputSize(static_cast<int>(desc.Width), static_cast<int>(desc.Height), capWidth, capHeight, outW, outH);
+        ctx.outputWidth = outW;
+        ctx.outputHeight = outH;
 
-        HRESULT hr = EnsureStaging(ctx, desc);
-        if (FAILED(hr))
-        {
-            engine->lastHresult = hr;
-            engine->hasError.store(true);
-            return;
-        }
-        ctx.context->CopyResource(ctx.staging.Get(), texture);
-
-        D3D11_MAPPED_SUBRESOURCE mapped{};
-        hr = ctx.context->Map(ctx.staging.Get(), 0, D3D11_MAP_READ, 0, &mapped);
-        if (FAILED(hr))
-        {
-            engine->lastHresult = hr;
-            return;
-        }
-        const double mapMs = QpcMs(stageStart);
+        const bool bt709 = desc.Height >= 720;
         const int64_t convertStart = Qpc100Ns();
-
         VideoFrame frame;
-        frame.pts100ns = Qpc100Ns();
+        frame.pts100ns = convertStart;
         frame.width = outW;
         frame.height = outH;
-        ConvertBgraToNv12(static_cast<const uint8_t *>(mapped.pData), mapped.RowPitch,
-                          static_cast<int>(desc.Width), static_cast<int>(desc.Height), outW, outH, frame.nv12);
-        ctx.context->Unmap(ctx.staging.Get(), 0);
-        const double convertMs = QpcMs(convertStart);
 
+        double mapMs = 0.0;
+        std::shared_ptr<GpuPipeline> gpu = engine->gpu;
+        if (gpu && gpu->available.load(std::memory_order_relaxed))
+        {
+            auto target = gpu->AcquireTexture(outW, outH);
+            if (target)
+            {
+                const HRESULT hr = gpu->Convert(texture, desc.Format,
+                                                static_cast<int>(desc.Width), static_cast<int>(desc.Height),
+                                                outW, outH, target.get(), nullptr, bt709);
+                if (SUCCEEDED(hr))
+                {
+                    frame.gpu = std::move(target);
+                }
+                else
+                {
+                    // Fall back to the CPU converter if this GPU/format pair
+                    // cannot be handled by the video processor.
+                    engine->lastHresult = hr;
+                    gpu->available.store(false, std::memory_order_relaxed);
+                }
+            }
+        }
+
+        if (!frame.IsGpu())
+        {
+            HRESULT hr = EnsureStaging(ctx, desc);
+            if (FAILED(hr))
+            {
+                engine->lastHresult = hr;
+                engine->hasError.store(true);
+                return;
+            }
+            const int64_t stageStart = Qpc100Ns();
+            ctx.context->CopyResource(ctx.staging.Get(), texture);
+
+            D3D11_MAPPED_SUBRESOURCE mapped{};
+            hr = ctx.context->Map(ctx.staging.Get(), 0, D3D11_MAP_READ, 0, &mapped);
+            if (FAILED(hr))
+            {
+                engine->lastHresult = hr;
+                return;
+            }
+            mapMs = QpcMs(stageStart);
+
+            ConvertBgraToNv12(static_cast<const uint8_t *>(mapped.pData), mapped.RowPitch,
+                              static_cast<int>(desc.Width), static_cast<int>(desc.Height),
+                              outW, outH, frame.nv12);
+            ctx.context->Unmap(ctx.staging.Get(), 0);
+        }
+
+        const double convertMs = QpcMs(convertStart);
         engine->paced.fetch_add(1, std::memory_order_relaxed);
         engine->encoded.fetch_add(1, std::memory_order_relaxed);
         engine->lastPts.store(frame.pts100ns, std::memory_order_relaxed);
@@ -951,8 +1337,8 @@ namespace
             { field = field * 0.9 + total * 0.1; };
             blend(engine->timingMapMs);
             blend(engine->timingEncodeMs);
-            engine->timingRenderMs = engine->timingRenderMs * 0.9 + (convertMs * 0.7) * 0.1;
-            engine->timingSubmitMs = engine->timingSubmitMs * 0.9 + (convertMs * 0.3) * 0.1;
+            engine->timingRenderMs = engine->timingRenderMs * 0.9 + convertMs * 0.1;
+            engine->timingSubmitMs = engine->timingSubmitMs * 0.9 + convertMs * 0.05;
             engine->timingSnapshotMs = engine->timingSnapshotMs * 0.9 + mapMs * 0.1;
             engine->timingUnmapMs = engine->timingUnmapMs * 0.9 + mapMs * 0.1;
             engine->timingFrames++;
@@ -967,15 +1353,19 @@ namespace
         Engine *engine = ctx.engine;
         winrt::init_apartment(winrt::apartment_type::multi_threaded);
 
-        HRESULT hr = CreateD3D11Device(ctx.device, ctx.context, &engine->hwInitHr);
-        if (FAILED(hr))
+        HRESULT hr = S_OK;
+        if (!ctx.device || !ctx.context)
         {
-            engine->lastHresult = hr;
-            engine->lastFailHr = hr;
-            engine->lastFailStage = IR_FAIL_DEVICE;
-            engine->hasError.store(true);
-            SetIrError("D3D11 device creation failed: 0x%08lX", hr);
-            return;
+            hr = CreateD3D11Device(ctx.device, ctx.context, &engine->hwInitHr);
+            if (FAILED(hr))
+            {
+                engine->lastHresult = hr;
+                engine->lastFailHr = hr;
+                engine->lastFailStage = IR_FAIL_DEVICE;
+                engine->hasError.store(true);
+                SetIrError("D3D11 device creation failed: 0x%08lX", hr);
+                return;
+            }
         }
 
         try
@@ -1150,8 +1540,8 @@ namespace
         ctx.pool = nullptr;
         ctx.item = nullptr;
         ctx.staging.Reset();
-        ctx.context.Reset();
-        ctx.device.Reset();
+        // The device and context are owned by the engine so save jobs can keep
+        // using them after the capture thread exits.
         winrt::uninit_apartment();
     }
 
@@ -1161,17 +1551,20 @@ namespace
         HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
         const bool comInitialized = (hr == S_OK);
 
-        hr = CreateD3D11Device(ctx.device, ctx.context, &engine->hwInitHr);
-        if (FAILED(hr))
+        if (!ctx.device || !ctx.context)
         {
-            engine->lastHresult = hr;
-            engine->lastFailHr = hr;
-            engine->lastFailStage = IR_FAIL_DEVICE;
-            engine->hasError.store(true);
-            SetIrError("D3D11 device creation failed: 0x%08lX", hr);
-            if (comInitialized)
-                CoUninitialize();
-            return;
+            hr = CreateD3D11Device(ctx.device, ctx.context, &engine->hwInitHr);
+            if (FAILED(hr))
+            {
+                engine->lastHresult = hr;
+                engine->lastFailHr = hr;
+                engine->lastFailStage = IR_FAIL_DEVICE;
+                engine->hasError.store(true);
+                SetIrError("D3D11 device creation failed: 0x%08lX", hr);
+                if (comInitialized)
+                    CoUninitialize();
+                return;
+            }
         }
 
         ComPtr<IDXGIDevice> dxgiDevice;
@@ -1249,6 +1642,7 @@ namespace
 
         while (!ctx.stop.load(std::memory_order_relaxed) && started)
         {
+            const auto frameStart = std::chrono::steady_clock::now();
             if (ctx.paused.load(std::memory_order_relaxed))
             {
                 Sleep(10);
@@ -1289,12 +1683,18 @@ namespace
             }
             ctx.duplication->ReleaseFrame();
             engine->heartbeat.fetch_add(1, std::memory_order_relaxed);
+
+            const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                     std::chrono::steady_clock::now() - frameStart)
+                                     .count();
+            const int64_t remaining = intervalMs - elapsed;
+            if (remaining > 0)
+                Sleep(static_cast<DWORD>(std::min<int64_t>(remaining, 50)));
         }
 
         ctx.duplication.Reset();
         ctx.staging.Reset();
-        ctx.context.Reset();
-        ctx.device.Reset();
+        // Device/context stay alive in the engine for asynchronous saves.
         if (comInitialized)
             CoUninitialize();
     }
@@ -1322,10 +1722,26 @@ namespace
     void StartCaptureThread(Engine &engine)
     {
         StopCaptureThread(engine);
+
+        if (!engine.gpu)
+        {
+            engine.gpu = std::make_shared<GpuPipeline>();
+            // GPU surfaces only pay off with a hardware encoder; software
+            // encoders keep the proven CPU path.
+            engine.gpu->Initialize((engine.activeEncoder % 10) < 4);
+        }
+
         auto context = std::make_shared<CaptureContext>();
         context->engine = &engine;
         context->config = engine.config;
-        context->paused.store(engine.paused);
+        context->paused.store(engine.paused.load(std::memory_order_relaxed));
+        context->capWidth.store(engine.config.capWidth, std::memory_order_relaxed);
+        context->capHeight.store(engine.config.capHeight, std::memory_order_relaxed);
+        if (engine.gpu->device)
+        {
+            context->device = engine.gpu->device;
+            context->context = engine.gpu->context;
+        }
         engine.capture = context;
         engine.captureThread = std::thread(CaptureThreadMain, context);
     }
@@ -1419,28 +1835,37 @@ namespace
                      int bitrateKbps,
                      int codec,
                      int vendorIndex,
+                     GpuPipeline *gpu,
+                     bool useGpuSurfaces,
                      std::atomic<int> &progress)
     {
-        std::call_once(g_mfOnce, []
-                       { MFStartup(MF_VERSION, MFSTARTUP_LITE); });
+        EnsureMfStartup();
 
         ComPtr<IMFAttributes> sinkAttributes;
+        if (useGpuSurfaces && gpu && gpu->mfManager)
+        {
+            if (SUCCEEDED(MFCreateAttributes(sinkAttributes.GetAddressOf(), 3)))
+            {
+                sinkAttributes->SetUnknown(MF_SINK_WRITER_D3D_MANAGER, gpu->mfManager.Get());
+                sinkAttributes->SetUINT32(MF_SINK_WRITER_DISABLE_THROTTLING, 1);
+            }
+        }
         if (vendorIndex >= 0 && vendorIndex < 4)
         {
             ComPtr<IMFActivate> encoder = FindEncoderActivate(codec, vendorIndex);
             if (encoder)
             {
-                if (SUCCEEDED(MFCreateAttributes(sinkAttributes.GetAddressOf(), 1)))
+                if (!sinkAttributes)
+                    MFCreateAttributes(sinkAttributes.GetAddressOf(), 1);
+                if (sinkAttributes)
                     sinkAttributes->SetUnknown(MF_SINK_WRITER_ENCODER_CONFIG, encoder.Get());
-                else
-                    sinkAttributes.Reset();
             }
         }
 
         ComPtr<IMFSinkWriter> writer;
         HRESULT hr = MFCreateSinkWriterFromURL(path.c_str(), nullptr, sinkAttributes.Get(),
                                                writer.GetAddressOf());
-        if (FAILED(hr) && sinkAttributes)
+        if (FAILED(hr) && sinkAttributes && !useGpuSurfaces)
         {
             sinkAttributes.Reset();
             hr = MFCreateSinkWriterFromURL(path.c_str(), nullptr, nullptr, writer.GetAddressOf());
@@ -1550,16 +1975,33 @@ namespace
         for (size_t i = 0; i < video.size(); ++i)
         {
             const VideoFrame &frame = video[i];
-            const uint8_t *pixels = frame.nv12.data();
-            size_t bytes = frame.nv12.size();
-            if (frame.width != baseW || frame.height != baseH)
+            const int64_t time = std::max<int64_t>(0, frame.pts100ns - base);
+            ComPtr<IMFSample> sample;
+
+            if (useGpuSurfaces && gpu)
             {
-                canvas = LetterboxFrame(frame, baseW, baseH);
-                pixels = canvas.data();
-                bytes = canvas.size();
+                // SaveWorker only enables GPU samples for uniform resolution,
+                // so any mismatch here is a bug and must fall back to CPU.
+                if (frame.width != baseW || frame.height != baseH)
+                {
+                    SetIrError("GPU sample skipped for letterboxed frame %llu", static_cast<unsigned long long>(i));
+                    return E_FAIL;
+                }
+                sample = gpu->MakeSample(frame.gpu->texture, time, videoDuration);
             }
-            auto sample = MakeSample(pixels, bytes,
-                                     std::max<int64_t>(0, frame.pts100ns - base), videoDuration);
+            else
+            {
+                const uint8_t *pixels = frame.nv12.data();
+                size_t bytes = frame.nv12.size();
+                if (frame.width != baseW || frame.height != baseH)
+                {
+                    canvas = LetterboxFrame(frame, baseW, baseH);
+                    pixels = canvas.data();
+                    bytes = canvas.size();
+                }
+                sample = MakeSample(pixels, bytes, time, videoDuration);
+            }
+
             if (!sample)
             {
                 SetIrError("Failed to allocate video sample %llu", static_cast<unsigned long long>(i));
@@ -1602,6 +2044,25 @@ namespace
         return S_OK;
     }
 
+    bool EnsureCpuFrames(std::vector<VideoFrame> &video, GpuPipeline *gpu)
+    {
+        if (!gpu)
+            return false;
+        for (auto &frame : video)
+        {
+            if (!frame.IsGpu())
+                continue;
+            const HRESULT hr = gpu->Readback(*frame.gpu, frame.nv12);
+            if (FAILED(hr))
+            {
+                SetIrError("GPU readback failed for CPU encoder fallback: 0x%08X", static_cast<unsigned>(hr));
+                return false;
+            }
+            frame.gpu.reset();
+        }
+        return true;
+    }
+
     void SaveWorker(std::shared_ptr<SaveJob> job,
                     std::wstring path,
                     std::vector<VideoFrame> video,
@@ -1609,13 +2070,71 @@ namespace
                     int fps,
                     int bitrate,
                     int codec,
-                    int vendorIndex)
+                    int vendorIndex,
+                    std::shared_ptr<GpuPipeline> gpu,
+                    std::shared_ptr<CaptureContext> capture)
     {
-        HRESULT hr = WriteMp4(path, video, audio, fps, bitrate, codec, vendorIndex, job->progress);
-        if (FAILED(hr) && vendorIndex >= 0 && vendorIndex < 4)
+        bool anyGpu = false;
+        bool allGpu = !video.empty();
+        int baseW = 2;
+        int baseH = 2;
+        for (const auto &frame : video)
+        {
+            if (frame.IsGpu())
+                anyGpu = true;
+            else
+                allGpu = false;
+            baseW = std::max(baseW, frame.width);
+            baseH = std::max(baseH, frame.height);
+        }
+        bool needsLetterbox = false;
+        for (const auto &frame : video)
+        {
+            if (frame.width != baseW || frame.height != baseH)
+            {
+                needsLetterbox = true;
+                break;
+            }
+        }
+
+        // Mixed-resolution replays still need the CPU letterbox pass. The
+        // normal fixed-resolution case stays entirely on the GPU.
+        const bool useGpuSurfaces = allGpu && !needsLetterbox && gpu &&
+                                    gpu->available.load(std::memory_order_relaxed) &&
+                                    vendorIndex >= 0 && vendorIndex < 4;
+        if (anyGpu && !useGpuSurfaces)
+        {
+            const bool wasPaused = capture ? capture->paused.load(std::memory_order_relaxed) : false;
+            if (capture)
+                capture->paused.store(true, std::memory_order_relaxed);
+            const bool converted = EnsureCpuFrames(video, gpu.get());
+            if (capture)
+                capture->paused.store(wasPaused, std::memory_order_relaxed);
+            if (!converted)
+            {
+                job->result.store(IR_FAIL, std::memory_order_release);
+                return;
+            }
+        }
+
+        HRESULT hr = WriteMp4(path, video, audio, fps, bitrate, codec, vendorIndex,
+                              useGpuSurfaces ? gpu.get() : nullptr, useGpuSurfaces, job->progress);
+        if (FAILED(hr) && useGpuSurfaces)
+        {
+            // DXGI surface input can be rejected by a driver/MFT. Convert the
+            // already-captured GPU frames once, then retry on the CPU path.
+            ClearIrError();
+            if (!EnsureCpuFrames(video, gpu.get()))
+            {
+                job->result.store(IR_FAIL, std::memory_order_release);
+                return;
+            }
+            hr = WriteMp4(path, video, audio, fps, bitrate, codec, 4, nullptr, false, job->progress);
+        }
+        else if (FAILED(hr) && vendorIndex >= 0 && vendorIndex < 4)
         {
             ClearIrError();
-            hr = WriteMp4(path, video, audio, fps, bitrate, codec, 4, job->progress);
+            hr = WriteMp4(path, video, audio, fps, bitrate, codec, 4, nullptr, false, job->progress);
         }
         job->result.store(SUCCEEDED(hr) ? IR_OK : IR_FAIL, std::memory_order_release);
         g_saveProgress.store(job->progress.load(std::memory_order_relaxed), std::memory_order_relaxed);
@@ -1691,8 +2210,28 @@ namespace
         return mask;
     }
 
+    struct EncoderActivationCache
+    {
+        std::mutex mutex;
+        std::map<std::pair<int, int>, ComPtr<IMFActivate>> activations;
+    };
+
+    EncoderActivationCache &GetEncoderActivationCache()
+    {
+        static EncoderActivationCache cache;
+        return cache;
+    }
+
     ComPtr<IMFActivate> FindEncoderActivate(int codec, int vendorIndex)
     {
+        auto &cache = GetEncoderActivationCache();
+        {
+            std::lock_guard<std::mutex> lock(cache.mutex);
+            auto found = cache.activations.find({codec, vendorIndex});
+            if (found != cache.activations.end())
+                return found->second;
+        }
+
         MFT_REGISTER_TYPE_INFO output{};
         output.guidMajorType = MFMediaType_Video;
         output.guidSubtype = OutputSubtypeForCodec(codec);
@@ -1724,6 +2263,11 @@ namespace
                 activations[i]->Release();
         }
         CoTaskMemFree(activations);
+
+        {
+            std::lock_guard<std::mutex> lock(cache.mutex);
+            cache.activations[{codec, vendorIndex}] = selected;
+        }
         return selected;
     }
 
@@ -1800,14 +2344,16 @@ IR_API void IR_Destroy(void *handle)
     engine->systemCapture.reset();
     engine->micCapture.reset();
     StopCaptureThread(*engine);
+    std::vector<std::shared_ptr<SaveJob>> pendingJobs;
     {
         std::lock_guard<std::mutex> lock(engine->jobsMutex);
-        for (auto &job : engine->jobs)
-        {
-            if (job->worker.joinable())
-                job->worker.join();
-        }
+        pendingJobs = std::move(engine->jobs);
         engine->jobs.clear();
+    }
+    for (auto &job : pendingJobs)
+    {
+        if (!job->joined.exchange(true, std::memory_order_acq_rel) && job->worker.joinable())
+            job->worker.join();
     }
     engine->magic = 0;
     delete engine;
@@ -1884,6 +2430,9 @@ IR_API int IR_Start(void *handle,
         engine->startQpc.store(startQpc, std::memory_order_relaxed);
         engine->running = true;
 
+        // Recreate the GPU pipeline so its hardware-encoder decision matches
+        // this session. Any in-flight save keeps its own shared reference.
+        engine->gpu.reset();
         StartCaptureThread(*engine);
 
         if (engine->captureAudioRequested)
@@ -1999,6 +2548,11 @@ IR_API int IR_SetCanvasHint(void *handle, int width, int height)
     std::lock_guard<std::mutex> lock(engine->mutex);
     engine->config.capWidth = std::max(0, width);
     engine->config.capHeight = std::max(0, height);
+    if (engine->capture)
+    {
+        engine->capture->capWidth.store(engine->config.capWidth, std::memory_order_relaxed);
+        engine->capture->capHeight.store(engine->config.capHeight, std::memory_order_relaxed);
+    }
     return IR_OK;
 }
 
@@ -2070,6 +2624,8 @@ IR_API int IR_BeginSave(void *handle, const wchar_t *out_path, int seconds_back,
         int bitrate = 6000;
         int codec = 2;
         int vendorIndex = 4;
+        std::shared_ptr<GpuPipeline> gpu;
+        std::shared_ptr<CaptureContext> capture;
         {
             std::lock_guard<std::mutex> lock(engine->mutex);
             fps = engine->config.fps;
@@ -2077,6 +2633,8 @@ IR_API int IR_BeginSave(void *handle, const wchar_t *out_path, int seconds_back,
             codec = (engine->encoderPreference >> 15) & 3;
             if (engine->activeEncoder >= 20)
                 vendorIndex = std::clamp(engine->activeEncoder % 10, 0, 4);
+            gpu = engine->gpu;
+            capture = engine->capture;
         }
 
         std::vector<VideoFrame> video;
@@ -2114,7 +2672,7 @@ IR_API int IR_BeginSave(void *handle, const wchar_t *out_path, int seconds_back,
         g_saveProgress.store(0, std::memory_order_relaxed);
         const std::wstring path(out_path);
         job->worker = std::thread(SaveWorker, job, path, std::move(video), std::move(audio),
-                                  fps, bitrate, codec, vendorIndex);
+                                  fps, bitrate, codec, vendorIndex, std::move(gpu), std::move(capture));
         return IR_OK;
     }
     catch (const std::bad_alloc &)
@@ -2156,23 +2714,32 @@ IR_API int IR_PollSave(void *handle, uint64_t job_id, int *progress, int *result
     std::shared_ptr<SaveJob> found;
     {
         std::lock_guard<std::mutex> lock(engine->jobsMutex);
-        for (auto it = engine->jobs.begin(); it != engine->jobs.end(); ++it)
+        for (const auto &job : engine->jobs)
         {
-            if ((*it)->id == job_id)
+            if (job->id == job_id)
             {
-                found = *it;
-                if (found->result.load(std::memory_order_acquire) != IR_PENDING)
-                {
-                    if (found->worker.joinable())
-                        found->worker.join();
-                    engine->jobs.erase(it);
-                }
+                found = job;
                 break;
             }
         }
     }
     if (!found)
         return IR_FAIL;
+
+    if (found->result.load(std::memory_order_acquire) != IR_PENDING)
+    {
+        if (!found->joined.exchange(true, std::memory_order_acq_rel) && found->worker.joinable())
+            found->worker.join();
+        std::lock_guard<std::mutex> lock(engine->jobsMutex);
+        for (auto it = engine->jobs.begin(); it != engine->jobs.end(); ++it)
+        {
+            if ((*it)->id == job_id)
+            {
+                engine->jobs.erase(it);
+                break;
+            }
+        }
+    }
     if (progress)
         *progress = found->progress.load(std::memory_order_relaxed);
     if (result)
