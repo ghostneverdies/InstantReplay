@@ -1,64 +1,22 @@
-global using System;
-global using System.Collections.Generic;
-global using System.Collections.ObjectModel;
-global using System.ComponentModel;
-global using System.IO;
-global using System.Runtime.InteropServices;
-global using System.Text;
-global using System.Linq;
-global using System.Net.Http;
-global using System.Threading;
-global using System.Threading.Tasks;
-global using System.Windows;
-global using System.Windows.Controls;
-global using System.Windows.Input;
-global using System.Windows.Media;
-global using System.Windows.Media.Animation;
-global using System.Windows.Threading;
-global using static InstantReplay.Compat;
-
-using System.Diagnostics;
-using System.Reflection;
-using System.Runtime.CompilerServices;
-using System.Windows.Interop;
+using System;
+using System.Collections;
+using System.Linq;
+using System.Threading;
+using System.Windows;
+using System.Windows.Media;
 using InstantReplay.GUI;
 using InstantReplay.Services;
+using Microsoft.Win32;
+using Wpf.Ui.Appearance;
 
-namespace InstantReplay
-{
-public partial class App : System.Windows.Application
+namespace InstantReplay;
+
+public partial class App : Application
 {
     private const string SingleInstanceMutexName = "Global\\InstantReplay_SingleInstance_Mutex";
     private const string ShowWindowEventName = "Global\\InstantReplay_ShowWindow_Event";
 
-    // Debug runs must never hand off to a hidden instance built from older
-    // code. A per-process name keeps `dotnet run` deterministic while Release
-    // keeps the normal single-instance behavior.
-    private static string EffectiveMutexName
-    {
-        get
-        {
-#if DEBUG
-            return $"Global\\InstantReplay_SingleInstance_Mutex_Dev_{Process.GetCurrentProcess().Id}";
-#else
-            return SingleInstanceMutexName;
-#endif
-        }
-    }
-
-    private static string EffectiveShowEventName
-    {
-        get
-        {
-#if DEBUG
-            return $"Global\\InstantReplay_ShowWindow_Event_Dev_{Process.GetCurrentProcess().Id}";
-#else
-            return ShowWindowEventName;
-#endif
-        }
-    }
-
-    private Window? _window;
+    private MainWindow? _window;
     private Mutex? _singleInstanceMutex;
     private EventWaitHandle? _showWindowEvent;
 
@@ -66,24 +24,24 @@ public partial class App : System.Windows.Application
     {
         try
         {
-            string webViewData = Path.Combine(Path.GetTempPath(), "InstantReplay", "WebView2");
-                _ = Directory.CreateDirectory(webViewData);
+            string webViewData = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "InstantReplay", "WebView2");
+            System.IO.Directory.CreateDirectory(webViewData);
             Environment.SetEnvironmentVariable("WEBVIEW2_USER_DATA_FOLDER", webViewData);
         }
         catch { }
+
+        DispatcherUnhandledException += (_, e) =>
+        {
+            Logger.Error($"Unhandled exception: {e.Exception}", e.Exception);
+            e.Handled = true;
+        };
     }
 
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
 
-        DispatcherUnhandledException += (_, args) =>
-        {
-            Logger.Error($"Unhandled exception: {args.Exception}", args.Exception);
-            args.Handled = true;
-        };
-
-        _singleInstanceMutex = new Mutex(initiallyOwned: false, EffectiveMutexName);
+        _singleInstanceMutex = new Mutex(initiallyOwned: false, SingleInstanceMutexName);
         bool acquired;
         try { acquired = _singleInstanceMutex.WaitOne(0); }
         catch (AbandonedMutexException) { acquired = true; }
@@ -97,8 +55,10 @@ public partial class App : System.Windows.Application
                 {
                     try
                     {
-                        using var existingShowEvent = EventWaitHandle.OpenExisting(EffectiveShowEventName);
-                            _ = existingShowEvent.Set();
+                        using (var existingShowEvent = EventWaitHandle.OpenExisting(ShowWindowEventName))
+                        {
+                            existingShowEvent.Set();
+                        }
                         break;
                     }
                     catch (WaitHandleCannotBeOpenedException) when (attempt < 39)
@@ -112,27 +72,22 @@ public partial class App : System.Windows.Application
                 Logger.Warn($"Could not signal existing instance: {ex.Message}");
             }
 
-            Shutdown(0);
+            Environment.Exit(0);
             return;
         }
 
-        _showWindowEvent = new EventWaitHandle(initialState: false, EventResetMode.AutoReset, EffectiveShowEventName);
+        _showWindowEvent = new EventWaitHandle(initialState: false, EventResetMode.AutoReset, ShowWindowEventName);
 
         bool startMinimized = Environment.GetCommandLineArgs()
             .Any(a => string.Equals(a, "--tray", StringComparison.OrdinalIgnoreCase));
 
+        AppTheme.Apply(WindowsTheme.IsSystemDarkMode());
+
         _window = new MainWindow(startMinimized);
-        _window.SourceInitialized += (_, _) => WindowBackdropHelper.Apply(_window);
+        MainWindow = _window;
         _window.Show();
 
         StartShowWindowListener();
-    }
-
-    protected override void OnExit(ExitEventArgs e)
-    {
-        _showWindowEvent?.Dispose();
-        _singleInstanceMutex?.Dispose();
-        base.OnExit(e);
     }
 
     private void StartShowWindowListener()
@@ -141,9 +96,10 @@ public partial class App : System.Windows.Application
         {
             while (true)
             {
-                _ = _showWindowEvent!.WaitOne();
-                var window = _window as MainWindow;
-                window?.Dispatcher.Invoke(() => window.BringToFront());
+                _showWindowEvent!.WaitOne();
+
+                MainWindow? window = _window;
+                window?.Dispatcher.BeginInvoke(new Action(() => window.BringToFront()));
             }
         })
         {
@@ -154,156 +110,131 @@ public partial class App : System.Windows.Application
     }
 }
 
-internal static class WindowBackdropHelper
+/// <summary>
+/// Theme plumbing that WinUI provided through ThemeDictionaries and SystemAccentColor* keys.
+/// WPF-UI owns its own light/dark control resources; this class layers the app palette (Theme.xaml) and
+/// the Windows accent shades on top, and points WPF-UI's WinUI-named control brushes at that palette.
+/// </summary>
+internal static class AppTheme
 {
-    private const int DwmwaUseImmersiveDarkMode = 20;
-    private const int DwmwaSystemBackdropType = 38;
-    private const int DwmwaMicaEffectLegacy = 1029;
-    private const int DwmSystemBackdropMainWindow = 2; // Mica
-    private const int WcaAccentPolicy = 19;
-    private const int AccentEnableAcrylicBlurBehind = 4;
+    // WinUI lightweight-styling keys that WPF-UI also reads, mapped to the palette brush they should use.
+    private static readonly (string Key, string Source)[] ControlBrushMap =
+    {
+        ("ButtonBackground", "SurfaceBorderBrush"),
+        ("ButtonBackgroundPointerOver", "SurfaceBorderBrush"),
+        ("ButtonBackgroundPressed", "SurfaceBorderBrush"),
+        ("ButtonForeground", "TextPrimaryBrush"),
+        ("ButtonForegroundPointerOver", "TextPrimaryBrush"),
+        ("ButtonForegroundPressed", "TextPrimaryBrush"),
+        ("ComboBoxBackground", "BgBrush"),
+        ("ComboBoxBackgroundPointerOver", "BgBrush"),
+        ("ComboBoxForeground", "TextPrimaryBrush"),
+        ("ComboBoxBorderBrush", "SurfaceBorderBrush"),
+        ("ComboBoxDropDownBackground", "SurfaceBrush"),
+        ("ComboBoxItemBackgroundSelected", "AccentDimBrush"),
+        ("ComboBoxItemForegroundSelected", "TextPrimaryBrush"),
+        ("TextControlBackground", "BgBrush"),
+        ("TextControlBackgroundPointerOver", "BgBrush"),
+        ("TextControlBackgroundFocused", "BgBrush"),
+        ("TextControlBorderBrush", "SurfaceBorderBrush"),
+        ("TextControlBorderBrushPointerOver", "AccentBrush"),
+        ("TextControlBorderBrushFocused", "AccentBrush"),
+        ("TextControlFocusedBorderBrush", "AccentBrush"),
+        ("TextControlForeground", "TextPrimaryBrush"),
+        ("TextControlForegroundFocused", "TextPrimaryBrush"),
+        ("ToggleSwitchFillOff", "SurfaceBorderBrush"),
+        ("ToggleSwitchFillOffPointerOver", "SurfaceBorderBrush"),
+        ("ToggleSwitchFillOn", "AccentBrush"),
+        ("ToggleSwitchFillOnPointerOver", "AccentBrush"),
+        ("ToggleSwitchStrokeOff", "SurfaceBorderBrush"),
+        ("ToggleSwitchStrokeOn", "AccentBrush"),
+        ("ToggleSwitchKnobFillOff", "TextMutedBrush"),
+        ("ToggleSwitchKnobFillOn", "AccentTextBrush"),
+    };
 
-    public static void Apply(Window window)
+    /// <summary>Windows accent palette, WinUI naming: Light3, Light2, Light1, Base, Dark1, Dark2, Dark3.</summary>
+    public readonly struct AccentShades
+    {
+        public AccentShades(Color light3, Color light2, Color light1, Color accent, Color dark1, Color dark2, Color dark3)
+        {
+            Light3 = light3; Light2 = light2; Light1 = light1; Base = accent; Dark1 = dark1; Dark2 = dark2; Dark3 = dark3;
+        }
+
+        public Color Light3 { get; }
+        public Color Light2 { get; }
+        public Color Light1 { get; }
+        public Color Base { get; }
+        public Color Dark1 { get; }
+        public Color Dark2 { get; }
+        public Color Dark3 { get; }
+    }
+
+    public static AccentShades GetAccentShades()
     {
         try
         {
-            IntPtr hwnd = new WindowInteropHelper(window).Handle;
-            if (hwnd == IntPtr.Zero) return;
-
-            Version os = Environment.OSVersion.Version;
-            bool win11 = os.Major >= 10 && os.Build >= 22000;
-
-            if (win11)
+            using (RegistryKey? key = Registry.CurrentUser.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Accent"))
             {
-                int dark = 1;
-                    _ = DwmSetWindowAttribute(hwnd, DwmwaUseImmersiveDarkMode, ref dark, sizeof(int));
-
-                if (os.Build >= 22621)
+                if (key?.GetValue("AccentPalette") is byte[] b && b.Length >= 28)
                 {
-                    int mica = DwmSystemBackdropMainWindow;
-                        _ = DwmSetWindowAttribute(hwnd, DwmwaSystemBackdropType, ref mica, sizeof(int));
-                }
-                else
-                {
-                    int enable = 1;
-                        _ = DwmSetWindowAttribute(hwnd, DwmwaMicaEffectLegacy, ref enable, sizeof(int));
+                    Color At(int i) => Color.FromRgb(b[i * 4], b[i * 4 + 1], b[i * 4 + 2]);
+                    return new AccentShades(At(0), At(1), At(2), At(3), At(4), At(5), At(6));
                 }
             }
-            else if (os.Major == 10)
-            {
-                ApplyWindows10Acrylic(hwnd);
-            }
+        }
+        catch { }
+
+        Color accent = SystemParameters.WindowGlassColor;
+        accent.A = 255;
+        return new AccentShades(Mix(accent, Colors.White, 0.60f), Mix(accent, Colors.White, 0.40f), Mix(accent, Colors.White, 0.20f),
+            accent, Mix(accent, Colors.Black, 0.15f), Mix(accent, Colors.Black, 0.30f), Mix(accent, Colors.Black, 0.45f));
+    }
+
+    public static Color GetSystemAccent() => GetAccentShades().Base;
+
+    private static Color Mix(Color from, Color to, float amount) => Color.FromRgb(
+        (byte)(from.R + (to.R - from.R) * amount),
+        (byte)(from.G + (to.G - from.G) * amount),
+        (byte)(from.B + (to.B - from.B) * amount));
+
+    private static SolidColorBrush Frozen(Color c)
+    {
+        var brush = new SolidColorBrush(c);
+        brush.Freeze();
+        return brush;
+    }
+
+    public static void Apply(bool dark)
+    {
+        Application app = Application.Current;
+        if (app == null) return;
+
+        try
+        {
+            ApplicationThemeManager.Apply(
+                dark ? ApplicationTheme.Dark : ApplicationTheme.Light,
+                Wpf.Ui.Controls.WindowBackdropType.Mica);
         }
         catch (Exception ex)
         {
-            Logger.Warn($"Backdrop helper could not apply material: {ex.Message}");
-        }
-    }
-
-    private static void ApplyWindows10Acrylic(IntPtr hwnd)
-    {
-        var policy = new AccentPolicy
-        {
-            AccentState = AccentEnableAcrylicBlurBehind,
-            AccentFlags = 0,
-            // AARRGGBB: 60% opaque dark tint over the desktop.
-            GradientColor = 0x99131116,
-            AnimationId = 0,
-        };
-
-        var data = new WindowCompositionAttributeData
-        {
-            Attribute = WcaAccentPolicy,
-            Data = Marshal.AllocHGlobal(Marshal.SizeOf(policy)),
-            SizeOfData = (uint)Marshal.SizeOf(policy),
-        };
-
-        try
-        {
-            Marshal.StructureToPtr(policy, data.Data, false);
-                _ = SetWindowCompositionAttribute(hwnd, ref data);
-        }
-        finally
-        {
-            if (data.Data != IntPtr.Zero) Marshal.FreeHGlobal(data.Data);
-        }
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct AccentPolicy
-    {
-        public int AccentState;
-        public uint AccentFlags;
-        public uint GradientColor;
-        public uint AnimationId;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct WindowCompositionAttributeData
-    {
-        public int Attribute;
-        public IntPtr Data;
-        public uint SizeOfData;
-    }
-
-    [DllImport("dwmapi.dll", PreserveSig = true)]
-    private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
-
-    [DllImport("user32.dll", PreserveSig = true)]
-    private static extern int SetWindowCompositionAttribute(IntPtr hwnd, ref WindowCompositionAttributeData data);
-}
-}
-
-namespace System.Runtime.CompilerServices
-{
-    // Required by the C# compiler for record / init-only members on .NET Framework.
-    internal static class IsExternalInit { }
-
-    [AttributeUsage(AttributeTargets.Class | AttributeTargets.Struct | AttributeTargets.Field | AttributeTargets.Property, AllowMultiple = false, Inherited = false)]
-    internal sealed class RequiredMemberAttribute : Attribute { }
-
-    [AttributeUsage(AttributeTargets.All, AllowMultiple = true, Inherited = false)]
-    internal sealed class CompilerFeatureRequiredAttribute : Attribute
-    {
-        public CompilerFeatureRequiredAttribute(string featureName) => FeatureName = featureName;
-        public string FeatureName { get; }
-        public bool IsOptional { get; init; }
-    }
-}
-
-namespace InstantReplay
-{
-    internal static class Compat
-    {
-        public static int Clamp(int value, int min, int max)
-        {
-            return value < min ? min : value > max ? max : value;
+            Logger.Warn($"Could not apply WPF-UI theme: {ex.Message}");
         }
 
-
-        public static double Clamp(double value, double min, double max)
+        if (app.Resources[dark ? "DarkPalette" : "LightPalette"] is ResourceDictionary palette)
         {
-            return value < min ? min : value > max ? max : value;
+            foreach (DictionaryEntry entry in palette)
+                app.Resources[entry.Key] = entry.Value;
         }
 
-        public static float Clamp(float value, float min, float max)
+        AccentShades shades = GetAccentShades();
+        app.Resources["AccentBrush"] = Frozen(shades.Base);
+        app.Resources["AccentDimBrush"] = Frozen(dark ? shades.Dark2 : shades.Light3);
+        app.Resources["HeroBackgroundBrush"] = Frozen(dark ? shades.Dark3 : shades.Dark2);
+
+        foreach ((string key, string source) in ControlBrushMap)
         {
-            return value < min ? min : value > max ? max : value;
+            if (app.Resources[source] is Brush brush)
+                app.Resources[key] = brush;
         }
-
-        public static bool IsFinite(double value)
-        {
-            return !double.IsNaN(value) && !double.IsInfinity(value);
-        }
-
-
-        public static bool Contains(this string value, string other, StringComparison comparison)
-        {
-            return value.IndexOf(other, comparison) >= 0;
-        }
-
-
-        public static string ProcessPath =>
-            Process.GetCurrentProcess().MainModule?.FileName ?? Assembly.GetEntryAssembly()?.Location ?? "InstantReplay.exe";
     }
 }

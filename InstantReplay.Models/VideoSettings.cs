@@ -1,3 +1,10 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using InstantReplay.Services;
 namespace InstantReplay.Models;
 
 public enum EncoderPreference
@@ -85,11 +92,8 @@ public static class EncoderAvailabilityMap
         return mask;
     }
 
-    public static bool IsComplete(IReadOnlyDictionary<string, bool>? map)
-    {
-        return map is not null && Entries.All(e => map.ContainsKey(e.Key));
-    }
-
+    public static bool IsComplete(IReadOnlyDictionary<string, bool>? map) =>
+        map is not null && Entries.All(e => map.ContainsKey(e.Key));
 
     /// <summary>
     /// Packs the full probe mask into the single per-codec byte the native
@@ -125,32 +129,28 @@ public readonly record struct VideoQualityProfile(string Name, int BitrateKbps, 
     // TargetBitrateKbps scales this by pixel count and frame rate.
     private static readonly int[] BaseKbps60 = [12000, 14000, 16000, 20000, 24000, 27000, 30000];
 
-    public static int PresetIndex(string preset)
+    public static int PresetIndex(string preset) => preset switch
     {
-        return preset switch
-        {
-            "UltraFast" => 0,
-            "VeryFast" => 1,
-            "Fast" => 2,
-            "Balanced" => 3,
-            "Slow" => 4,
-            "Slower" => 5,
-            "Slowest" => 6,
-            // Legacy stored values. Old encoder "Speed"/"Quality" become
-            // Fast/Slow; old quality "Low"/"High" become UltraFast/Slowest.
-            "Low" => 0,
-            "Speed" => 2,
-            "Quality" => 4,
-            "High" => 6,
-            _ => 3,
-        };
-    }
-
+        "UltraFast" => 0,
+        "VeryFast" => 1,
+        "Fast" => 2,
+        "Balanced" => 3,
+        "Slow" => 4,
+        "Slower" => 5,
+        "Slowest" => 6,
+        // Legacy stored values. Old encoder "Speed"/"Quality" become
+        // Fast/Slow; old quality "Low"/"High" become UltraFast/Slowest.
+        "Low" => 0,
+        "Speed" => 2,
+        "Quality" => 4,
+        "High" => 6,
+        _ => 3,
+    };
 
     public static VideoQualityProfile FromPreset(string preset, int fps)
     {
         int idx = PresetIndex(preset);
-        int rate = Clamp(fps, 15, 240);
+        int rate = Compat.Clamp(fps, 15, 240);
         return new VideoQualityProfile(PresetNames[idx], BaseKbps60[idx] * rate / 60, 3840, 2160);
     }
     // Bitrate is derived from the quality preset, target FPS and the actual output resolution.
@@ -162,7 +162,7 @@ public readonly record struct VideoQualityProfile(string Name, int BitrateKbps, 
         int w = Math.Max(16, width);
         int h = Math.Max(16, height);
         double pixels = (double)w * h;
-        double scale = Clamp(pixels / (1920.0 * 1080.0), 0.35, 2.0);
+        double scale = Compat.Clamp(pixels / (1920.0 * 1080.0), 0.35, 2.0);
         return (int)Math.Round(baseKbps * scale / 1000.0) * 1000;
     }
 

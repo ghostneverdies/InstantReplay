@@ -1,41 +1,41 @@
-using System.Windows;
-using System.Windows.Controls;
-using System.Windows.Media;
-using Wpf.Ui.Controls;
-using System.Globalization;
+using System;
+using System.Collections.Generic;
 using System.Diagnostics;
-using System.ComponentModel;
-using Wpf.Ui.Extensions;
+using System.Globalization;
+using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Input;
+using System.Windows.Interop;
+using System.Windows.Media;
+using System.Windows.Media.Animation;
+using System.Windows.Media.Imaging;
+using System.Windows.Threading;
+using Microsoft.Web.WebView2.Core;
 using InstantReplay.Core;
 using InstantReplay.GUI.Helpers;
 using InstantReplay.GUI.Shell;
 using InstantReplay.Models;
 using InstantReplay.Services;
-using System.Windows.Media.Imaging;
-using Microsoft.Web.WebView2.Wpf;
-using Color = System.Windows.Media.Color;
 using Brush = System.Windows.Media.Brush;
-using TextBlock = System.Windows.Controls.TextBlock;
-using TextBox = System.Windows.Controls.TextBox;
-using Image = System.Windows.Controls.Image;
-using Button = System.Windows.Controls.Button;
-using ComboBoxItem = System.Windows.Controls.ComboBoxItem;
-using ListViewItem = System.Windows.Controls.ListViewItem;
-using MenuItem = System.Windows.Controls.MenuItem;
-using WpfUiButton = Wpf.Ui.Controls.Button;
-using WpfUiInfoBar = Wpf.Ui.Controls.InfoBar;
-using SnackbarService = Wpf.Ui.SnackbarService;
+using Color = System.Windows.Media.Color;
+using FontIcon = Wpf.Ui.Controls.FontIcon;
+using InfoBarSeverity = Wpf.Ui.Controls.InfoBarSeverity;
+using ToggleSwitch = Wpf.Ui.Controls.ToggleSwitch;
+using WebView2 = Microsoft.Web.WebView2.Wpf.WebView2;
 
 namespace InstantReplay.GUI;
 
-public partial class MainWindow : FluentWindow
+public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
 {
     [DllImport("user32.dll")] private static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
     [DllImport("user32.dll")] private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
-    [DllImport("user32.dll")] private static extern IntPtr SetWindowLongPtr(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
-    [DllImport("user32.dll")] private static extern IntPtr CallWindowProc(IntPtr lpPrevWndFunc, IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
     [DllImport("user32.dll")] private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
     [DllImport("user32.dll")] private static extern uint GetDpiForWindow(IntPtr hWnd);
     [DllImport("user32.dll")] private static extern int GetSystemMetrics(int nIndex);
@@ -70,15 +70,9 @@ public partial class MainWindow : FluentWindow
     }
     private static readonly uint s_taskbarButtonCreated = RegisterWindowMessage("TaskbarButtonCreated");
 
-    private enum SoundCue { MoveNext, GoBack, Show, Hide, Invoke }
-
-    private static readonly Stopwatch s_clock = Stopwatch.StartNew();
-
+    private const int SmCyFullscreen = 17;
     private const int SwMinimize = 6;
 
-    private delegate IntPtr WndProcDelegate(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
-
-    private const int GwlpWndProc = -4;
     private const int SwHide = 0;
     private const int SwShow = 5;
     private const int SwRestore = 9;
@@ -132,7 +126,7 @@ public partial class MainWindow : FluentWindow
     {
         uint header = (uint)(IntPtr.Size == 8 ? 24 : 16);
         uint size = 0;
-        _ = GetRawInputData(rawInput, 0x10000003, IntPtr.Zero, ref size, header);
+        GetRawInputData(rawInput, 0x10000003 , IntPtr.Zero, ref size, header);
         if (size == 0 || size > 512) return;
         IntPtr buffer = Marshal.AllocHGlobal((int)size);
         try
@@ -171,7 +165,7 @@ public partial class MainWindow : FluentWindow
 
     private void TriggerHotkeySave()
     {
-        long now = s_clock.ElapsedMilliseconds;
+        long now = Compat.TickCount64;
         if (now - _lastHotkeyTick < 500) return;
         _lastHotkeyTick = now;
         _ = SaveReplayAsync();
@@ -194,8 +188,7 @@ public partial class MainWindow : FluentWindow
     private readonly RecorderEngine _engine;
     private readonly string _tempDir;
     private readonly IntPtr _hwnd;
-    private readonly Dispatcher _dq;
-    private SnackbarService? _snackbarService;
+    private readonly UiQueue _dq;
 
     private TrayIcon? _trayIcon;
     private DispatcherTimer? _debugStatsTimer;
@@ -237,7 +230,6 @@ public partial class MainWindow : FluentWindow
 
     private PlayerFullScreenWindow? _fsWindow;
     private WebView2? _inlinePlayer;
-    private bool _webView2Available;
     private double _playerTime;
     private bool _playerPlaying = true;
     private double _playerVolume = 1;
@@ -246,26 +238,6 @@ public partial class MainWindow : FluentWindow
     private int _viewerGeneration;
     private double _playerAspect = 16.0 / 9.0;
 
-    private readonly HashSet<ListViewItem> _hoverWired = new();
-    private readonly Dictionary<ListViewItem, (FrameworkElement? Root, FrameworkElement? Details, ScaleTransform? Scale)> _cardVisuals = new();
-    private long _lastGalleryOpenTick;
-
-    private sealed class NavIconVisual
-    {
-        public RotateTransform Rotation { get; } = new();
-        public ScaleTransform Scale { get; } = new() { ScaleX = 1, ScaleY = 1 };
-        public TranslateTransform Translate { get; } = new();
-
-        public TransformGroup Group { get; }
-
-        public NavIconVisual()
-        {
-            Group = new TransformGroup();
-            Group.Children.Add(Rotation);
-            Group.Children.Add(Scale);
-            Group.Children.Add(Translate);
-        }
-    }
     private ScrollViewer? _galleryScroll;
     private bool _galleryDirty;
     private string _galleryDir = "";
@@ -293,10 +265,10 @@ public partial class MainWindow : FluentWindow
     private PendingSettings _baseline;
 
     private string? _lastSavedReplayPath;
+    private Action? _infoBarAction;
 
     private FrameworkElement? _currentPage;
 
-    private Storyboard? _gearStoryboard;
 
     private TaskbarBadge? _taskbarBadge;
     private BadgeKind _badgeKind = BadgeKind.None;
@@ -305,29 +277,34 @@ public partial class MainWindow : FluentWindow
     private bool _hasErrored;
     private bool _flyoutShown;
 
-    private WndProcDelegate? _wndProcDelegate;
-    private IntPtr _originalWndProc;
-
     public MainWindow(bool startMinimized = false)
     {
         _startMinimized = startMinimized;
         InitializeComponent();
-        NavView.SelectItem(NavHomeItem);
+        _hwnd = new WindowInteropHelper(this).EnsureHandle();
+        SelectNav(NavHomeItem);
+
+        StatusInfoActionButton.Click += (_, _) =>
+        {
+            Action? action = _infoBarAction;
+            _infoBarAction = null;
+            action?.Invoke();
+        };
 
         Title = "Instant Replay";
-        _hwnd = new System.Windows.Interop.WindowInteropHelper(this).EnsureHandle();
-        _dq = Dispatcher.CurrentDispatcher;
-        _library = new ReplayLibrary(_dq);
+        _dq = new UiQueue(Dispatcher);
+        _library = new ReplayLibrary(Dispatcher);
 
-        _snackbarService = new SnackbarService();
-        _snackbarService.SetSnackbarPresenter(RootSnackbarPresenter);
+        _animationsEnabled = SystemParameters.ClientAreaAnimation;
 
-        try { _animationsEnabled = SystemParameters.ClientAreaAnimation; }
-        catch { _animationsEnabled = true; }
+        if (_startMinimized)
+        {
+            ShowActivated = false;
+            WindowState = WindowState.Minimized;
+        }
 
         SetInitialWindowSizeAndIcon();
-        SetupCustomTitleBar();
-        SubclassWndProc();
+        HookWndProc();
 
         _settings = Settings.Load();
         _settings.DarkMode = WindowsTheme.IsSystemDarkMode();
@@ -352,7 +329,7 @@ public partial class MainWindow : FluentWindow
         DebugLoggingToggle.IsChecked = _settings.DebugLogging;
         UpdateHotkeyButtonDisplay();
 
-        NavView.IsPaneOpen = _settings.NavigationPaneOpen;
+        SetNavPaneOpen(_settings.NavigationPaneOpen, persist: false);
 
         StartupToggle.IsChecked = StartupManager.IsEnabled();
         SaveLocationBox.Text = _settings.GetEffectiveSaveDestination();
@@ -361,8 +338,6 @@ public partial class MainWindow : FluentWindow
         _baseline = CapturePending();
 
         GalleryGrid.ItemsSource = _library.Items;
-        WireGalleryContainers();
-        GalleryGrid.PreviewMouseLeftButtonUp += GalleryGrid_PreviewMouseLeftButtonUp;
         _library.Items.CollectionChanged += (_, _) => UpdateGalleryChrome();
         _library.FolderChanged += () =>
         {
@@ -381,7 +356,7 @@ public partial class MainWindow : FluentWindow
             if (_fsWindow != null) { var fs = _fsWindow; _fsWindow = null; try { fs.Shutdown(); } catch { } }
         };
 
-        _ = _dq.InvokeAsync(() =>
+        _dq.TryEnqueue(() =>
         {
             FitWindowToPage(HomePage);
             PlayPageEntrance(HomePage);
@@ -423,7 +398,7 @@ public partial class MainWindow : FluentWindow
             RefreshMicrophonesInBackground();
         };
         _audioWatcher = new AudioDeviceWatcher();
-        _audioWatcher.DevicesChanged += () => _dq.InvokeAsync(() =>
+        _audioWatcher.DevicesChanged += () => _dq.TryEnqueue(() =>
         {
             _deviceChangeDebounceTimer!.Stop();
             _deviceChangeDebounceTimer!.Start();
@@ -431,23 +406,15 @@ public partial class MainWindow : FluentWindow
 
         _ = InitialStartAsync();
 
-        _ = _dq.InvokeAsync(ClipNotificationWindow.WarmUp);
+        _dq.TryEnqueue(ClipNotificationWindow.WarmUp);
 
         Microsoft.Win32.SystemEvents.UserPreferenceChanged += SystemEvents_UserPreferenceChanged;
 
-        Activated += Window_Activated;
-        Deactivated += Window_Deactivated;
-        Closing += Window_ClosingRequested;
-
-        PreviewKeyDown += Window_PreviewKeyDown;
-        PreviewKeyUp += Window_PreviewKeyUp;
-
         if (_startMinimized)
         {
-            _ = _dq.InvokeAsync(() =>
+            _dq.TryEnqueue(() =>
             {
-                WindowState = WindowState.Minimized;
-                _ = ShowWindow(_hwnd, SwHide);
+                Hide();
                 _isHidden = true;
                 NotifyRunningInBackground();
             });
@@ -456,49 +423,19 @@ public partial class MainWindow : FluentWindow
 
     private void SetInitialWindowSizeAndIcon()
     {
-        ResizeMode = ResizeMode.NoResize;
-        WindowStartupLocation = WindowStartupLocation.CenterScreen;
+        ApplyFixedWindowSize();
         try
         {
-            string icon = ResolveIconPath();
-            if (File.Exists(icon)) Icon = new BitmapImage(new Uri(Path.GetFullPath(icon)));
+            string iconPath = ResolveIconPath();
+            if (File.Exists(iconPath)) Icon = BitmapFrame.Create(new Uri(iconPath, UriKind.Absolute));
         }
         catch (Exception ex) { Logger.Warn($"Could not set window icon: {ex.Message}"); }
-
-        SetGitHubLogo();
-    }
-
-    private void SetGitHubLogo()
-    {
-        try
-        {
-            // WPF freezes BitmapImage resources while App.xaml loads, so declaring
-            // one there makes BitmapImage.EndInit throw at startup. Load the icon
-            // from its copied asset path instead, after the window exists.
-            string path = Path.Combine(AppContext.BaseDirectory, "assets", "icons", "github_dark_mode.png");
-            if (!File.Exists(path)) return;
-
-            var image = new BitmapImage();
-            image.BeginInit();
-            image.CacheOption = BitmapCacheOption.OnLoad;
-            image.UriSource = new Uri(path, UriKind.Absolute);
-            image.EndInit();
-            image.Freeze();
-            GitHubLogoImage.Source = image;
-        }
-        catch (Exception ex) { Logger.Warn($"Could not load GitHub logo: {ex.Message}"); }
     }
 
     private void ApplyFixedWindowSize()
     {
-        ResizeMode = ResizeMode.NoResize;
-    }
-
-    private void SetupCustomTitleBar()
-    {
-        // WPF-UI's FluentWindow + ui:TitleBar own the extended title bar and drag region.
-        TitleBarHost.Height = 32;
-        TitleBarButtonsPanel.Margin = new Thickness(0);
+        Width = 760;
+        Height = 480;
     }
 
     private void DonateTitleButton_Click(object sender, RoutedEventArgs e)
@@ -506,23 +443,17 @@ public partial class MainWindow : FluentWindow
         DonateWindow.Show(_hwnd, _settings);
     }
 
-    private void MinimizeTitleButton_Click(object sender, RoutedEventArgs e)
+    private static void OpenUrl(string url)
     {
-        WindowState = WindowState.Minimized;
+        Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
     }
-
-    private void CloseTitleButton_Click(object sender, RoutedEventArgs e)
-    {
-        Close();
-    }
-
 
     private void UpdateWebView2Requirement()
     {
         bool installed;
         try
         {
-            string version = Microsoft.Web.WebView2.Core.CoreWebView2Environment.GetAvailableBrowserVersionString();
+            string version = CoreWebView2Environment.GetAvailableBrowserVersionString();
             installed = !string.IsNullOrWhiteSpace(version);
             if (installed) Logger.Info($"WebView2 Runtime available: {version}");
         }
@@ -531,9 +462,8 @@ public partial class MainWindow : FluentWindow
             installed = false;
             Logger.Warn($"WebView2 Runtime unavailable: {ex.Message}");
         }
-        _webView2Available = installed;
         WebViewRequirementBar.IsOpen = !installed;
-        WebViewRequirementHost.Visibility = installed ? Visibility.Collapsed : Visibility.Visible;
+        WebViewRequirementBar.Visibility = installed ? Visibility.Collapsed : Visibility.Visible;
     }
 
     private void DownloadWebView2Button_Click(object sender, RoutedEventArgs e)
@@ -551,28 +481,28 @@ public partial class MainWindow : FluentWindow
 
     private void GitHubTitleButton_Click(object sender, RoutedEventArgs e)
     {
-        try { OpenUrl("https://github.com/ghostneverdies/InstantReplay"); }
-        catch (Exception ex) { Logger.Warn($"Could not open GitHub page: {ex.Message}"); }
+        try
+        {
+            OpenUrl("https://github.com/ghostneverdies/InstantReplay");
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"Could not open GitHub page: {ex.Message}");
+        }
     }
 
-    private static void OpenUrl(string url)
+    private void HookWndProc()
     {
-        System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(url) { UseShellExecute = true });
+        HwndSource.FromHwnd(_hwnd)?.AddHook(WndProc);
     }
 
-
-    private void SubclassWndProc()
+    private IntPtr WndProc(IntPtr hWnd, int message, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
-        _wndProcDelegate = WndProc;
-        IntPtr newProcPtr = Marshal.GetFunctionPointerForDelegate(_wndProcDelegate);
-        _originalWndProc = SetWindowLongPtr(_hwnd, GwlpWndProc, newProcPtr);
-    }
-
-    private IntPtr WndProc(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam)
-    {
+        uint msg = (uint)message;
         if (msg == WM_HOTKEY && wParam.ToInt32() == HotkeyId)
         {
             TriggerHotkeySave();
+            handled = true;
             return IntPtr.Zero;
         }
         if (msg == WM_INPUT)
@@ -583,34 +513,33 @@ public partial class MainWindow : FluentWindow
         if (msg == s_taskbarButtonCreated && s_taskbarButtonCreated != 0)
         {
             _taskbarBadge?.Reset();
-            _ = _dq.InvokeAsync(() => RefreshAppBadge());
+            _dq.TryEnqueue(() => RefreshAppBadge());
         }
         if (msg == WM_APP + 1 && _trayIcon is not null)
         {
             _trayIcon.HandleMessage(lParam);
+            handled = true;
         }
-        return CallWindowProc(_originalWndProc, hWnd, msg, wParam, lParam);
+        return IntPtr.Zero;
     }
 
     private void ApplyBackdrop()
     {
-        // FluentWindow's WindowBackdropType="Mica" in XAML owns the backdrop.
-        Brush transparent = new SolidColorBrush(Colors.Transparent);
-        RootGrid.Background = transparent;
-        TitleBarHost.Background = transparent;
-
-        NavView.Resources["NavigationViewDefaultPaneBackground"] = transparent;
-        NavView.Resources["NavigationViewContentBackground"] = transparent;
-        NavView.Resources["NavigationViewExpandedPaneBackground"] = transparent;
-        NavView.Resources["NavigationViewCollapsedPaneBackground"] = transparent;
+        // The Mica backdrop and transparent window background come from FluentWindow / ApplicationThemeManager.
+        try
+        {
+            TitleBarButtons.SetCornerPreference(_hwnd, round: true);
+            TitleBarButtons.SetAccentBorder(_hwnd);
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"Could not set corner preference: {ex.Message}");
+        }
     }
 
     private void ApplyAppTheme(bool dark)
     {
-        Wpf.Ui.Appearance.ApplicationThemeManager.Apply(
-            dark ? Wpf.Ui.Appearance.ApplicationTheme.Dark : Wpf.Ui.Appearance.ApplicationTheme.Light,
-            Wpf.Ui.Controls.WindowBackdropType.Mica,
-            true);
+        AppTheme.Apply(dark);
         ApplyHomeAccent();
     }
 
@@ -619,10 +548,9 @@ public partial class MainWindow : FluentWindow
         if (e.Category is not (Microsoft.Win32.UserPreferenceCategory.General or Microsoft.Win32.UserPreferenceCategory.Color))
             return;
 
-        _ = _dq.InvokeAsync(() =>
+        _dq.TryEnqueue(() =>
         {
-            try { _animationsEnabled = SystemParameters.ClientAreaAnimation; }
-            catch { }
+            _animationsEnabled = SystemParameters.ClientAreaAnimation;
 
             if (e.Category == Microsoft.Win32.UserPreferenceCategory.General)
             {
@@ -635,18 +563,14 @@ public partial class MainWindow : FluentWindow
                     return;
                 }
             }
+            AppTheme.Apply(_settings.DarkMode);
             ApplyHomeAccent();
         });
     }
 
     private Brush GetThemedBrush(string key)
     {
-        if (Application.Current.Resources[key] is Brush brush) return brush;
-        foreach (ResourceDictionary merged in Application.Current.Resources.MergedDictionaries)
-        {
-            if (merged[key] is Brush mergedBrush) return mergedBrush;
-        }
-        return new SolidColorBrush(Colors.Gray);
+        return (Brush)Application.Current.Resources[key];
     }
 
     private readonly record struct PendingSettings(
@@ -672,9 +596,7 @@ public partial class MainWindow : FluentWindow
         bool ApplicationLocalAudio,
         bool DebugLogging);
 
-    private PendingSettings CapturePending()
-    {
-        return new(
+    private PendingSettings CapturePending() => new(
         _settings.ReplayDurationSeconds,
         _settings.FrameRate,
         _settings.QualityPreset,
@@ -696,25 +618,13 @@ public partial class MainWindow : FluentWindow
         _settings.AudioBitrate,
         _settings.ApplicationLocalAudio,
         _settings.DebugLogging);
-    }
 
+    private static void PlayButtonSound() { }
 
     private void Notify(string title, string message, int balloonIcon)
     {
-        // In-app WPF-UI Snackbar notification; tray balloon remains as a fallback.
-        _ = _dq.InvokeAsync(() =>
-        {
-            try
-            {
-                if (_snackbarService != null)
-                {
-                    _snackbarService.Show(title, message);
-                    return;
-                }
-            }
-            catch (Exception ex) { Logger.Debug($"Snackbar notification failed: {ex.Message}"); }
+        if (!ToastCenter.Show(title, message))
             _trayIcon?.ShowBalloonTip(title, message, balloonIcon);
-        });
     }
 
     private void NotifyRunningInBackground()
@@ -742,7 +652,7 @@ public partial class MainWindow : FluentWindow
         hideTimer.Tick += (_, _) =>
         {
             hideTimer.Stop();
-            _ = ShowWindow(_hwnd, SwHide);
+            Hide();
             _isHidden = true;
             _taskbarBadge?.SetTaskbarVisible(false);
             _lastBalloonWasLeakWarning = false;
@@ -752,7 +662,7 @@ public partial class MainWindow : FluentWindow
         hideTimer.Start();
     }
 
-    private void Window_ClosingRequested(object? sender, System.ComponentModel.CancelEventArgs e)
+    private void Window_Closing(object? sender, System.ComponentModel.CancelEventArgs e)
     {
         if (_isClosingForReal) return;
         e.Cancel = true;
@@ -762,38 +672,72 @@ public partial class MainWindow : FluentWindow
         CloseButton_Click();
     }
 
-    private void Window_Deactivated(object? sender, EventArgs e)
-    {
-        if (_capturingHotkey) EndHotkeyCapture();
-    }
-
     private void Window_Activated(object? sender, EventArgs e)
     {
         RefreshStartupToggleState();
-        _ = _dq.InvokeAsync(() => _ = ShowUpdateReminderAsync());
+        _dq.TryEnqueue(async () => await ShowUpdateReminderAsync());
         _taskbarBadge?.StopFlashing();
         if (ReferenceEquals(_currentPage, GalleryPage)) _ = RefreshGalleryAsync();
     }
 
-    // WPF-UI only changes SelectedItem for items that have a TargetPageType.
-    // This app swaps pages itself, so route item clicks through SelectItem.
-    private void NavItem_Click(object sender, RoutedEventArgs e)
+    private void Window_Deactivated(object? sender, EventArgs e)
     {
-        if (sender is INavigationViewItem item) NavView.SelectItem(item);
+        if (_capturingHotkey)
+            EndHotkeyCapture();
     }
 
-    private async void NavView_SelectionChanged(NavigationView sender, RoutedEventArgs e)
+    // ---- Sidebar (RadioButton items + collapsible pane; WPF-UI's NavigationView only navigates to Page types) ----
+
+    private const double NavPaneOpenWidth = 220;
+    private const double NavPaneCompactWidth = 48;
+    private bool _navPaneOpen = true;
+
+    private IEnumerable<RadioButton> NavItems()
+    {
+        yield return NavHomeItem;
+        yield return NavGalleryItem;
+        yield return NavGamesItem;
+        yield return NavSettingsItem;
+        yield return NavUpdatesItem;
+    }
+
+    private void SelectNav(RadioButton item)
+    {
+        foreach (RadioButton nav in NavItems()) nav.IsChecked = ReferenceEquals(nav, item);
+    }
+
+    private RadioButton? SelectedNav() => NavItems().FirstOrDefault(n => n.IsChecked == true);
+
+    private void SetNavPaneOpen(bool open, bool persist)
+    {
+        _navPaneOpen = open;
+        NavPane.Width = open ? NavPaneOpenWidth : NavPaneCompactWidth;
+        foreach (RadioButton nav in NavItems())
+        {
+            if (nav.Content is StackPanel row && row.Children.Count > 1)
+                row.Children[1].Visibility = open ? Visibility.Visible : Visibility.Collapsed;
+        }
+        UpdateUpdatesBadgeVisibility();
+        if (!persist || _initializing) return;
+        _settings.NavigationPaneOpen = open;
+        _settings.SaveFields(nameof(Settings.NavigationPaneOpen));
+    }
+
+    private void NavPaneToggle_Click(object sender, RoutedEventArgs e) => SetNavPaneOpen(!_navPaneOpen, persist: true);
+
+    private async void NavItem_Click(object sender, RoutedEventArgs e)
     {
         if (_initializing) return;
+        var item = (RadioButton)sender;
         FrameworkElement target =
-            ReferenceEquals(NavView.SelectedItem, NavUpdatesItem) ? UpdatesPage
-            : ReferenceEquals(NavView.SelectedItem, NavGamesItem) ? GamesPage
-            : ReferenceEquals(NavView.SelectedItem, NavSettingsItem) ? SettingsPage
-            : ReferenceEquals(NavView.SelectedItem, NavGalleryItem) ? GalleryPage
+            ReferenceEquals(item, NavUpdatesItem) ? UpdatesPage
+            : ReferenceEquals(item, NavGamesItem) ? GamesPage
+            : ReferenceEquals(item, NavSettingsItem) ? SettingsPage
+            : ReferenceEquals(item, NavGalleryItem) ? GalleryPage
             : HomePage;
 
-        // Selecting Gallery while the viewer is open acts as "back".
-        if (ReferenceEquals(target, GalleryPage) && ReferenceEquals(_currentPage, ViewerPage))
+        // Clicking Gallery while a clip is open returns to the gallery (the viewer lives under Gallery).
+        if (ReferenceEquals(item, NavGalleryItem) && ReferenceEquals(_currentPage, ViewerPage))
         {
             CloseViewer();
             return;
@@ -801,46 +745,49 @@ public partial class MainWindow : FluentWindow
 
         if (ReferenceEquals(target, GamesPage) && _dirty) await SaveChangesAsync();
         if (ReferenceEquals(target, GamesPage)) RefreshGamesPage();
-        if (ReferenceEquals(target, UpdatesPage)) { NavUpdatesItem.InfoBadge = null; RefreshUpdatesPage(); }
-        PlaySound(PageOrder(target) >= PageOrder(_currentPage ?? HomePage) ? SoundCue.MoveNext : SoundCue.GoBack);
+        if (ReferenceEquals(target, UpdatesPage)) { HideUpdatesBadge(); RefreshUpdatesPage(); }
         NavigateTo(target);
     }
 
-    private int PageOrder(FrameworkElement page)
+    private void HideUpdatesBadge()
     {
-        return ReferenceEquals(page, UpdatesPage) ? 4
+        _updatesBadgeVisible = false;
+        UpdateUpdatesBadgeVisibility();
+    }
+
+    private bool _updatesBadgeVisible;
+
+    private void UpdateUpdatesBadgeVisibility()
+    {
+        NavUpdatesItemBadge.Visibility = _updatesBadgeVisible && _navPaneOpen ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private int PageOrder(FrameworkElement page) =>
+        ReferenceEquals(page, UpdatesPage) ? 4
         : ReferenceEquals(page, SettingsPage) ? 3
         : ReferenceEquals(page, GamesPage) ? 2
         : ReferenceEquals(page, GalleryPage) || ReferenceEquals(page, ViewerPage) ? 1
         : 0;
-    }
-
-
-    private void NavView_ItemInvoked(NavigationView sender, RoutedEventArgs e)
-    {
-        if (ReferenceEquals(NavView.SelectedItem, NavGalleryItem) && ReferenceEquals(_currentPage, ViewerPage))
-            CloseViewer();
-    }
 
     private void ResetPageScroll(FrameworkElement page)
     {
         if (page is ScrollViewer scroll)
         {
-            scroll.ScrollToHorizontalOffset(0);
             scroll.ScrollToVerticalOffset(0);
+            scroll.ScrollToHorizontalOffset(0);
             return;
         }
 
         if (ReferenceEquals(page, GalleryPage))
         {
             _galleryScroll ??= FindDescendant<ScrollViewer>(GalleryGrid);
-            _galleryScroll?.ScrollToHorizontalOffset(0);
             _galleryScroll?.ScrollToVerticalOffset(0);
         }
     }
 
     private static T? FindDescendant<T>(DependencyObject root) where T : DependencyObject
     {
+        if (!(root is Visual) && !(root is System.Windows.Media.Media3D.Visual3D)) return null;
         int count = VisualTreeHelper.GetChildrenCount(root);
         for (int i = 0; i < count; i++)
         {
@@ -858,7 +805,7 @@ public partial class MainWindow : FluentWindow
         foreach (FrameworkElement page in new FrameworkElement[] { GalleryPage, SettingsPage, GamesPage, UpdatesPage })
             _prewarmPages.Enqueue(page);
 
-        _prewarmTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(350) };
+        _prewarmTimer = new DispatcherTimer(DispatcherPriority.Normal, Dispatcher) { Interval = TimeSpan.FromMilliseconds(350) };
         _prewarmTimer.Tick += (_, _) => PrewarmNextPage();
         _prewarmTimer.Start();
     }
@@ -924,7 +871,7 @@ public partial class MainWindow : FluentWindow
 
         newPage.IsHitTestVisible = true;
         newPage.Visibility = Visibility.Visible;
-        _ = _dq.InvokeAsync(() => { if (ReferenceEquals(_currentPage, newPage)) ResetPageScroll(newPage); });
+        _dq.TryEnqueue(() => { if (ReferenceEquals(_currentPage, newPage)) ResetPageScroll(newPage); });
         newPage.Opacity = 0;
         AnimateDouble(newPage, "Opacity", 0, 1, TimeSpan.FromMilliseconds(240), TimeSpan.Zero,
             new CubicEase { EasingMode = EasingMode.EaseOut });
@@ -938,25 +885,39 @@ public partial class MainWindow : FluentWindow
         TransitionOut(oldPage);
     }
 
+    private Rect GetWorkAreaDips()
+    {
+        System.Drawing.Rectangle wa = System.Windows.Forms.Screen.FromHandle(_hwnd).WorkingArea;
+        double scale = VisualTreeHelper.GetDpi(this).DpiScaleX;
+        if (scale <= 0) scale = 1.0;
+        return new Rect(wa.X / scale, wa.Y / scale, wa.Width / scale, wa.Height / scale);
+    }
+
+    private void CenterOnWorkArea(Rect work)
+    {
+        if (_windowPlaced) return;
+        _windowPlaced = true;
+        Left = work.X + Math.Max(0, (work.Width - Width) / 2);
+        Top = work.Y + Math.Max(0, (work.Height - Height) / 2);
+    }
+
     private void FitWindowToPage(FrameworkElement page)
     {
-        _ = _dq.InvokeAsync(() =>
+        _dq.TryEnqueue(() =>
         {
             try
             {
-                Rect work = SystemParameters.WorkArea;
+                Rect work = GetWorkAreaDips();
                 double w = Math.Min(DefaultWindowWidthDips, work.Width * 0.94);
                 double h = Math.Min(DefaultWindowHeightDips, work.Height * 0.94);
 
-                Width = w;
-                Height = h;
-
-                if (!_windowPlaced)
+                if (Math.Abs(Width - w) > 0.5 || Math.Abs(Height - h) > 0.5)
                 {
-                    _windowPlaced = true;
-                    Left = work.X + Math.Max(0, (work.Width - w) / 2);
-                    Top = work.Y + Math.Max(0, (work.Height - h) / 2);
+                    Width = w;
+                    Height = h;
                 }
+
+                CenterOnWorkArea(work);
             }
             catch (Exception ex)
             {
@@ -967,16 +928,17 @@ public partial class MainWindow : FluentWindow
 
     private void FitViewerWindowToAspect()
     {
-        _ = _dq.InvokeAsync(() =>
+        _dq.TryEnqueue(() =>
         {
             try
             {
-                Rect work = SystemParameters.WorkArea;
+                Rect work = GetWorkAreaDips();
                 double maxClientW = Math.Min(DefaultWindowWidthDips, work.Width * 0.94);
                 double maxClientH = Math.Min(DefaultWindowHeightDips, work.Height * 0.94);
 
-                double chromeW = Width - PlayerViewport.ActualWidth;
-                double chromeH = Height - PlayerViewport.ActualHeight;
+                double clientW = ActualWidth, clientH = ActualHeight;
+                double chromeW = clientW - PlayerViewport.ActualWidth;
+                double chromeH = clientH - PlayerViewport.ActualHeight;
                 if (chromeW < 160 || chromeH < 80)
                 {
                     // First viewer open (or an unexpected layout): use the measured
@@ -997,23 +959,18 @@ public partial class MainWindow : FluentWindow
                     viewportW = viewportH * aspect;
                 }
 
-                double w = Math.Min(maxClientW, viewportW + chromeW);
-                double h = Math.Min(maxClientH, viewportH + chromeH);
-                w = Clamp(w, Math.Min(480, maxClientW), maxClientW);
-                h = Clamp(h, Math.Min(360, maxClientH), maxClientH);
+                double w = Math.Round(Math.Min(maxClientW, viewportW + chromeW));
+                double h = Math.Round(Math.Min(maxClientH, viewportH + chromeH));
+                w = Compat.Clamp(w, Math.Min(480, maxClientW), maxClientW);
+                h = Compat.Clamp(h, Math.Min(360, maxClientH), maxClientH);
 
-                if (Math.Abs(Width - w) > 2 || Math.Abs(Height - h) > 2)
+                if (Math.Abs(clientW - w) > 1 || Math.Abs(clientH - h) > 1)
                 {
                     Width = w;
                     Height = h;
                 }
 
-                if (!_windowPlaced)
-                {
-                    _windowPlaced = true;
-                    Left = work.X + Math.Max(0, (work.Width - w) / 2);
-                    Top = work.Y + Math.Max(0, (work.Height - h) / 2);
-                }
+                CenterOnWorkArea(work);
             }
             catch (Exception ex)
             {
@@ -1035,76 +992,55 @@ public partial class MainWindow : FluentWindow
         return Array.Empty<FrameworkElement>();
     }
 
-    private static TranslateTransform EnsureTranslateTransform(FrameworkElement element)
-    {
-        if (element.RenderTransform is TranslateTransform found) return found;
-
-        TransformGroup group;
-        if (element.RenderTransform is TransformGroup existing)
-        {
-            group = existing;
-        }
-        else
-        {
-            group = new TransformGroup();
-            if (element.RenderTransform is Transform old && !ReferenceEquals(old, Transform.Identity))
-                group.Children.Add(old);
-            element.RenderTransform = group;
-        }
-
-        var translate = new TranslateTransform();
-        group.Children.Add(translate);
-        return translate;
-    }
-
-    private static ScaleTransform EnsureScaleTransform(FrameworkElement element)
-    {
-        if (element.RenderTransform is ScaleTransform found) return found;
-
-        TransformGroup group;
-        if (element.RenderTransform is TransformGroup existing)
-        {
-            group = existing;
-        }
-        else
-        {
-            group = new TransformGroup();
-            if (element.RenderTransform is Transform old && !ReferenceEquals(old, Transform.Identity))
-                group.Children.Add(old);
-            element.RenderTransform = group;
-        }
-
-        var scale = new ScaleTransform { ScaleX = 1, ScaleY = 1 };
-        group.Children.Add(scale);
-        return scale;
-    }
-
     private void PlayPageEntrance(FrameworkElement page)
     {
         var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
         int index = 0;
         foreach (FrameworkElement el in EntranceTargets(page))
         {
-            TranslateTransform translate = EnsureTranslateTransform(el);
-            translate.Y = 28;
+            if (!(el.RenderTransform is TranslateTransform t) || t.IsFrozen)
+            {
+                t = new TranslateTransform();
+                el.RenderTransform = t;
+            }
+
+            t.Y = 28;
             el.Opacity = 0;
 
             var begin = TimeSpan.FromMilliseconds(index * 70);
             AnimateDouble(el, "Opacity", 0, 1, TimeSpan.FromMilliseconds(380), begin, ease);
-            AnimateDouble(translate, "Y", 28, 0, TimeSpan.FromMilliseconds(460), begin, ease);
+            AnimateDouble(t, "TranslateY", 28, 0, TimeSpan.FromMilliseconds(460), begin, ease);
             index++;
         }
     }
 
-    private readonly Dictionary<FrameworkElement, NavIconVisual> _navIcons = new();
+    private sealed class NavIconTransforms
+    {
+        public readonly ScaleTransform Scale = new ScaleTransform(1, 1);
+        public readonly RotateTransform Rotate = new RotateTransform(0);
+        public readonly TranslateTransform Translate = new TranslateTransform();
+
+        public void Reset()
+        {
+            foreach (DependencyProperty p in new[] { ScaleTransform.ScaleXProperty, ScaleTransform.ScaleYProperty })
+                Scale.BeginAnimation(p, null);
+            Rotate.BeginAnimation(RotateTransform.AngleProperty, null);
+            Translate.BeginAnimation(TranslateTransform.YProperty, null);
+            Scale.ScaleX = Scale.ScaleY = 1;
+            Rotate.Angle = 0;
+            Translate.Y = 0;
+        }
+    }
+
+    private readonly Dictionary<FrameworkElement, NavIconTransforms> _navIcons = new Dictionary<FrameworkElement, NavIconTransforms>();
 
     private void SetupSettingsGear()
     {
         try
         {
-            RegisterNavIcon(HomePage, NavHomeItem);
-            RegisterNavIcon(GalleryPage, NavGalleryItem);
-            RegisterNavIcon(SettingsPage, NavSettingsItem);
+            RegisterNavIcon(HomePage, NavHomeItemIcon);
+            RegisterNavIcon(GalleryPage, NavGalleryItemIcon);
+            RegisterNavIcon(SettingsPage, NavSettingsItemIcon);
         }
         catch (Exception ex)
         {
@@ -1112,65 +1048,56 @@ public partial class MainWindow : FluentWindow
         }
     }
 
-    private void RegisterNavIcon(FrameworkElement page, NavigationViewItem item)
+    private void RegisterNavIcon(FrameworkElement page, FrameworkElement icon)
     {
-        if (item.Icon is not FrameworkElement icon) return;
-        var visual = new NavIconVisual();
+        var transforms = new NavIconTransforms();
+        var group = new TransformGroup();
+        group.Children.Add(transforms.Scale);
+        group.Children.Add(transforms.Rotate);
+        group.Children.Add(transforms.Translate);
         icon.RenderTransformOrigin = new Point(0.5, 0.5);
-        icon.RenderTransform = visual.Group;
-        _navIcons[page] = visual;
+        icon.RenderTransform = group;
+        _navIcons[page] = transforms;
     }
 
-    private static void AddKeys(Storyboard sb, DependencyObject target, string property, params (int Ms, double Value)[] keys)
+    private static void AddKeys(Animatable target, DependencyProperty property, params (int Ms, double Value)[] keys)
     {
         var anim = new DoubleAnimationUsingKeyFrames();
-        foreach (var (ms, value) in keys)
+        foreach (var key in keys)
         {
-            _ = anim.KeyFrames.Add(new EasingDoubleKeyFrame
+            anim.KeyFrames.Add(new EasingDoubleKeyFrame
             {
-                KeyTime = KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(ms)),
-                Value = value,
+                KeyTime = KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(key.Ms)),
+                Value = key.Value,
                 EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
             });
         }
-        Storyboard.SetTarget(anim, target);
-        Storyboard.SetTargetProperty(anim, new PropertyPath(property));
-        sb.Children.Add(anim);
+        target.BeginAnimation(property, anim);
     }
 
     private void PlayNavIconAnimation(FrameworkElement page)
     {
-        if (!_navIcons.TryGetValue(page, out NavIconVisual? visual)) return;
+        if (!_navIcons.TryGetValue(page, out NavIconTransforms? t)) return;
 
         try
         {
-            _gearStoryboard?.Stop();
-            foreach (NavIconVisual other in _navIcons.Values)
-            {
-                other.Rotation.Angle = 0;
-                other.Scale.ScaleX = other.Scale.ScaleY = 1;
-                other.Translate.Y = 0;
-            }
+            foreach (NavIconTransforms other in _navIcons.Values) other.Reset();
 
-            var sb = new Storyboard();
             if (ReferenceEquals(page, SettingsPage))
             {
-                AddKeys(sb, visual.Rotation, "Angle", (0, 0), (400, 360));
+                AddKeys(t.Rotate, RotateTransform.AngleProperty, (0, 0), (400, 360));
             }
             else if (ReferenceEquals(page, HomePage))
             {
-                AddKeys(sb, visual.Scale, "ScaleX", (0, 1), (170, 1.3), (340, 1));
-                AddKeys(sb, visual.Scale, "ScaleY", (0, 1), (170, 1.3), (340, 1));
-                AddKeys(sb, visual.Translate, "Y", (0, 0), (170, -3), (340, 0));
+                AddKeys(t.Scale, ScaleTransform.ScaleXProperty, (0, 1), (170, 1.3), (340, 1));
+                AddKeys(t.Scale, ScaleTransform.ScaleYProperty, (0, 1), (170, 1.3), (340, 1));
+                AddKeys(t.Translate, TranslateTransform.YProperty, (0, 0), (170, -3), (340, 0));
             }
             else
             {
-                AddKeys(sb, visual.Scale, "ScaleX", (0, 1), (150, 0.1), (320, 1));
-                AddKeys(sb, visual.Rotation, "Angle", (0, 0), (150, -8), (320, 0));
+                AddKeys(t.Scale, ScaleTransform.ScaleXProperty, (0, 1), (150, 0.1), (320, 1));
+                AddKeys(t.Rotate, RotateTransform.AngleProperty, (0, 0), (150, -8), (320, 0));
             }
-
-            _gearStoryboard = sb;
-            sb.Begin();
         }
         catch (Exception ex)
         {
@@ -1201,22 +1128,15 @@ public partial class MainWindow : FluentWindow
         SaveReplayButton.Foreground = new SolidColorBrush(ContrastForeground(accent));
     }
 
-    private static Color Darken(Color c, float amount)
-    {
-        return Color.FromArgb(255,
-        (byte)Clamp(c.R * (1f - amount), 0f, 255f),
-        (byte)Clamp(c.G * (1f - amount), 0f, 255f),
-        (byte)Clamp(c.B * (1f - amount), 0f, 255f));
-    }
+    private static Color Darken(Color c, float amount) => Color.FromArgb(255,
+        (byte)Compat.Clamp(c.R * (1f - amount), 0f, 255f),
+        (byte)Compat.Clamp(c.G * (1f - amount), 0f, 255f),
+        (byte)Compat.Clamp(c.B * (1f - amount), 0f, 255f));
 
-    private static Color Lighten(Color c, float amount)
-    {
-        return Color.FromArgb(255,
-        (byte)Clamp(c.R + (255f - c.R) * amount, 0f, 255f),
-        (byte)Clamp(c.G + (255f - c.G) * amount, 0f, 255f),
-        (byte)Clamp(c.B + (255f - c.B) * amount, 0f, 255f));
-    }
-
+    private static Color Lighten(Color c, float amount) => Color.FromArgb(255,
+        (byte)Compat.Clamp(c.R + (255f - c.R) * amount, 0f, 255f),
+        (byte)Compat.Clamp(c.G + (255f - c.G) * amount, 0f, 255f),
+        (byte)Compat.Clamp(c.B + (255f - c.B) * amount, 0f, 255f));
 
     private static Color ContrastForeground(Color c)
     {
@@ -1226,8 +1146,15 @@ public partial class MainWindow : FluentWindow
 
     private static Color GetSystemAccent()
     {
-        var (r, g, b) = WindowsTheme.GetAccentColor();
-        return Color.FromArgb(255, r, g, b);
+        try
+        {
+            return AppTheme.GetSystemAccent();
+        }
+        catch
+        {
+            var (r, g, b) = WindowsTheme.GetAccentColor();
+            return Color.FromArgb(255, r, g, b);
+        }
     }
 
 
@@ -1245,17 +1172,14 @@ public partial class MainWindow : FluentWindow
         StartStopButton.ClearValue(Control.BackgroundProperty);
         StartStopButton.ClearValue(Control.ForegroundProperty);
 
-        StartStopButton.Style = (Style)Application.Current.Resources["HomeNeutralButtonStyle"];
-        StartStopButton.Appearance = running
-            ? Wpf.Ui.Controls.ControlAppearance.Danger
-            : Wpf.Ui.Controls.ControlAppearance.Secondary;
-
         if (running)
         {
+            StartStopButton.Style = (Style)Application.Current.Resources["HomeDangerButtonStyle"];
             SetStartStopLabel("Stop", "\uE71A");
         }
         else
         {
+            StartStopButton.Style = (Style)Application.Current.Resources["HomeNeutralButtonStyle"];
             SetStartStopLabel("Start Replay", "\uE768");
         }
     }
@@ -1303,120 +1227,23 @@ public partial class MainWindow : FluentWindow
         }
     }
 
-    private void EmptyGoHomeButton_Click(object sender, RoutedEventArgs e)
-    {
-        NavView.SelectItem(NavHomeItem);
-    }
-
+    private void EmptyGoHomeButton_Click(object sender, RoutedEventArgs e) { SelectNav(NavHomeItem); NavigateTo(HomePage); }
 
     private void GalleryGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (e.AddedItems.Count > 0 && e.AddedItems[0] is ReplayItem item)
-        {
-            GalleryGrid.SelectedItem = null;
-            TryOpenGalleryItem(item);
-        }
-    }
-
-    private void GalleryGrid_PreviewMouseLeftButtonUp(object sender, System.Windows.Input.MouseButtonEventArgs e)
-    {
-        var source = e.OriginalSource as DependencyObject;
-        if (FindAncestor<System.Windows.Controls.Primitives.ButtonBase>(source) != null) return;
-
-        if (FindAncestor<ListViewItem>(source) is not { DataContext: ReplayItem item }) return;
-        TryOpenGalleryItem(item);
-    }
-
-    private void TryOpenGalleryItem(ReplayItem item)
-    {
-        long now = s_clock.ElapsedMilliseconds;
-        if (now - _lastGalleryOpenTick < 300) return;
-        _lastGalleryOpenTick = now;
-
-        PlaySound(SoundCue.MoveNext);
+        if (GalleryGrid.SelectedItem is not ReplayItem item) return;
+        GalleryGrid.SelectedItem = null;
         OpenViewer(item);
     }
 
-    private void WireGalleryContainers()
+    private void CardRoot_Loaded(object sender, RoutedEventArgs e)
     {
-        GalleryGrid.ItemContainerGenerator.StatusChanged += (_, _) =>
-        {
-            if (GalleryGrid.ItemContainerGenerator.Status == System.Windows.Controls.Primitives.GeneratorStatus.ContainersGenerated)
-                PrepareVisibleGalleryCards();
-        };
-        GalleryGrid.AddHandler(ScrollViewer.ScrollChangedEvent,
-            new ScrollChangedEventHandler((_, _) => _dq.InvokeAsync(PrepareVisibleGalleryCards)));
-        _ = _dq.InvokeAsync(PrepareVisibleGalleryCards);
-    }
-
-    private void PrepareVisibleGalleryCards()
-    {
-        foreach (ReplayItem item in _library.Items)
-        {
-            if (GalleryGrid.ItemContainerGenerator.ContainerFromItem(item) is ListViewItem card)
-                PrepareGalleryCard(card, item);
-        }
-    }
-
-    private void PrepareGalleryCard(ListViewItem card, ReplayItem item)
-    {
-        _library.Queue(item, visible: true);
-        if (!_hoverWired.Add(card)) return;
-
-        _ = card.ApplyTemplate();
-        FrameworkElement root = FindNamedDescendant(card, "CardRoot") as FrameworkElement ?? card;
-        FrameworkElement? details = FindNamedDescendant(card, "CardDetails") as FrameworkElement;
-        ScaleTransform scale = EnsureScaleTransform(root);
-        _cardVisuals[card] = (root, details, scale);
-
-        card.MouseEnter += (_, _) => AnimateCardHover(card, true);
-        card.MouseLeave += (_, _) => AnimateCardHover(card, false);
-        card.Unloaded += (_, _) => ResetCardHover(card);
-    }
-
-    private void ResetCardHover(ListViewItem card)
-    {
-        try
-        {
-            if (!_cardVisuals.TryGetValue(card, out var visuals)) return;
-
-            if (visuals.Scale is { } scale)
-            {
-                scale.ScaleX = 1;
-                scale.ScaleY = 1;
-            }
-            if (visuals.Details is { } details)
-            {
-                details.Opacity = 0;
-                details.IsHitTestVisible = false;
-            }
-        }
-        catch { }
-    }
-
-    private void AnimateCardHover(ListViewItem card, bool hover)
-    {
-        try
-        {
-            if (!_cardVisuals.TryGetValue(card, out var visuals)) return;
-
-            if (visuals.Scale is { } scale)
-            {
-                AnimateDouble(scale, "ScaleX", scale.ScaleX, hover ? 1.03 : 1, TimeSpan.FromMilliseconds(140));
-                AnimateDouble(scale, "ScaleY", scale.ScaleY, hover ? 1.03 : 1, TimeSpan.FromMilliseconds(140));
-            }
-            if (visuals.Details is { } details)
-            {
-                details.IsHitTestVisible = hover;
-                AnimateDouble(details, "Opacity", details.Opacity, hover ? 1 : 0,
-                    TimeSpan.FromMilliseconds(hover ? 110 : 90));
-            }
-        }
-        catch (Exception ex) { Logger.Warn($"Gallery hover animation failed: {ex.Message}"); }
+        if (sender is FrameworkElement card && card.DataContext is ReplayItem item)
+            _library.Queue(item, visible: true);
     }
 
     private ReplayItem? _cardMenuTarget;
-    private System.Windows.Controls.ContextMenu? _cardMenu;
+    private ContextMenu? _cardMenu;
 
     private void CardMoreButton_Click(object sender, RoutedEventArgs e)
     {
@@ -1427,17 +1254,21 @@ public partial class MainWindow : FluentWindow
         _cardMenuTarget = item;
         if (_cardMenu == null)
         {
-            var delete = new MenuItem { Header = "Delete", Icon = new FontIcon { Glyph = "\uE74D" } };
+            var delete = new MenuItem
+            {
+                Header = "Delete",
+                Icon = new FontIcon { Glyph = "\uE74D", FontFamily = (FontFamily)Application.Current.Resources["SymbolThemeFontFamily"] }
+            };
             delete.Click += (_, _) =>
             {
                 if (_cardMenuTarget is { } target) _ = DeleteReplayAsync(target);
             };
-            _cardMenu = new System.Windows.Controls.ContextMenu();
-            _ = _cardMenu.Items.Add(delete);
+            _cardMenu = new ContextMenu();
+            _cardMenu.Items.Add(delete);
         }
 
         _cardMenu.PlacementTarget = element;
-        _cardMenu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom;
+        _cardMenu.Placement = PlacementMode.Bottom;
         _cardMenu.IsOpen = true;
     }
 
@@ -1472,7 +1303,7 @@ public partial class MainWindow : FluentWindow
             if (!File.Exists(item.VideoPath)) throw new FileNotFoundException("The replay was moved or deleted.");
             web = new WebView2 { DefaultBackgroundColor = System.Drawing.Color.Transparent };
             _inlinePlayer = web;
-            _ = InlinePlayerHost.Children.Add(web);
+            InlinePlayerHost.Children.Add(web);
             await PlayerWebViewShared.WaitForLoadedAsync(web, TimeSpan.FromSeconds(6));
             await web.EnsureCoreWebView2Async();
             if (generation != _viewerGeneration || !ReferenceEquals(web, _inlinePlayer)) return;
@@ -1491,31 +1322,17 @@ public partial class MainWindow : FluentWindow
                 else ShowInfoBar(InfoBarSeverity.Error, "Couldn't play replay", "The player could not load this replay.", "play");
             };
             core.Navigate(BuildPlayerUrl(item.VideoPath, _playerTime, false));
-            _ = web.Focus();
+            web.Focus();
         }
         catch (Exception ex)
         {
             Logger.Error("Inline player failed", ex);
-            if (web != null && ReferenceEquals(web, _inlinePlayer))
-            {
-                _inlinePlayer = null;
-                InlinePlayerHost.Children.Remove(web);
-                try { web.Dispose(); } catch { }
-            }
             if (generation == _viewerGeneration)
-            {
-                string detail = PlayerWebViewShared.DescribeLoadFailure(ex);
-                ShowInfoBar(InfoBarSeverity.Error, "Couldn't play replay", detail, "play");
-            }
+                ShowInfoBar(InfoBarSeverity.Error, "Couldn't play replay", "The replay or WebView2 player could not be opened.", "play");
         }
     }
 
-    private void PlayerViewport_SizeChanged(object sender, SizeChangedEventArgs e)
-    {
-        UpdateInlinePlayerBounds();
-    }
-
-
+    private void PlayerViewport_SizeChanged(object sender, SizeChangedEventArgs e) => UpdateInlinePlayerBounds();
     private void UpdateInlinePlayerBounds()
     {
         if (PlayerViewport == null || PlayerCard == null || InlinePlayerHost == null) return;
@@ -1526,7 +1343,6 @@ public partial class MainWindow : FluentWindow
         double height = width / _playerAspect;
         PlayerCard.Width = width;
         PlayerCard.Height = height;
-        InlinePlayerHost.Clip = new RectangleGeometry(new Rect(0, 0, width, height), 12, 12);
     }
 
     private void SendAccentInline()
@@ -1552,15 +1368,14 @@ public partial class MainWindow : FluentWindow
                 if (_fsWindow == null && ReferenceEquals(_currentPage, ViewerPage)) FitViewerWindowToAspect();
             }
         }
-        if (state.TryGetProperty("t", out var t) && t.TryGetDouble(out double seconds) && IsFinite(seconds)) _playerTime = Math.Max(seconds, 0);
+        if (state.TryGetProperty("t", out var t) && t.TryGetDouble(out double seconds) && IsFiniteNumber(seconds)) _playerTime = Math.Max(seconds, 0);
         if (state.TryGetProperty("playing", out var playing)) _playerPlaying = playing.ValueKind == JsonValueKind.True;
-        if (state.TryGetProperty("v", out var volume) && volume.TryGetDouble(out double value) && IsFinite(value)) _playerVolume = Clamp(value, 0, 1);
+        if (state.TryGetProperty("v", out var volume) && volume.TryGetDouble(out double value) && IsFiniteNumber(value)) _playerVolume = Compat.Clamp(value, 0, 1);
         if (state.TryGetProperty("m", out var mute)) _playerMuted = mute.ValueKind == JsonValueKind.True;
     }
 
     private void ViewerBackButton_Click(object sender, RoutedEventArgs e)
     {
-        PlaySound(SoundCue.GoBack);
         CloseViewer();
     }
 
@@ -1620,7 +1435,7 @@ public partial class MainWindow : FluentWindow
                 string state = await inline.ExecuteScriptAsync("({t:v.currentTime,playing:!v.paused&&!v.ended,v:v.volume,m:v.muted})");
                 using var parsed = JsonDocument.Parse(state);
                 ReadPlayerState(parsed.RootElement);
-                _ = await inline.ExecuteScriptAsync("v.pause()");
+                await inline.ExecuteScriptAsync("v.pause()");
             }
             Logger.Info("OpenViewer: opening fullscreen player");
 
@@ -1633,26 +1448,12 @@ public partial class MainWindow : FluentWindow
             {
                 if (ok) SendAccentFs();
             };
-            bool webErrorShown = false;
-            fs.WebError += ex =>
-            {
-                webErrorShown = true;
-                Logger.Warn($"Fullscreen player WebView2 error: {ex.Message}");
-                ShowInfoBar(InfoBarSeverity.Error, "Couldn't play replay",
-                    PlayerWebViewShared.DescribeLoadFailure(ex), "play");
-            };
             _fsWindow = fs;
-            _ = EnableWindow(_hwnd, false);
+            EnableWindow(_hwnd, false);
 
             await fs.OpenAsync(BuildPlayerUrl(item.VideoPath, _playerTime, true), json => { if (ReferenceEquals(_fsWindow, fs)) HandlePlayerMessage(json, true); }, _hwnd, GetPlayerScreenBounds());
             _switchingPlayer = false;
-            if (!fs.WebReady)
-            {
-                if (!webErrorShown)
-                    ShowInfoBar(InfoBarSeverity.Error, "Couldn't play replay",
-                        "The WebView2 player did not start.", "play");
-                CloseFullscreenPlayer();
-            }
+            if (!fs.WebReady) CloseFullscreenPlayer();
         }
         catch (Exception ex)
         {
@@ -1668,29 +1469,38 @@ public partial class MainWindow : FluentWindow
         if (fs == null) return;
         _fsWindow = null;
 
-        try { _ = EnableWindow(_hwnd, true); } catch { }
+        try { EnableWindow(_hwnd, true); } catch { }
         try { fs.Shutdown(); } catch { }
-        try { _ = SetForegroundWindow(_hwnd); } catch { }
-        try { _ = Activate(); } catch { }
+        try { SetForegroundWindow(_hwnd); } catch { }
+        try { Activate(); } catch { }
         if (resumeInline && _inlinePlayer != null && ReferenceEquals(_currentPage, ViewerPage))
             SendScriptInline($"receiveCommand({{\"c\":\"restore\",\"t\":{_playerTime.ToString(CultureInfo.InvariantCulture)},\"playing\":{(_playerPlaying ? "true" : "false")},\"v\":{_playerVolume.ToString(CultureInfo.InvariantCulture)},\"m\":{(_playerMuted ? "true" : "false")} }})");
     }
 
-    private Int32Rect? GetPlayerScreenBounds()
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ScreenPoint { public int X, Y; }
+
+    [DllImport("user32.dll")]
+    private static extern bool ClientToScreen(IntPtr hWnd, ref ScreenPoint point);
+
+    private ScreenRect? GetPlayerScreenBounds()
     {
         try
         {
             if (_isHidden || !ReferenceEquals(_currentPage, ViewerPage) || !PlayerCard.IsLoaded) return null;
             if (PlayerCard.ActualWidth < 2 || PlayerCard.ActualHeight < 2) return null;
 
-            Point topLeft = PlayerCard.PointToScreen(new Point(0, 0));
-            Point bottomRight = PlayerCard.PointToScreen(new Point(PlayerCard.ActualWidth, PlayerCard.ActualHeight));
+            double scale = VisualTreeHelper.GetDpi(this).DpiScaleX;
+            if (scale <= 0) scale = 1.0;
+            Point topLeft = PlayerCard.TransformToAncestor(this).Transform(new Point(0, 0));
+            var client = new ScreenPoint();
+            if (!ClientToScreen(_hwnd, ref client)) return null;
 
-            return new Int32Rect(
-                (int)Math.Round(topLeft.X),
-                (int)Math.Round(topLeft.Y),
-                (int)Math.Round(bottomRight.X - topLeft.X),
-                (int)Math.Round(bottomRight.Y - topLeft.Y));
+            return new ScreenRect(
+                client.X + (int)Math.Round(topLeft.X * scale),
+                client.Y + (int)Math.Round(topLeft.Y * scale),
+                (int)Math.Round(PlayerCard.ActualWidth * scale),
+                (int)Math.Round(PlayerCard.ActualHeight * scale));
         }
         catch
         {
@@ -1698,11 +1508,7 @@ public partial class MainWindow : FluentWindow
         }
     }
 
-    private void SendScriptFs(string js)
-    {
-        _fsWindow?.SendScript(js);
-    }
-
+    private void SendScriptFs(string js) => _fsWindow?.SendScript(js);
 
     private async Task DeleteReplayAsync(ReplayItem item)
     {
@@ -1712,9 +1518,9 @@ public partial class MainWindow : FluentWindow
             _fsWindow = null;
             try { fs.Shutdown(); } catch { }
         }
-        try { _ = ShowWindow(_hwnd, SwRestore); WindowState = WindowState.Normal; } catch { }
-        try { _ = SetForegroundWindow(_hwnd); } catch { }
-        try { _ = Activate(); } catch { }
+        try { Show(); } catch { }
+        try { SetForegroundWindow(_hwnd); } catch { }
+        try { Activate(); } catch { }
         StopViewerPlayback();
 
         bool deleted = await _library.DeleteAsync(item);
@@ -1804,17 +1610,35 @@ public partial class MainWindow : FluentWindow
             });
     }
 
+    private static bool IsFiniteNumber(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
+
+    private static DependencyProperty? AnimationProperty(string property)
+    {
+        switch (property)
+        {
+            case "Opacity": return UIElement.OpacityProperty;
+            case "TranslateY":
+            case "Y": return TranslateTransform.YProperty;
+            default: return null;
+        }
+    }
+
     private static void AnimateDouble(DependencyObject target, string property, double from, double to,
         TimeSpan duration, TimeSpan? beginTime = null, EasingFunctionBase? easing = null, Action? onCompleted = null)
     {
-        var anim = new DoubleAnimation { From = from, To = to, Duration = duration, EasingFunction = easing };
+        DependencyProperty? dp = AnimationProperty(property);
+        if (dp == null || !(target is IAnimatable animatable)) return;
+
+        // FillBehavior.Stop + writing the final value locally keeps later direct assignments (Opacity = 1, ...)
+        // effective; a held animation clock would otherwise override them.
+        var anim = new DoubleAnimation { From = from, To = to, Duration = duration, EasingFunction = easing, FillBehavior = FillBehavior.Stop };
         if (beginTime.HasValue) anim.BeginTime = beginTime.Value;
-        Storyboard.SetTarget(anim, target);
-        Storyboard.SetTargetProperty(anim, new PropertyPath(property));
-        var sb = new Storyboard();
-        sb.Children.Add(anim);
-        if (onCompleted != null) sb.Completed += (_, _) => onCompleted();
-        sb.Begin();
+        anim.Completed += (_, _) =>
+        {
+            target.SetValue(dp, to);
+            onCompleted?.Invoke();
+        };
+        animatable.BeginAnimation(dp, anim);
     }
 
     private void StartPulse(FrameworkElement target, ref DispatcherTimer? timerField)
@@ -1895,7 +1719,7 @@ public partial class MainWindow : FluentWindow
             {
                 bool newState = !StartupManager.IsEnabled();
                 StartupManager.SetEnabled(newState);
-                _ = _dq.InvokeAsync(() => StartupToggle.IsChecked = newState);
+                _dq.TryEnqueue(() => StartupToggle.IsChecked = newState);
             }},
             TrayMenuItem.Separator(),
             new() { Text = "Save Replay", Glyph = "\uE74E", Shortcut = "Alt+S",
@@ -1929,7 +1753,7 @@ public partial class MainWindow : FluentWindow
 
             if (exists && !string.IsNullOrEmpty(directory))
             {
-                _ = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
                 {
                     FileName = "explorer.exe",
                     Arguments = $"/select,\"{filePath}\"",
@@ -1940,7 +1764,7 @@ public partial class MainWindow : FluentWindow
 
             if (!string.IsNullOrEmpty(directory) && System.IO.Directory.Exists(directory))
             {
-                _ = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
                 {
                     FileName = directory,
                     UseShellExecute = true,
@@ -1956,39 +1780,32 @@ public partial class MainWindow : FluentWindow
         }
     }
 
-    public void BringToFront()
-    {
-        ShowFromTray();
-    }
-
+    public void BringToFront() => ShowFromTray();
 
     private void ShowFromTray()
     {
         if (_fsWindow != null)
         {
-            try { _ = _fsWindow.Activate(); } catch { }
+            try { _fsWindow.Activate(); } catch { }
             return;
         }
 
-        _ = ShowWindow(_hwnd, SwRestore);
-        WindowState = WindowState.Normal;
+        Show();
+        if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal;
         _isHidden = false;
         _taskbarBadge?.SetTaskbarVisible(true);
         ApplyFixedWindowSize();
-        _ = Activate();
+        Activate();
         RootGrid.InvalidateMeasure();
         RootGrid.UpdateLayout();
         RefreshStartupToggleState();
         RefreshAppBadge();
     }
 
-    private void RefreshAppBadge()
-    {
+    private void RefreshAppBadge() =>
         UpdateAppBadge(_hasErrored ? BadgeKind.Error
                    : _engine.IsRunning && !_engine.IsPaused ? BadgeKind.Recording
                    : BadgeKind.Paused, flash: false);
-    }
-
 
     private void UpdateAppBadge(BadgeKind kind, bool flash)
     {
@@ -2036,17 +1853,17 @@ public partial class MainWindow : FluentWindow
 
     private void ReleaseBadgeIcons()
     {
-        if (_badgeIcon != IntPtr.Zero) { _ = DestroyIcon(_badgeIcon); _badgeIcon = IntPtr.Zero; }
-        if (_trayBadgeIcon != IntPtr.Zero) { _ = DestroyIcon(_trayBadgeIcon); _trayBadgeIcon = IntPtr.Zero; }
+        if (_badgeIcon != IntPtr.Zero) { DestroyIcon(_badgeIcon); _badgeIcon = IntPtr.Zero; }
+        if (_trayBadgeIcon != IntPtr.Zero) { DestroyIcon(_trayBadgeIcon); _trayBadgeIcon = IntPtr.Zero; }
     }
 
     private void RestartApplication()
     {
         try
         {
-            string? exePath = ProcessPath;
+            string? exePath = Compat.ProcessPath;
             if (!string.IsNullOrEmpty(exePath))
-                _ = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo { FileName = exePath, UseShellExecute = true });
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo { FileName = exePath, UseShellExecute = true });
             else
                 Logger.Error("RestartApplication: could not determine the running executable's path.");
         }
@@ -2062,7 +1879,7 @@ public partial class MainWindow : FluentWindow
     {
         try
         {
-            _ = Directory.CreateDirectory(_tempDir);
+            Directory.CreateDirectory(_tempDir);
             return _engine.Start(_tempDir);
         }
         catch (Exception ex)
@@ -2266,7 +2083,7 @@ public partial class MainWindow : FluentWindow
         Logger.Info("Hotkey Triggered - Saving Replay");
         string destDir = _settings.GetEffectiveSaveDestination();
 
-        _ = _dq.InvokeAsync(() => { if (!_isClosingForReal) ClipNotificationWindow.BeginEncoding(); });
+        _dq.TryEnqueue(() => { if (!_isClosingForReal) ClipNotificationWindow.BeginEncoding(); });
         var progress = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(100) };
         progress.Tick += (_, _) => ClipNotificationWindow.ReportProgress(_engine.SaveProgress);
         progress.Start();
@@ -2291,7 +2108,7 @@ public partial class MainWindow : FluentWindow
             ? await Task.Run(() => ClipNotificationWindow.RecordedSeconds(result.Path, _settings.ReplayDurationSeconds))
             : 0;
 
-        _ = _dq.InvokeAsync(() =>
+        _dq.TryEnqueue(() =>
         {
             _lastBalloonWasLeakWarning = false;
             ShowSaveResult(result, clippedSeconds);
@@ -2314,7 +2131,6 @@ public partial class MainWindow : FluentWindow
 
     private async void StartStopButton_Click(object sender, RoutedEventArgs e)
     {
-        PlaySound(_engine.IsRunning ? SoundCue.Hide : SoundCue.Show);
         StartStopButton.IsEnabled = false;
         if (_engine.IsRunning)
         {
@@ -2333,11 +2149,7 @@ public partial class MainWindow : FluentWindow
         StartStopButton.IsEnabled = true;
     }
 
-    private void SaveReplayButton_Click(object sender, RoutedEventArgs e)
-    {
-        _ = SaveReplayAsync();
-    }
-
+    private void SaveReplayButton_Click(object sender, RoutedEventArgs e) => _ = SaveReplayAsync();
 
     private void RefreshMicrophonesInBackground()
     {
@@ -2347,7 +2159,7 @@ public partial class MainWindow : FluentWindow
             try { mics = _engine.EnumerateMicrophones(); }
             catch (Exception ex) { Logger.Warn($"RefreshMicrophones failed: {ex.Message}"); return; }
 
-            _ = _dq.InvokeAsync(() =>
+            _dq.TryEnqueue(() =>
             {
                 _knownMics = mics;
                 _syncingMicCombo = true;
@@ -2447,7 +2259,7 @@ public partial class MainWindow : FluentWindow
         }
         else
         {
-            try { MicCombo.ClearValue(ComboBox.ForegroundProperty); }
+            try { MicCombo.ClearValue(Control.ForegroundProperty); }
             catch { }
             MicCombo.Resources.Remove("ComboBoxForeground");
             MicCombo.Resources.Remove("ComboBoxForegroundPointerOver");
@@ -2507,29 +2319,6 @@ public partial class MainWindow : FluentWindow
         RefreshQualityDetails();
     }
 
-    private static FrameworkElement? FindNamedDescendant(DependencyObject root, string name)
-    {
-        int count = VisualTreeHelper.GetChildrenCount(root);
-        for (int i = 0; i < count; i++)
-        {
-            DependencyObject child = VisualTreeHelper.GetChild(root, i);
-            if (child is FrameworkElement element && element.Name == name) return element;
-            if (FindNamedDescendant(child, name) is { } match) return match;
-        }
-        return null;
-    }
-
-    private static T? FindAncestor<T>(DependencyObject? source) where T : DependencyObject
-    {
-        DependencyObject? current = source;
-        while (current != null)
-        {
-            if (current is T match) return match;
-            current = VisualTreeHelper.GetParent(current);
-        }
-        return null;
-    }
-
     private void RefreshBitrateDisplay()
     {
         (int width, int height) = ReplayEngine.MonitorSize(_settings.CaptureMonitorIndex);
@@ -2551,7 +2340,7 @@ public partial class MainWindow : FluentWindow
     {
         if (_initializing) return;
         _settings.QualityPreset = VideoQualityProfile.PresetNames[
-            Clamp(QualityCombo.SelectedIndex, 0, VideoQualityProfile.PresetNames.Length - 1)];
+            Compat.Clamp(QualityCombo.SelectedIndex, 0, VideoQualityProfile.PresetNames.Length - 1)];
         RefreshBitrateDisplay();
         CheckDirty();
     }
@@ -2565,8 +2354,8 @@ public partial class MainWindow : FluentWindow
     }
 
     // Combo indices map straight to these arrays (keep in sync with MainWindow.xaml).
-    private static readonly string[] CodecChoices = ["H264", "Hevc", "Av1"];
-    private static readonly int[] AudioBitrates = [96, 128, 160, 192];
+    private static readonly string[] CodecChoices = { "H264", "Hevc", "Av1" };
+    private static readonly int[] AudioBitrates = { 96, 128, 160, 192 };
 
     private void InitEncoderSettings()
     {
@@ -2646,7 +2435,7 @@ public partial class MainWindow : FluentWindow
     private void ApplicationLocalAudioToggle_Changed(object sender, RoutedEventArgs e)
     {
         if (_initializing || _syncingAudioToggles) return;
-        _settings.ApplicationLocalAudio = ApplicationLocalAudioToggle.IsChecked == true;
+        _settings.ApplicationLocalAudio = (ApplicationLocalAudioToggle.IsChecked == true);
         CheckDirty();
     }
 
@@ -2708,129 +2497,74 @@ public partial class MainWindow : FluentWindow
         GameInfoBar2.IsOpen = false;
     }
 
-    private void AddGame_Click(object sender, RoutedEventArgs e)
+    private static Wpf.Ui.Controls.TextBox LabeledBox(StackPanel host, string header, string placeholder, int maxLength)
     {
-        GameRule? added = ShowAddGameDialog();
-        if (added is null) return;
+        host.Children.Add(new TextBlock { Text = header, FontSize = 12, Margin = new Thickness(0, host.Children.Count == 0 ? 0 : 12, 0, 4) });
+        var box = new Wpf.Ui.Controls.TextBox { PlaceholderText = placeholder, MaxLength = maxLength };
+        host.Children.Add(box);
+        return box;
+    }
 
-        _settings.SpecificWindows = [.. _settings.SpecificWindows, added];
+    private async void AddGame_Click(object sender, RoutedEventArgs e)
+    {
+        var panel = new StackPanel { MinWidth = 340 };
+        var name = LabeledBox(panel, "App or game name", "My game", 120);
+        var exe = LabeledBox(panel, "Executable name", "game.exe", 260);
+        var browse = new Wpf.Ui.Controls.Button { Content = "Browse to executable…", HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 12, 0, 0) };
+        panel.Children.Add(browse);
+        var keyword = LabeledBox(panel, "Title keyword (optional)", "For example: Minecraft", 120);
+        var error = new TextBlock { TextWrapping = TextWrapping.Wrap, Foreground = GetThemedBrush("ErrorBrush"), Margin = new Thickness(0, 12, 0, 0) };
+        panel.Children.Add(error);
+        browse.Click += (_, _) =>
+        {
+            try
+            {
+                var picker = new Microsoft.Win32.OpenFileDialog { Filter = "Executable (*.exe)|*.exe", CheckFileExists = true };
+                if (picker.ShowDialog(this) == true)
+                {
+                    string fileName = Path.GetFileName(picker.FileName);
+                    exe.Text = fileName;
+                    if (string.IsNullOrWhiteSpace(name.Text)) name.Text = Path.GetFileNameWithoutExtension(fileName);
+                }
+            }
+            catch (Exception ex) { error.Text = ex.Message; }
+        };
+
+        while (true)
+        {
+            var dialog = new Wpf.Ui.Controls.MessageBox
+            {
+                Title = "Add a specific window",
+                Content = panel,
+                PrimaryButtonText = "Add",
+                CloseButtonText = "Cancel",
+                Owner = this,
+            };
+            Wpf.Ui.Controls.MessageBoxResult result = await dialog.ShowDialogAsync();
+            dialog.Content = null;
+            if (result != Wpf.Ui.Controls.MessageBoxResult.Primary) return;
+
+            string executable = exe.Text.Trim();
+            if (!executable.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) || executable.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 || executable.IndexOf('/') >= 0 || executable.IndexOf('\\') >= 0)
+            { error.Text = "Enter a filename such as game.exe, or use Browse."; continue; }
+            if (_settings.SpecificWindows.Any(r => r.Executable.Equals(executable, StringComparison.OrdinalIgnoreCase) && r.Keyword.Equals(keyword.Text.Trim(), StringComparison.OrdinalIgnoreCase)))
+            { error.Text = "That executable and keyword are already in your list."; continue; }
+            break;
+        }
+
+        string filename = exe.Text.Trim();
+        _settings.SpecificWindows = new List<GameRule>(_settings.SpecificWindows)
+        {
+            new GameRule(string.IsNullOrWhiteSpace(name.Text) ? Path.GetFileNameWithoutExtension(filename) : name.Text.Trim(), filename, keyword.Text.Trim())
+        };
         _settings.Save();
         _engine.ReloadGameRules();
         RefreshGamesPage();
     }
 
-    private GameRule? ShowAddGameDialog()
-    {
-        var name = new TextBox { MaxLength = 120 };
-        var exe = new TextBox { MaxLength = 260 };
-        var keyword = new TextBox { MaxLength = 120 };
-        var browse = new Button { Content = "Browse to executable…", HorizontalAlignment = HorizontalAlignment.Left };
-        var error = new TextBlock
-        {
-            TextWrapping = TextWrapping.Wrap,
-            Foreground = GetThemedBrush("ErrorBrush"),
-        };
-
-        browse.Click += (_, _) =>
-        {
-            try
-            {
-                var picker = new Microsoft.Win32.OpenFileDialog
-                {
-                    Title = "Select executable",
-                    Filter = "Executable files (*.exe)|*.exe|All files (*.*)|*.*",
-                };
-                if (picker.ShowDialog(this) != true) return;
-                exe.Text = Path.GetFileName(picker.FileName);
-                if (string.IsNullOrWhiteSpace(name.Text))
-                    name.Text = Path.GetFileNameWithoutExtension(picker.FileName);
-            }
-            catch (Exception ex) { error.Text = ex.Message; }
-        };
-
-        var panel = new StackPanel { Margin = new Thickness(20) };
-        void AddField(string label, FrameworkElement field)
-        {
-            _ = panel.Children.Add(new TextBlock
-            {
-                Text = label,
-                FontWeight = FontWeights.SemiBold,
-                Margin = new Thickness(0, 0, 0, 4),
-            });
-            field.Margin = new Thickness(0, 0, 0, 10);
-            _ = panel.Children.Add(field);
-        }
-
-        AddField("App or game name", name);
-        AddField("Executable name", exe);
-        _ = panel.Children.Add(browse);
-        _ = panel.Children.Add(new TextBlock { Height = 4 });
-        AddField("Title keyword (optional)", keyword);
-        _ = panel.Children.Add(error);
-
-        var ok = new Button { Content = "Add", Width = 90, Margin = new Thickness(0, 16, 8, 0) };
-        var cancel = new Button { Content = "Cancel", Width = 90, Margin = new Thickness(0, 16, 0, 0) };
-        var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
-        _ = buttons.Children.Add(ok);
-        _ = buttons.Children.Add(cancel);
-        _ = panel.Children.Add(buttons);
-
-        var dialog = new Window
-        {
-            Title = "Add a specific window",
-            Owner = this,
-            Width = 460,
-            SizeToContent = SizeToContent.Height,
-            ResizeMode = ResizeMode.NoResize,
-            WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            Content = panel,
-        };
-
-        GameRule? result = null;
-        bool TryValidate(out GameRule rule)
-        {
-            string executable = exe.Text.Trim();
-            string keywordText = keyword.Text.Trim();
-            string displayName = string.IsNullOrWhiteSpace(name.Text)
-                ? Path.GetFileNameWithoutExtension(executable)
-                : name.Text.Trim();
-
-            if (!executable.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ||
-                executable.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 ||
-                executable.Contains('/') || executable.Contains('\\'))
-            {
-                error.Text = "Enter a filename such as game.exe, or use Browse.";
-                rule = null!;
-                return false;
-            }
-            if (_settings.SpecificWindows.Any(r =>
-                    r.Executable.Equals(executable, StringComparison.OrdinalIgnoreCase) &&
-                    r.Keyword.Equals(keywordText, StringComparison.OrdinalIgnoreCase)))
-            {
-                error.Text = "That executable and keyword are already in your list.";
-                rule = null!;
-                return false;
-            }
-
-            rule = new GameRule(displayName, executable, keywordText);
-            return true;
-        }
-
-        ok.Click += (_, _) =>
-        {
-            if (!TryValidate(out GameRule rule)) return;
-            result = rule;
-            dialog.DialogResult = true;
-        };
-        cancel.Click += (_, _) => dialog.DialogResult = false;
-
-        _ = dialog.ShowDialog();
-        return dialog.DialogResult == true ? result : null;
-    }
-
     private void RemoveGame_Click(object sender, RoutedEventArgs e)
     {
-        if (sender is not WpfUiButton { Tag: GameRule rule }) return;
+        if (sender is not Button { Tag: GameRule rule }) return;
         _settings.SpecificWindows = _settings.SpecificWindows.Where(r => r != rule).ToList();
         _settings.Save();
         _engine.ReloadGameRules();
@@ -2862,7 +2596,7 @@ public partial class MainWindow : FluentWindow
     private void DebugLoggingToggle_Changed(object sender, RoutedEventArgs e)
     {
         if (_initializing) return;
-        _settings.DebugLogging = DebugLoggingToggle.IsChecked == true;
+        _settings.DebugLogging = (DebugLoggingToggle.IsChecked == true);
         Logger.SetDebugMode(_settings.DebugLogging);
         CheckDirty();
     }
@@ -2870,14 +2604,14 @@ public partial class MainWindow : FluentWindow
     private void SysAudioToggle_Changed(object sender, RoutedEventArgs e)
     {
         if (_initializing || _syncingAudioToggles) return;
-        _settings.RecordSystemAudio = SysAudioToggle.IsChecked == true;
+        _settings.RecordSystemAudio = (SysAudioToggle.IsChecked == true);
         CheckDirty();
     }
 
     private void MicToggle_Changed(object sender, RoutedEventArgs e)
     {
         if (_initializing || _syncingAudioToggles) return;
-        _settings.RecordMicrophone = MicToggle.IsChecked == true;
+        _settings.RecordMicrophone = (MicToggle.IsChecked == true);
         CheckDirty();
     }
 
@@ -2896,7 +2630,7 @@ public partial class MainWindow : FluentWindow
         var t = _hotkeyPulseTimer;
         StartPulse(HotkeyCaptureButton, ref t);
         _hotkeyPulseTimer = t;
-        _ = HotkeyCaptureButton.Focus();
+        HotkeyCaptureButton.Focus();
     }
 
     private void EndHotkeyCapture()
@@ -2923,7 +2657,7 @@ public partial class MainWindow : FluentWindow
         {
             if (i > 0)
             {
-                _ = HotkeyKeys.Children.Add(new TextBlock
+                HotkeyKeys.Children.Add(new TextBlock
                 {
                     Text = "+",
                     FontSize = 10,
@@ -2932,7 +2666,7 @@ public partial class MainWindow : FluentWindow
                 });
             }
 
-            _ = HotkeyKeys.Children.Add(new Border
+            HotkeyKeys.Children.Add(new Border
             {
                 Padding = new Thickness(5, 1, 5, 2),
                 CornerRadius = new CornerRadius(4),
@@ -2949,12 +2683,17 @@ public partial class MainWindow : FluentWindow
                 },
             });
         }
+
+        // 4 px between key pills (WinUI StackPanel.Spacing).
+        for (int i = 1; i < HotkeyKeys.Children.Count; i++)
+            ((FrameworkElement)HotkeyKeys.Children[i]).Margin = new Thickness(4, 0, 0, 0);
     }
 
     private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
     {
         if (!_capturingHotkey) return;
-        Key key = e.Key;
+        Key key = e.Key == Key.System ? e.SystemKey : e.Key;
+        if (key == Key.ImeProcessed || key == Key.None) return;
 
         if (key == Key.Escape)
         {
@@ -2980,7 +2719,8 @@ public partial class MainWindow : FluentWindow
     private void Window_PreviewKeyUp(object sender, KeyEventArgs e)
     {
         if (!_capturingHotkey || _pendingHotkeyModifier == 0) return;
-        if (HotkeyDisplay.ModifierBitForKey(e.Key) == _pendingHotkeyModifier)
+        Key released = e.Key == Key.System ? e.SystemKey : e.Key;
+        if (HotkeyDisplay.ModifierBitForKey(released) == _pendingHotkeyModifier)
         {
             _pendingHotkeyModifier = 0;
             HotkeyCaptureText.Text = "PRESS A KEY…";
@@ -2993,11 +2733,11 @@ public partial class MainWindow : FluentWindow
         uint oldModifiers = _settings.HotkeyModifiers;
         uint oldVk = _settings.HotkeyVk;
 
-        _ = UnregisterHotKey(_hwnd, HotkeyId);
+        UnregisterHotKey(_hwnd, HotkeyId);
 
         if (!RegisterHotKey(_hwnd, HotkeyId, modifiers, vk))
         {
-            _ = RegisterHotKey(_hwnd, HotkeyId, oldModifiers, oldVk);
+            RegisterHotKey(_hwnd, HotkeyId, oldModifiers, oldVk);
             Logger.Warn($"Hotkey {HotkeyDisplay.Format(modifiers, vk)} is already in use by another app.");
 
             _capturingHotkey = false;
@@ -3021,32 +2761,18 @@ public partial class MainWindow : FluentWindow
     private void StartupToggle_Changed(object sender, RoutedEventArgs e)
     {
         if (_initializing || _syncingStartupToggle) return;
-        bool enabled = StartupToggle.IsChecked == true;
+        bool enabled = (StartupToggle.IsChecked == true);
         StartupManager.SetEnabled(enabled);
     }
 
     private void RefreshStartupToggleState()
     {
         bool actuallyEnabled = StartupManager.IsEnabled();
-        if (StartupToggle.IsChecked == actuallyEnabled) return;
+        if ((StartupToggle.IsChecked == true) == actuallyEnabled) return;
 
         _syncingStartupToggle = true;
         StartupToggle.IsChecked = actuallyEnabled;
         _syncingStartupToggle = false;
-    }
-
-    private void NavView_PaneOpened(NavigationView sender, RoutedEventArgs args)
-    {
-        if (_initializing) return;
-        _settings.NavigationPaneOpen = true;
-        _settings.SaveFields(nameof(Settings.NavigationPaneOpen));
-    }
-
-    private void NavView_PaneClosed(NavigationView sender, RoutedEventArgs args)
-    {
-        if (_initializing) return;
-        _settings.NavigationPaneOpen = false;
-        _settings.SaveFields(nameof(Settings.NavigationPaneOpen));
     }
 
     private void SaveLocationBox_TextChanged(object sender, TextChangedEventArgs e)
@@ -3060,16 +2786,8 @@ public partial class MainWindow : FluentWindow
     {
         try
         {
-            using var picker = new System.Windows.Forms.FolderBrowserDialog
-            {
-                Description = "Choose where replay clips are saved",
-                ShowNewFolderButton = true,
-            };
-            if (!string.IsNullOrWhiteSpace(SaveLocationBox.Text) && Directory.Exists(SaveLocationBox.Text))
-                picker.SelectedPath = SaveLocationBox.Text;
-
-            if (picker.ShowDialog() == System.Windows.Forms.DialogResult.OK)
-                SaveLocationBox.Text = picker.SelectedPath;
+            string? folder = FolderPicker.PickFolder(_hwnd, SaveLocationBox.Text);
+            if (folder != null) SaveLocationBox.Text = folder;
         }
         catch (Exception ex)
         {
@@ -3081,11 +2799,6 @@ public partial class MainWindow : FluentWindow
     {
         _dirty = CapturePending() != _baseline;
         UpdatePendingFlyout();
-    }
-
-    private static void PlaySound(SoundCue cue)
-    {
-        // WPF has no system UI-sound service; navigation sounds are intentionally silent.
     }
 
     private void EnsureInfoBarTimer()
@@ -3109,13 +2822,18 @@ public partial class MainWindow : FluentWindow
     }
 
     private void ShowInfoBar(InfoBarSeverity severity, string title, string message, string? tag = null,
-        bool progress = false)
+        bool progress = false, string? actionLabel = null, Action? action = null)
     {
         StatusInfoBar.Severity = severity;
         StatusInfoBar.Title = title;
         StatusInfoBar.Message = message;
         StatusInfoBar.IsClosable = !progress;
         StatusInfoBar.Tag = tag;
+        _infoBarAction = action;
+        StatusInfoActionButton.Content = actionLabel ?? "";
+        StatusInfoActionButton.Visibility = actionLabel is null
+            ? Visibility.Collapsed
+            : Visibility.Visible;
         StatusInfoBar.IsOpen = true;
 
         EnsureInfoBarTimer();
@@ -3128,6 +2846,8 @@ public partial class MainWindow : FluentWindow
         _infoBarTimer?.Stop();
         StatusInfoBar.IsOpen = false;
         StatusInfoBar.Tag = null;
+        _infoBarAction = null;
+        StatusInfoActionButton.Visibility = Visibility.Collapsed;
     }
 
     private void UpdatePendingFlyout()
@@ -3137,7 +2857,6 @@ public partial class MainWindow : FluentWindow
 
         if (_dirty)
         {
-            PlaySound(SoundCue.Show);
             PendingChangesFlyout.Visibility = Visibility.Visible;
             AnimateDouble(PendingChangesFlyout, "Opacity", 0, 1, TimeSpan.FromMilliseconds(160));
             AnimateDouble(PendingFlyoutSlide, "Y", -8, 0, TimeSpan.FromMilliseconds(200));
@@ -3208,15 +2927,10 @@ public partial class MainWindow : FluentWindow
 
     }
 
-    private async void PendingSaveButton_Click(object sender, RoutedEventArgs e)
-    {
-        await SaveChangesAsync();
-    }
-
+    private async void PendingSaveButton_Click(object sender, RoutedEventArgs e) => await SaveChangesAsync();
 
     private void PendingDiscardButton_Click(object sender, RoutedEventArgs e)
     {
-        PlaySound(SoundCue.Hide);
         if (_savingChanges) return;
         RevertPendingChanges();
         ClearInfoBar();
@@ -3353,7 +3067,7 @@ public partial class MainWindow : FluentWindow
     private void UpdateSpark(List<double> history, double pct, FrameworkElement host,
         System.Windows.Shapes.Polyline line, System.Windows.Shapes.Polygon area)
     {
-        history.Add(Clamp(pct, 0, 100));
+        history.Add(Compat.Clamp(pct, 0, 100));
         if (history.Count > SparkSamples) history.RemoveAt(0);
 
         Brush b = pct >= SparkAlertPct ? AlertBrush : _normalBarBrush;
@@ -3412,7 +3126,7 @@ public partial class MainWindow : FluentWindow
         _updateTimer?.Stop();
         _updateLifetime.Cancel();
 
-        _ = UnregisterHotKey(_hwnd, HotkeyId);
+        UnregisterHotKey(_hwnd, HotkeyId);
         RegisterRawKeyboard(false);
 
         _debugStatsTimer?.Stop();
@@ -3425,7 +3139,7 @@ public partial class MainWindow : FluentWindow
         _leakReminderTimer?.Stop();
         _recDotPulseTimer?.Stop();
         _hotkeyPulseTimer?.Stop();
-        _ = EnableWindow(_hwnd, true);
+        EnableWindow(_hwnd, true);
         // Native cleanup used to wait forever on capture threads. Bound it so
         // the tray Exit item always terminates the process.
         Task cleanup = Task.Run(() =>
@@ -3448,308 +3162,122 @@ public partial class MainWindow : FluentWindow
             Environment.Exit(0);
         }
 
-        if (_dq.CheckAccess())
+        if (!_dq.TryEnqueue(FinishExit)) FinishExit();
+        else _ = Task.Run(async () =>
         {
-            FinishExit();
-        }
-        else
-        {
-            _ = _dq.BeginInvoke(new Action(FinishExit));
-            _ = Task.Run(async () =>
-            {
-                await Task.Delay(TimeSpan.FromSeconds(2));
-                Environment.Exit(0);
-            });
-        }
+            await Task.Delay(TimeSpan.FromSeconds(2));
+            Environment.Exit(0);
+        });
     }
-
-    private UpdateService _updates = null!;
-    private DispatcherTimer? _updateTimer;
-    private readonly CancellationTokenSource _updateLifetime = new();
-    private CancellationTokenSource? _downloadCancellation;
-    private bool _updateBusy;
-    private bool _updateReminderOpen;
-    private string? _updateMessage;
-    private bool _updateMessageIsError;
-    private Storyboard? _updateSpinStoryboard;
-
-    private void SetUpdateSpinner(bool spinning)
-    {
-        if (!spinning)
-        {
-            _updateSpinStoryboard?.Stop();
-            UpdateIconRotation.Angle = 0;
-            return;
-        }
-        _updateSpinStoryboard ??= new Storyboard();
-        if (_updateSpinStoryboard.Children.Count == 0)
-        {
-            var animation = new DoubleAnimation
-            {
-                From = 0,
-                To = 360,
-                Duration = TimeSpan.FromMilliseconds(750),
-                RepeatBehavior = RepeatBehavior.Forever,
-                
-            };
-            Storyboard.SetTarget(animation, UpdateIconRotation);
-            Storyboard.SetTargetProperty(animation, new PropertyPath("Angle"));
-            _updateSpinStoryboard.Children.Add(animation);
-        }
-        _updateSpinStoryboard.Begin();
-    }
-
-    private void InitializeUpdates()
-    {
-        _updates = new UpdateService();
-        try
-        {
-            if (File.Exists(UpdateService.ResultPath))
-            {
-                var result = System.Text.Json.JsonSerializer.Deserialize<UpdateInstallResult>(File.ReadAllText(UpdateService.ResultPath));
-                if (result is not null)
-                {
-                    _updateMessage = result.Success ? $"Updated to version {result.Version}." : $"Update was not completed: {result.Message}";
-                    _updateMessageIsError = !result.Success;
-                    if (!result.Success) Logger.Warn(_updateMessage);
-                }
-                File.Delete(UpdateService.ResultPath);
-            }
-        }
-        catch (Exception ex) { Logger.Warn($"Update result could not be read: {ex.Message}"); }
-        RefreshUpdatesPage();
-        _updateTimer = new DispatcherTimer { Interval = TimeSpan.FromMinutes(1) };
-        _updateTimer.Tick += async (_, _) => await CheckUpdatesAsync(false);
-        _updateTimer.Start();
-        RootGrid.Loaded += (_, _) => _ = CheckUpdatesAsync(false);
-    }
-
-    private void RefreshUpdatesPage()
-    {
-        if (_updates is null) return;
-        InstalledVersionLabel.Text = $"Version {_updates.CurrentVersion.ToString(3)}";
-        UpdateCheck state = _updates.State;
-        bool available = _updates.HasUpdate;
-        UpdateHeading.Text = available ? "An update is available" : state.Release is null ? "Keep Instant Replay up to date" : "You Are Using Latest Version Of The App";
-        UpdateDescription.Text = available ? $"Version {state.Release!.Version} is ready to download." : state.Release is null
-            ? "Check for the latest stable release on GitHub." : $"Latest release: {state.Release.Version}.";
-        CheckUpdatesButton.IsEnabled = !_updateBusy;
-        InstallUpdateButton.Visibility = available ? Visibility.Visible : Visibility.Collapsed;
-        InstallUpdateButton.IsEnabled = !_updateBusy && state.Error is null;
-        ReleaseNotesCard.Visibility = state.Release is not null && available ? Visibility.Visible : Visibility.Collapsed;
-        UpdateReleaseNotes.Text = string.IsNullOrWhiteSpace(state.Release?.Notes) ? "No release notes were provided." : state.Release!.Notes;
-        LastUpdateCheckLabel.Text = state.LastAttemptUtc == DateTimeOffset.MinValue ? "Not checked yet" : $"Last checked {state.LastAttemptUtc.ToLocalTime():g}";
-        UpdateStatusBar.IsOpen = _updateMessage is not null || state.Error is not null;
-        UpdateStatusBar.Severity = _updateMessage is not null ? (_updateMessageIsError ? InfoBarSeverity.Error : InfoBarSeverity.Informational) : InfoBarSeverity.Error;
-        UpdateStatusBar.Message = _updateMessage ?? state.Error ?? "";
-        RefreshUpdateBadge();
-    }
-
-    private void RefreshUpdateBadge()
-    {
-        if (_updates.HasUpdate)
-        {
-            NavUpdatesItem.InfoBadge = new InfoBadge
-            {
-                Value = "\u2022",
-                MinWidth = 10,
-                MinHeight = 10,
-                Background = new SolidColorBrush(Color.FromArgb(255, 232, 17, 35)),
-            };
-        }
-        else
-        {
-            NavUpdatesItem.InfoBadge = null;
-        }
-    }
-
-    private async Task CheckUpdatesAsync(bool manual)
-    {
-        if (_updateBusy || _updateReminderOpen || _isClosingForReal) return;
-        if (!manual && !_updates.IsDue(DateTimeOffset.UtcNow))
-        {
-            await ShowUpdateReminderAsync();
-            return;
-        }
-        _updateBusy = true;
-        SetUpdateSpinner(true);
-        _updateMessage = "Checking for updates…";
-        _updateMessageIsError = false;
-        UpdateProgress.Visibility = Visibility.Visible;
-        UpdateProgress.IsIndeterminate = true;
-        RefreshUpdatesPage();
-        try
-        {
-            _ = await _updates.CheckAsync(_updateLifetime.Token);
-            try
-            {
-                await _updates.UpdateGameCatalogAsync(_updateLifetime.Token);
-                _engine.ReloadGameRules();
-                RefreshGamesPage();
-            }
-            catch (Exception ex)
-            {
-                Logger.Warn($"Game database update failed: {ex.Message}");
-            }
-            _updateMessage = null;
-        }
-        catch (OperationCanceledException) { }
-        finally
-        {
-            _updateBusy = false;
-            SetUpdateSpinner(false);
-            UpdateProgress.Visibility = Visibility.Collapsed;
-            if (!_isClosingForReal) RefreshUpdatesPage();
-        }
-        await ShowUpdateReminderAsync();
-    }
-
-    private async void CheckUpdates_Click(object sender, RoutedEventArgs e)
-    {
-        await CheckUpdatesAsync(true);
-    }
-
-
-    private async Task ShowUpdateReminderAsync()
-    {
-        if (_updates is null || _updateBusy || _updateReminderOpen || _isClosingForReal || _isHidden
-            || GetForegroundWindow() != _hwnd || !_updates.IsReminderDue(DateTimeOffset.UtcNow)) return;
-        _updateReminderOpen = true;
-        bool accepted = false;
-        try
-        {
-            _updates.MarkReminderShown(DateTimeOffset.UtcNow);
-            accepted = System.Windows.MessageBox.Show(this,
-                $"Instant Replay {_updates.State.Release!.Version} is available. Would you like to update now?\n\nThe app will download the update, close, install it, and reopen automatically. Save any replay you want to keep first: restarting clears the current buffer. Windows may ask for administrator approval.",
-                "An update is available",
-                System.Windows.MessageBoxButton.YesNo,
-                MessageBoxImage.Question) == System.Windows.MessageBoxResult.Yes;
-        }
-        catch (Exception ex) { Logger.Debug($"Update reminder could not be shown: {ex.Message}"); }
-        finally { _updateReminderOpen = false; }
-        if (accepted && !_isClosingForReal)
-        {
-            NavView.SelectItem(NavUpdatesItem);
-            await InstallUpdateAsync(true);
-        }
-    }
-
-    private async void InstallUpdate_Click(object sender, RoutedEventArgs e)
-    {
-        await InstallUpdateAsync(false);
-    }
-
-
-    private async Task InstallUpdateAsync(bool confirmed)
-    {
-        if (_updateBusy || !_updates.HasUpdate || _isClosingForReal) return;
-        _updateBusy = true;
-        RefreshUpdatesPage();
-        string? directory = null;
-        bool handoffStarted = false;
-        try
-        {
-            if (!confirmed)
-            {
-                if (System.Windows.MessageBox.Show(this,
-                        "Instant Replay will download the update, close, install it, and reopen automatically. The current replay buffer will be cleared. Save any replay you want to keep before continuing. Windows may ask for administrator approval.",
-                        "Install update?",
-                        System.Windows.MessageBoxButton.YesNo,
-                        MessageBoxImage.Question) != System.Windows.MessageBoxResult.Yes) return;
-            }
-            _downloadCancellation = CancellationTokenSource.CreateLinkedTokenSource(_updateLifetime.Token);
-            _updateMessage = "Checking the release before downloading…";
-            _updateMessageIsError = false;
-            UpdateProgress.Visibility = Visibility.Visible;
-            UpdateProgress.IsIndeterminate = true;
-            CancelUpdateButton.Visibility = Visibility.Visible;
-            RefreshUpdatesPage();
-            _ = await _updates.CheckAsync(_downloadCancellation.Token);
-            if (_updates.State.Error is { } error) throw new InvalidOperationException(error);
-            if (!_updates.HasUpdate) { _updateMessage = "You're already up to date."; return; }
-            UpdateRelease release = _updates.State.Release!;
-            directory = Path.Combine(Path.GetTempPath(), "InstantReplay-Updates", Guid.NewGuid().ToString("N"));
-            UpdateProgress.IsIndeterminate = false;
-            UpdateProgress.Value = 0;
-            var progress = new Progress<double>(value =>
-            {
-                UpdateProgress.Value = value;
-                UpdateStatusBar.Message = $"Downloading version {release.Version}… {value:0}%";
-            });
-            _updateMessage = $"Downloading version {release.Version}…";
-            RefreshUpdatesPage();
-            string installer = await _updates.DownloadAsync(release, directory, progress, _downloadCancellation.Token);
-            CancelUpdateButton.Visibility = Visibility.Collapsed;
-            _updateMessage = "Installer verified. Preparing to restart…";
-            RefreshUpdatesPage();
-            await UpdateService.StartInstallerAsync(installer, release, _downloadCancellation.Token);
-            handoffStarted = true;
-            ExitApplicationAsync();
-        }
-        catch (OperationCanceledException)
-        {
-            _updateMessage = "Update download cancelled. Nothing was installed.";
-            _updateMessageIsError = false;
-        }
-        catch (Exception ex)
-        {
-            _updateMessage = $"Update could not be installed: {ex.Message}";
-            _updateMessageIsError = true;
-            Logger.Error("Update installation failed", ex);
-        }
-        finally
-        {
-            _downloadCancellation?.Dispose();
-            _downloadCancellation = null;
-            _updateBusy = false;
-            CancelUpdateButton.Visibility = Visibility.Collapsed;
-            UpdateProgress.Visibility = Visibility.Collapsed;
-            if (!handoffStarted && directory is not null)
-            {
-                try
-                {
-                    foreach (string name in new[] { UpdateService.InstallerName, UpdateService.InstallerName + ".partial", "install-update.ps1", "install-update.json", "ready" })
-                        File.Delete(Path.Combine(directory, name));
-                    Directory.Delete(directory);
-                }
-                catch (Exception ex) { Logger.Debug($"Update cleanup: {ex.Message}"); }
-            }
-            if (!_isClosingForReal) RefreshUpdatesPage();
-        }
-    }
-
-    private void CancelUpdate_Click(object sender, RoutedEventArgs e)
-    {
-        _downloadCancellation?.Cancel();
-    }
-
 }
 
-/// <summary>
-/// WPF-UI keeps NavigationView.SelectedItem read-only to callers. This tiny
-/// subclass lets the window restore/switch the selected item programmatically
-/// without reflecting into the control or faking another navigation.
-/// </summary>
-internal sealed class AppNavigationView : NavigationView
+/// <summary>Marshals work onto the UI thread (stands in for WinUI's DispatcherQueue.TryEnqueue).</summary>
+internal sealed class UiQueue
 {
-    public AppNavigationView()
+    private readonly Dispatcher _dispatcher;
+
+    public UiQueue(Dispatcher dispatcher) => _dispatcher = dispatcher;
+
+    public bool TryEnqueue(Action action)
     {
-        // WPF implicit styles are keyed by the exact runtime type, so the
-        // WPF-UI NavigationView style is not applied to this derived class.
-        // Bind it explicitly, the same way FluentWindow does upstream.
-        SetResourceReference(StyleProperty, typeof(NavigationView));
+        try { _dispatcher.BeginInvoke(action); return true; }
+        catch { return false; }
     }
 
-    public void SelectItem(INavigationViewItem item)
+    public bool TryEnqueue(Func<Task> action)
     {
-        foreach (INavigationViewItem candidate in MenuItems.OfType<INavigationViewItem>()
-                     .Concat(FooterMenuItems.OfType<INavigationViewItem>()))
+        try
         {
-            if (ReferenceEquals(candidate, item)) candidate.Activate(this);
-            else candidate.Deactivate(this);
+            _dispatcher.BeginInvoke(new Action(async () =>
+            {
+                try { await action(); }
+                catch (Exception ex) { Logger.Error("Unhandled error in queued UI work", ex); }
+            }));
+            return true;
         }
+        catch { return false; }
+    }
+}
 
-        SelectedItem = item;
-        OnSelectionChanged();
+/// <summary>Vista-style folder picker (IFileOpenDialog with FOS_PICKFOLDERS); .NET Framework's FolderBrowserDialog is the old tree.</summary>
+internal static class FolderPicker
+{
+    [ComImport, Guid("DC1C5A9C-E88A-4DDE-A5A1-60F82A20AEF7")]
+    private class FileOpenDialogCom { }
+
+    [ComImport, Guid("42F85136-DB7E-439C-85F1-E4075D135FC8"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IFileDialog
+    {
+        [PreserveSig] int Show(IntPtr parent);
+        void SetFileTypes(uint count, IntPtr filterSpec);
+        void SetFileTypeIndex(uint index);
+        void GetFileTypeIndex(out uint index);
+        void Advise(IntPtr events, out uint cookie);
+        void Unadvise(uint cookie);
+        void SetOptions(uint options);
+        void GetOptions(out uint options);
+        void SetDefaultFolder(IShellItem item);
+        void SetFolder(IShellItem item);
+        void GetFolder(out IShellItem item);
+        void GetCurrentSelection(out IShellItem item);
+        void SetFileName([MarshalAs(UnmanagedType.LPWStr)] string name);
+        void GetFileName([MarshalAs(UnmanagedType.LPWStr)] out string name);
+        void SetTitle([MarshalAs(UnmanagedType.LPWStr)] string title);
+        void SetOkButtonLabel([MarshalAs(UnmanagedType.LPWStr)] string text);
+        void SetFileNameLabel([MarshalAs(UnmanagedType.LPWStr)] string text);
+        void GetResult(out IShellItem item);
+        void AddPlace(IShellItem item, int placement);
+        void SetDefaultExtension([MarshalAs(UnmanagedType.LPWStr)] string extension);
+        void Close(int hr);
+        void SetClientGuid(ref Guid guid);
+        void ClearClientData();
+        void SetFilter(IntPtr filter);
+    }
+
+    [ComImport, Guid("43826D1E-E718-42EE-BC55-A1E261C37BFE"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IShellItem
+    {
+        void BindToHandler(IntPtr bindContext, ref Guid handler, ref Guid iid, out IntPtr result);
+        void GetParent(out IShellItem item);
+        void GetDisplayName(uint sigdn, [MarshalAs(UnmanagedType.LPWStr)] out string name);
+        void GetAttributes(uint mask, out uint attributes);
+        void Compare(IShellItem other, uint hint, out int order);
+    }
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = true)]
+    private static extern int SHCreateItemFromParsingName(string path, IntPtr bindContext, ref Guid iid, out IShellItem item);
+
+    private const uint FosPickFolders = 0x00000020;
+    private const uint FosForceFileSystem = 0x00000040;
+    private const uint SigdnFileSysPath = 0x80058000;
+    private const int ErrorCancelled = unchecked((int)0x800704C7);
+
+    public static string? PickFolder(IntPtr owner, string? initialFolder)
+    {
+        var dialog = (IFileDialog)new FileOpenDialogCom();
+        try
+        {
+            dialog.GetOptions(out uint options);
+            dialog.SetOptions(options | FosPickFolders | FosForceFileSystem);
+
+            if (!string.IsNullOrWhiteSpace(initialFolder) && Directory.Exists(initialFolder))
+            {
+                Guid iid = typeof(IShellItem).GUID;
+                if (SHCreateItemFromParsingName(initialFolder, IntPtr.Zero, ref iid, out IShellItem start) == 0)
+                    dialog.SetFolder(start);
+            }
+
+            int hr = dialog.Show(owner);
+            if (hr == ErrorCancelled) return null;
+            if (hr != 0) Marshal.ThrowExceptionForHR(hr);
+
+            dialog.GetResult(out IShellItem result);
+            result.GetDisplayName(SigdnFileSysPath, out string path);
+            return path;
+        }
+        finally
+        {
+            Marshal.ReleaseComObject(dialog);
+        }
     }
 }

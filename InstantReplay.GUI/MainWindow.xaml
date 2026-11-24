@@ -1,182 +1,265 @@
-<ui:FluentWindow
-    x:Class="InstantReplay.GUI.MainWindow"
-    Title="Instant Replay"
-    Width="1440"
-    Height="900"
-    MinWidth="940"
-    MinHeight="640"
-    WindowStartupLocation="CenterScreen"
-    ExtendsContentIntoTitleBar="True"
-    WindowBackdropType="Mica"
-    WindowCornerPreference="Round"
-    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-    xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
-    xmlns:controls="clr-namespace:InstantReplay.GUI.Controls"
-    xmlns:models="clr-namespace:InstantReplay.Models"
-    xmlns:local="clr-namespace:InstantReplay.GUI">
-
-    <Grid x:Name="RootGrid"
-          Background="{DynamicResource BgBrush}">
+<ui:FluentWindow xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+        xmlns:controls="clr-namespace:InstantReplay.GUI.Controls"
+        xmlns:models="clr-namespace:InstantReplay.Models"
+        x:Class="InstantReplay.GUI.MainWindow"
+        Title="Instant Replay"
+        Width="760"
+        Height="480"
+        MinWidth="480"
+        MinHeight="360"
+        ResizeMode="CanMinimize"
+        WindowStartupLocation="Manual"
+        ExtendsContentIntoTitleBar="True"
+        WindowBackdropType="Mica"
+        WindowCornerPreference="Round"
+        UseLayoutRounding="True"
+        Closing="Window_Closing"
+        Activated="Window_Activated"
+        Deactivated="Window_Deactivated"
+        PreviewKeyDown="Window_PreviewKeyDown"
+        PreviewKeyUp="Window_PreviewKeyUp">
+    <Grid xmlns:ns0="using:InstantReplay.GUI.Controls"
+            x:Name="RootGrid"
+            Background="{DynamicResource BgBrush}">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
 
-        <Grid x:Name="TitleBarHost"
-              Grid.Row="0"
-              Height="32"
-              Background="Transparent">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*"/>
-                <ColumnDefinition Width="Auto"/>
-            </Grid.ColumnDefinitions>
-            <ui:TitleBar x:Name="RootTitleBar"
-                         Grid.Column="0"
-                         Title="Instant Replay"
-                         ShowMinimize="False"
-                         ShowMaximize="False"
-                         ShowClose="False"
-                         Background="Transparent"/>
-            <StackPanel x:Name="TitleBarButtonsPanel"
-                        Grid.Column="1"
-                        Orientation="Horizontal"
-                        Margin="0">
-                <ui:Button x:Name="DonateTitleButton"
-                        Width="44"
-                        Style="{StaticResource TitleBarIconButtonStyle}"
-                        IsTabStop="False"
-                        Click="DonateTitleButton_Click"
-                        ToolTipService.ToolTip="Donate">
-                    <TextBlock Text="&#x1F496;"
-                               FontFamily="Segoe UI Emoji"
-                               FontSize="16"
-                              
-                               HorizontalAlignment="Center"
-                               VerticalAlignment="Center"/>
-                </ui:Button>
-                <ui:Button x:Name="GitHubTitleButton"
-                        Width="44"
-                        Style="{StaticResource TitleBarIconButtonStyle}"
-                        IsTabStop="False"
-                        Click="GitHubTitleButton_Click"
-                        ToolTipService.ToolTip="View on GitHub">
-                    <Image x:Name="GitHubLogoImage"
-                           Width="18"
-                           Height="18"/>
-                </ui:Button>
-                <ui:Button x:Name="MinimizeTitleButton"
-                        Width="46"
-                        Margin="8,0,0,0"
-                        Style="{StaticResource TitleBarIconButtonStyle}"
-                        IsTabStop="False"
-                        Click="MinimizeTitleButton_Click"
-                        ToolTipService.ToolTip="Minimize">
-                    <ui:FontIcon Glyph="&#xE921;"
-                              FontFamily="{DynamicResource SymbolThemeFontFamily}"
-                              FontSize="10"/>
-                </ui:Button>
-                <ui:Button x:Name="CloseTitleButton"
-                        Width="46"
-                        CornerRadius="0,8,0,0"
-                        Style="{StaticResource TitleBarCloseButtonStyle}"
-                        IsTabStop="False"
-                        Click="CloseTitleButton_Click"
-                        ToolTipService.ToolTip="Close">
-                    <ui:FontIcon Glyph="&#xE8BB;"
-                              FontFamily="{DynamicResource SymbolThemeFontFamily}"
-                              FontSize="10"/>
-                </ui:Button>
-            </StackPanel>
-        </Grid>
-
-        <StackPanel x:Name="WebViewRequirementHost"
-                    Grid.Row="1"
-                    Margin="12,8,12,0"
-                    Visibility="Collapsed">
-            <ui:InfoBar x:Name="WebViewRequirementBar"
-                        IsOpen="False"
-                        IsClosable="False"
-                        Severity="Warning"
-                        Title="WebView2 is required for playback"
-                        Message="The media player will not work without the WebView2 Runtime." />
+        <ui:TitleBar x:Name="AppTitleBar"
+                Grid.Row="0"
+                ShowMaximize="False"
+                CanMaximize="False"
+                ShowMinimize="True"
+                ShowClose="True"
+                CloseWindowByDoubleClickOnIcon="False"
+                ForceShutdown="False">
+            <ui:TitleBar.TrailingContent>
+                <StackPanel x:Name="TitleBarButtonsPanel"
+                        Orientation="Horizontal">
+                    <ui:Button x:Name="DonateTitleButton"
+                            Style="{StaticResource TitleBarIconButtonStyle}"
+                            IsTabStop="False"
+                            Click="DonateTitleButton_Click"
+                            ToolTipService.ToolTip="Donate"
+                            Width="44">
+                        <TextBlock Text="&#128150;"
+                                FontFamily="Segoe UI Emoji"
+                                FontSize="16"
+                                HorizontalAlignment="Center"
+                                VerticalAlignment="Center"/>
+                    </ui:Button>
+                    <ui:Button x:Name="GitHubTitleButton"
+                            Style="{StaticResource TitleBarIconButtonStyle}"
+                            IsTabStop="False"
+                            Click="GitHubTitleButton_Click"
+                            ToolTipService.ToolTip="View on GitHub"
+                            Width="44">
+                        <Image Source="{DynamicResource GitHubLogoSource}"
+                                Width="18"
+                                Height="18"/>
+                    </ui:Button>
+                </StackPanel>
+            </ui:TitleBar.TrailingContent>
+        </ui:TitleBar>
+        <ui:InfoBar x:Name="WebViewRequirementBar"
+                Visibility="Collapsed"
+                Grid.Row="1"
+                Margin="12,8,12,0"
+                IsOpen="False"
+                IsClosable="False"
+                Severity="Warning"
+                Title="WebView2 is required for playback"
+                Message="The media player will not work without the WebView2 Runtime.">
             <ui:Button Content="Download WebView2"
-                       Click="DownloadWebView2Button_Click"
-                       HorizontalAlignment="Right"
-                       Margin="0,6,0,0" />
-        </StackPanel>
+                    Click="DownloadWebView2Button_Click"/>
+        </ui:InfoBar>
 
-        <local:AppNavigationView x:Name="NavView"
-                        IsPaneOpen="True"
-                        PaneOpened="NavView_PaneOpened"
-                        PaneClosed="NavView_PaneClosed"
-                        Grid.Row="2"
-                        PaneDisplayMode="Left"
-                        IsBackButtonVisible="Collapsed"
-                       
-                        OpenPaneLength="220"
-                       
-                        SelectionChanged="NavView_SelectionChanged"
-                        ItemInvoked="NavView_ItemInvoked">
-            <local:AppNavigationView.Resources>
-                <Thickness x:Key="NavigationViewContentGridBorderThickness">0</Thickness>
-                <Thickness x:Key="NavigationViewBorderThickness">0</Thickness>
-            </local:AppNavigationView.Resources>
-            <local:AppNavigationView.MenuItems>
-                <ui:NavigationViewItem x:Name="NavHomeItem" Click="NavItem_Click"
-                                   
-                                    Tag="Home"
-                                    Content="Home">
-                    <ui:NavigationViewItem.Icon>
-                        <ui:FontIcon Glyph="&#xE80F;" FontFamily="{DynamicResource SymbolThemeFontFamily}" FontSize="18"/>
-                    </ui:NavigationViewItem.Icon>
-                </ui:NavigationViewItem>
-                <ui:NavigationViewItem x:Name="NavGalleryItem" Click="NavItem_Click"
-                                   
-                                    Tag="Gallery"
-                                    Content="Gallery">
-                    <ui:NavigationViewItem.Icon>
-                        <ui:FontIcon Glyph="&#xE93B;" FontFamily="{DynamicResource SymbolThemeFontFamily}" FontSize="18"/>
-                    </ui:NavigationViewItem.Icon>
-                </ui:NavigationViewItem>
-                <ui:NavigationViewItem x:Name="NavGamesItem" Click="NavItem_Click"
-                                    Content="Games"
-                                    Visibility="Collapsed"
-                                   >
-                    <ui:NavigationViewItem.Icon>
-                        <ui:FontIcon Glyph="&#xE7FC;"
-                                  FontFamily="{DynamicResource SymbolThemeFontFamily}"/>
-                    </ui:NavigationViewItem.Icon>
-                </ui:NavigationViewItem>
-                <ui:NavigationViewItem x:Name="NavSettingsItem" Click="NavItem_Click"
-                                   
-                                    Tag="Settings"
-                                    Content="Settings">
-                    <ui:NavigationViewItem.Icon>
-                        <ui:FontIcon Glyph="&#xE713;" FontFamily="{DynamicResource SymbolThemeFontFamily}" FontSize="18"/>
-                    </ui:NavigationViewItem.Icon>
-                </ui:NavigationViewItem>
-            </local:AppNavigationView.MenuItems>
-            <local:AppNavigationView.FooterMenuItems>
-                <ui:NavigationViewItem x:Name="NavUpdatesItem" Click="NavItem_Click"
-                                    Content="Updates"
-                                    Tag="Updates"
-                                   >
-                    <ui:NavigationViewItem.Icon>
-                        <ui:FontIcon Glyph="&#xE895;"
-                                  FontFamily="{DynamicResource SymbolThemeFontFamily}"/>
-                    </ui:NavigationViewItem.Icon>
-                </ui:NavigationViewItem>
-            </local:AppNavigationView.FooterMenuItems>
-
-            <local:AppNavigationView.ContentOverlay>
-            <Grid>
+        <Grid x:Name="NavRoot"
+                Grid.Row="2">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            <Grid x:Name="NavPane"
+                    Grid.Column="0"
+                    Width="220"
+                    Background="Transparent">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+                <ui:Button x:Name="NavPaneToggle"
+                        Grid.Row="0"
+                        Width="40"
+                        Height="36"
+                        Margin="4,2,0,4"
+                        HorizontalAlignment="Left"
+                        Padding="0"
+                        Background="Transparent"
+                        BorderThickness="0"
+                        CornerRadius="8"
+                        Click="NavPaneToggle_Click"
+                        IsTabStop="False"
+                        AutomationProperties.Name="Toggle navigation pane"
+                        ToolTipService.ToolTip="Navigation">
+                    <ui:FontIcon Glyph="&#59136;"
+                            FontFamily="{DynamicResource SymbolThemeFontFamily}"
+                            FontSize="16"/>
+                </ui:Button>
+                <StackPanel Grid.Row="1"
+                        Margin="0,4,0,0">
+                    <RadioButton x:Name="NavHomeItem"
+                            Tag="Home"
+                            GroupName="MainNav"
+                            Style="{StaticResource NavItemStyle}"
+                            Click="NavItem_Click">
+                        <StackPanel Orientation="Horizontal">
+                            <ui:FontIcon x:Name="NavHomeItemIcon"
+                                    Glyph="&#59407;"
+                                    FontFamily="{DynamicResource SymbolThemeFontFamily}"
+                                    FontSize="16"
+                                    Width="32"
+                                    VerticalAlignment="Center"/>
+                            <TextBlock x:Name="NavHomeItemLabel"
+                                    Text="Home"
+                                    FontSize="14"
+                                    VerticalAlignment="Center"
+                                    Margin="10,0,0,0"
+                                    Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=RadioButton}}"/>
+                            <Ellipse x:Name="NavHomeItemBadge"
+                                    Width="8"
+                                    Height="8"
+                                    Margin="8,0,0,0"
+                                    Fill="#E81123"
+                                    VerticalAlignment="Center"
+                                    Visibility="Collapsed"/>
+                        </StackPanel>
+                    </RadioButton>
+                    <RadioButton x:Name="NavGalleryItem"
+                            Tag="Gallery"
+                            GroupName="MainNav"
+                            Style="{StaticResource NavItemStyle}"
+                            Click="NavItem_Click">
+                        <StackPanel Orientation="Horizontal">
+                            <ui:FontIcon x:Name="NavGalleryItemIcon"
+                                    Glyph="&#59577;"
+                                    FontFamily="{DynamicResource SymbolThemeFontFamily}"
+                                    FontSize="16"
+                                    Width="32"
+                                    VerticalAlignment="Center"/>
+                            <TextBlock x:Name="NavGalleryItemLabel"
+                                    Text="Gallery"
+                                    FontSize="14"
+                                    VerticalAlignment="Center"
+                                    Margin="10,0,0,0"
+                                    Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=RadioButton}}"/>
+                            <Ellipse x:Name="NavGalleryItemBadge"
+                                    Width="8"
+                                    Height="8"
+                                    Margin="8,0,0,0"
+                                    Fill="#E81123"
+                                    VerticalAlignment="Center"
+                                    Visibility="Collapsed"/>
+                        </StackPanel>
+                    </RadioButton>
+                    <RadioButton x:Name="NavGamesItem"
+                            Tag="Games"
+                            GroupName="MainNav"
+                            Style="{StaticResource NavItemStyle}"
+                            Visibility="Collapsed"
+                            Click="NavItem_Click">
+                        <StackPanel Orientation="Horizontal">
+                            <ui:FontIcon x:Name="NavGamesItemIcon"
+                                    Glyph="&#59388;"
+                                    FontFamily="{DynamicResource SymbolThemeFontFamily}"
+                                    FontSize="16"
+                                    Width="32"
+                                    VerticalAlignment="Center"/>
+                            <TextBlock x:Name="NavGamesItemLabel"
+                                    Text="Games"
+                                    FontSize="14"
+                                    VerticalAlignment="Center"
+                                    Margin="10,0,0,0"
+                                    Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=RadioButton}}"/>
+                            <Ellipse x:Name="NavGamesItemBadge"
+                                    Width="8"
+                                    Height="8"
+                                    Margin="8,0,0,0"
+                                    Fill="#E81123"
+                                    VerticalAlignment="Center"
+                                    Visibility="Collapsed"/>
+                        </StackPanel>
+                    </RadioButton>
+                    <RadioButton x:Name="NavSettingsItem"
+                            Tag="Settings"
+                            GroupName="MainNav"
+                            Style="{StaticResource NavItemStyle}"
+                            Click="NavItem_Click">
+                        <StackPanel Orientation="Horizontal">
+                            <ui:FontIcon x:Name="NavSettingsItemIcon"
+                                    Glyph="&#59155;"
+                                    FontFamily="{DynamicResource SymbolThemeFontFamily}"
+                                    FontSize="16"
+                                    Width="32"
+                                    VerticalAlignment="Center"/>
+                            <TextBlock x:Name="NavSettingsItemLabel"
+                                    Text="Settings"
+                                    FontSize="14"
+                                    VerticalAlignment="Center"
+                                    Margin="10,0,0,0"
+                                    Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=RadioButton}}"/>
+                            <Ellipse x:Name="NavSettingsItemBadge"
+                                    Width="8"
+                                    Height="8"
+                                    Margin="8,0,0,0"
+                                    Fill="#E81123"
+                                    VerticalAlignment="Center"
+                                    Visibility="Collapsed"/>
+                        </StackPanel>
+                    </RadioButton>
+                </StackPanel>
+                <StackPanel Grid.Row="2"
+                        Margin="0,0,0,6">
+                    <RadioButton x:Name="NavUpdatesItem"
+                            Tag="Updates"
+                            GroupName="MainNav"
+                            Style="{StaticResource NavItemStyle}"
+                            Click="NavItem_Click">
+                        <StackPanel Orientation="Horizontal">
+                            <ui:FontIcon x:Name="NavUpdatesItemIcon"
+                                    Glyph="&#59541;"
+                                    FontFamily="{DynamicResource SymbolThemeFontFamily}"
+                                    FontSize="16"
+                                    Width="32"
+                                    VerticalAlignment="Center"/>
+                            <TextBlock x:Name="NavUpdatesItemLabel"
+                                    Text="Updates"
+                                    FontSize="14"
+                                    VerticalAlignment="Center"
+                                    Margin="10,0,0,0"
+                                    Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=RadioButton}}"/>
+                            <Ellipse x:Name="NavUpdatesItemBadge"
+                                    Width="8"
+                                    Height="8"
+                                    Margin="8,0,0,0"
+                                    Fill="#E81123"
+                                    VerticalAlignment="Center"
+                                    Visibility="Collapsed"/>
+                        </StackPanel>
+                    </RadioButton>
+                </StackPanel>
+            </Grid>
+            <Grid Grid.Column="1">
                 <Grid x:Name="PagesHost"
-                      Margin="{StaticResource ContentFrameMargin}">
+                        Margin="{StaticResource ContentFrameMargin}">
 
                     <Grid x:Name="HomePage"
-                          Visibility="Visible">
+                            Visibility="Visible">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="5*"/>
                             <RowDefinition Height="2*"
@@ -191,8 +274,8 @@
                                 BorderBrush="{DynamicResource StatCardBorderBrush}">
                             <Grid>
                                 <Grid x:Name="HeroTopBar"
-                                      VerticalAlignment="Top"
-                                      Margin="20,16,20,0">
+                                        VerticalAlignment="Top"
+                                        Margin="20,16,20,0">
                                     <Border x:Name="StatusPill"
                                             HorizontalAlignment="Left"
                                             VerticalAlignment="Center"
@@ -203,18 +286,17 @@
                                             BorderThickness="1">
                                         <StackPanel Orientation="Horizontal">
                                             <Ellipse x:Name="RecDot"
-                                                     Width="7"
-                                                     Height="7"
-                                                     Fill="{DynamicResource TextMutedBrush}"
-                                                     VerticalAlignment="Center"
-                                                     Margin="0,0,8,0"/>
+                                                    Width="7"
+                                                    Height="7"
+                                                    Fill="{DynamicResource TextMutedBrush}"
+                                                    VerticalAlignment="Center"
+                                                    Margin="0,0,8,0"/>
                                             <TextBlock x:Name="StatusHeadline"
-                                                       Text="STOPPED"
-                                                       FontSize="11"
-                                                       FontWeight="SemiBold"
-                                                      
-                                                       Foreground="{DynamicResource TextPrimaryBrush}"
-                                                       VerticalAlignment="Center"/>
+                                                    Text="STOPPED"
+                                                    FontSize="11"
+                                                    FontWeight="SemiBold"
+                                                    Foreground="{DynamicResource TextPrimaryBrush}"
+                                                    VerticalAlignment="Center"/>
                                         </StackPanel>
                                     </Border>
 
@@ -227,30 +309,30 @@
                                             BorderBrush="#26FFFFFF"
                                             BorderThickness="1">
                                         <StackPanel Orientation="Horizontal"
-                                                   
-                                                    VerticalAlignment="Center">
-                                            <ui:FontIcon Glyph="&#xE945;"
-                                                      FontFamily="{DynamicResource SymbolThemeFontFamily}"
-                                                      FontSize="13"
-                                                      Foreground="{DynamicResource AccentBrush}"
-                                                      VerticalAlignment="Center"/>
+                                                VerticalAlignment="Center">
+                                            <ui:FontIcon Glyph="&#59717;"
+                                                    FontFamily="{DynamicResource SymbolThemeFontFamily}"
+                                                    FontSize="13"
+                                                    Foreground="{DynamicResource AccentBrush}"
+                                                    VerticalAlignment="Center"/>
                                             <TextBlock Text="Hotkey:"
-                                                       FontSize="12"
-                                                       FontWeight="SemiBold"
-                                                       Foreground="{DynamicResource TextPrimaryBrush}"
-                                                       VerticalAlignment="Center"/>
+                                                    FontSize="12"
+                                                    FontWeight="SemiBold"
+                                                    Foreground="{DynamicResource TextPrimaryBrush}"
+                                                    VerticalAlignment="Center"
+                                                    Margin="8,0,0,0"/>
                                             <StackPanel x:Name="HotkeyKeys"
-                                                        Orientation="Horizontal"
-                                                       
-                                                        VerticalAlignment="Center"/>
+                                                    Orientation="Horizontal"
+                                                    VerticalAlignment="Center"
+                                                    Margin="8,0,0,0"/>
                                         </StackPanel>
                                     </Border>
                                 </Grid>
 
                                 <Grid x:Name="HeroContent"
-                                      Margin="32,56,32,32"
-                                      HorizontalAlignment="Stretch"
-                                      VerticalAlignment="Stretch">
+                                        Margin="32,56,32,32"
+                                        HorizontalAlignment="Stretch"
+                                        VerticalAlignment="Stretch">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="*"/>
                                         <ColumnDefinition Width="Auto"/>
@@ -258,89 +340,88 @@
                                     </Grid.ColumnDefinitions>
 
                                     <Grid x:Name="HeroArt"
-                                          Grid.Column="0"
-                                          HorizontalAlignment="Center"
-                                          VerticalAlignment="Center">
+                                            Grid.Column="0"
+                                            HorizontalAlignment="Center"
+                                            VerticalAlignment="Center">
                                         <Viewbox x:Name="HeroIcon"
-                                                 Width="200"
-                                                 Height="160"
-                                                 Stretch="Uniform">
+                                                Width="200"
+                                                Height="160"
+                                                Stretch="Uniform">
                                             <Canvas Width="120"
                                                     Height="96">
                                                 <Rectangle Width="104"
-                                                           Height="70"
-                                                           Canvas.Left="8"
-                                                           Canvas.Top="3"
-                                                           RadiusX="9"
-                                                           RadiusY="9"
-                                                           StrokeThickness="5"
-                                                           Stroke="{DynamicResource TextPrimaryBrush}"
-                                                           Opacity="0.78"/>
+                                                        Height="70"
+                                                        Canvas.Left="8"
+                                                        Canvas.Top="3"
+                                                        RadiusX="9"
+                                                        RadiusY="9"
+                                                        StrokeThickness="5"
+                                                        Stroke="{DynamicResource TextPrimaryBrush}"
+                                                        Opacity="0.78"/>
                                                 <Rectangle Width="14"
-                                                           Height="11"
-                                                           Canvas.Left="53"
-                                                           Canvas.Top="76"
-                                                           Fill="{DynamicResource TextPrimaryBrush}"
-                                                           Opacity="0.78"/>
+                                                        Height="11"
+                                                        Canvas.Left="53"
+                                                        Canvas.Top="76"
+                                                        Fill="{DynamicResource TextPrimaryBrush}"
+                                                        Opacity="0.78"/>
                                                 <Rectangle Width="58"
-                                                           Height="7"
-                                                           Canvas.Left="31"
-                                                           Canvas.Top="87"
-                                                           RadiusX="3.5"
-                                                           RadiusY="3.5"
-                                                           Fill="{DynamicResource TextPrimaryBrush}"
-                                                           Opacity="0.78"/>
+                                                        Height="7"
+                                                        Canvas.Left="31"
+                                                        Canvas.Top="87"
+                                                        RadiusX="3.5"
+                                                        RadiusY="3.5"
+                                                        Fill="{DynamicResource TextPrimaryBrush}"
+                                                        Opacity="0.78"/>
                                                 <Path Stroke="{DynamicResource AccentBrush}"
-                                                      StrokeThickness="6"
-                                                      StrokeStartLineCap="Round"
-                                                      StrokeEndLineCap="Round"
-                                                      Data="M 45.3,31.5 A 17,17 0 1 1 43.7,45"/>
+                                                        StrokeThickness="6"
+                                                        StrokeStartLineCap="Round"
+                                                        StrokeEndLineCap="Round"
+                                                        Data="M 45.3,31.5 A 17,17 0 1 1 43.7,45"/>
                                                 <Polygon Fill="{DynamicResource AccentBrush}"
-                                                         Points="36.5,45 50.5,45 43.5,34"/>
+                                                        Points="36.5,45 50.5,45 43.5,34"/>
                                                 <Ellipse Width="6"
-                                                         Height="6"
-                                                         Canvas.Left="95"
-                                                         Canvas.Top="58"
-                                                         Fill="{DynamicResource AccentBrush}"/>
+                                                        Height="6"
+                                                        Canvas.Left="95"
+                                                        Canvas.Top="58"
+                                                        Fill="{DynamicResource AccentBrush}"/>
                                             </Canvas>
                                         </Viewbox>
                                     </Grid>
 
                                     <Rectangle Grid.Column="1"
-                                               Width="1"
-                                               Margin="8,20"
-                                               VerticalAlignment="Stretch"
-                                               Fill="{DynamicResource StatCardBorderBrush}"/>
+                                            Width="1"
+                                            Margin="8,20"
+                                            VerticalAlignment="Stretch"
+                                            Fill="{DynamicResource StatCardBorderBrush}"/>
 
                                     <StackPanel Grid.Column="2"
-                                                Margin="36,0,0,0"
-                                                VerticalAlignment="Center">
+                                            Margin="36,0,0,0"
+                                            VerticalAlignment="Center">
                                         <TextBlock x:Name="HeroTitle"
-                                                   Text="Instant Replay"
-                                                   FontSize="42"
-                                                   FontWeight="SemiBold"
-                                                   TextWrapping="Wrap"
-                                                   Foreground="{DynamicResource TextPrimaryBrush}"/>
+                                                Text="Instant Replay"
+                                                FontSize="42"
+                                                FontWeight="SemiBold"
+                                                TextWrapping="Wrap"
+                                                Foreground="{DynamicResource TextPrimaryBrush}"/>
                                         <StackPanel x:Name="HeroSubtitle"
-                                                   
-                                                    Margin="0,6,0,0">
+                                                Margin="0,6,0,0">
                                             <TextBlock Text="Record your last moments, instantly."
-                                                       FontSize="19"
-                                                       TextWrapping="Wrap"
-                                                       Foreground="{DynamicResource StatHintBrush}"/>
+                                                    FontSize="19"
+                                                    TextWrapping="Wrap"
+                                                    Foreground="{DynamicResource StatHintBrush}"/>
                                             <TextBlock Text="Press the hotkey to save the last seconds of your screen."
-                                                       FontSize="14"
-                                                       TextWrapping="Wrap"
-                                                       MaxWidth="360"
-                                                       HorizontalAlignment="Left"
-                                                       Foreground="{DynamicResource StatLabelBrush}"/>
+                                                    FontSize="14"
+                                                    TextWrapping="Wrap"
+                                                    MaxWidth="360"
+                                                    HorizontalAlignment="Left"
+                                                    Foreground="{DynamicResource StatLabelBrush}"
+                                                    Margin="0,12,0,0"/>
                                         </StackPanel>
                                         <StackPanel x:Name="HeroActions"
-                                                    Orientation="Horizontal"
-                                                   
-                                                    Margin="0,26,0,0">
+                                                Orientation="Horizontal"
+                                                Margin="0,26,0,0">
                                             <ui:Button x:Name="SaveReplayButton"
-                                                    controls:UiHover.IsEnabled="True"
+                                                    ns0:UiHover.IsEnabled="True"
                                                     Style="{StaticResource HomeAccentButtonStyle}"
                                                     Height="46"
                                                     MinWidth="160"
@@ -348,41 +429,41 @@
                                                     CornerRadius="9"
                                                     IsEnabled="False"
                                                     Click="SaveReplayButton_Click">
-                                                <StackPanel Orientation="Horizontal"
-                                                           >
-                                                    <ui:FontIcon Glyph="&#xE74E;"
-                                                              FontFamily="{DynamicResource SymbolThemeFontFamily}"
-                                                              FontSize="15"
-                                                              Foreground="{Binding Foreground, ElementName=SaveReplayButton}"/>
+                                                <StackPanel Orientation="Horizontal">
+                                                    <ui:FontIcon Glyph="&#59214;"
+                                                            FontFamily="{DynamicResource SymbolThemeFontFamily}"
+                                                            FontSize="15"
+                                                            Foreground="{Binding Foreground, ElementName=SaveReplayButton}"/>
                                                     <TextBlock Text="Save Replay"
-                                                               FontSize="14"
-                                                               FontWeight="SemiBold"
-                                                               VerticalAlignment="Center"
-                                                               Foreground="{Binding Foreground, ElementName=SaveReplayButton}"/>
+                                                            FontSize="14"
+                                                            FontWeight="SemiBold"
+                                                            VerticalAlignment="Center"
+                                                            Foreground="{Binding Foreground, ElementName=SaveReplayButton}"
+                                                            Margin="8,0,0,0"/>
                                                 </StackPanel>
                                             </ui:Button>
                                             <ui:Button x:Name="StartStopButton"
-                                                    controls:UiHover.IsEnabled="True"
-                                                   
+                                                    ns0:UiHover.IsEnabled="True"
                                                     Style="{StaticResource HomeNeutralButtonStyle}"
                                                     Height="46"
                                                     MinWidth="140"
                                                     Padding="18,0"
                                                     CornerRadius="9"
-                                                    Click="StartStopButton_Click">
-                                                <StackPanel Orientation="Horizontal"
-                                                           >
+                                                    Click="StartStopButton_Click"
+                                                    Margin="12,0,0,0">
+                                                <StackPanel Orientation="Horizontal">
                                                     <ui:FontIcon x:Name="StartStopIcon"
-                                                              Glyph="&#xE768;"
-                                                              FontFamily="{DynamicResource SymbolThemeFontFamily}"
-                                                              FontSize="15"
-                                                              Foreground="{Binding Foreground, ElementName=StartStopButton}"/>
+                                                            Glyph="&#59240;"
+                                                            FontFamily="{DynamicResource SymbolThemeFontFamily}"
+                                                            FontSize="15"
+                                                            Foreground="{Binding Foreground, ElementName=StartStopButton}"/>
                                                     <TextBlock x:Name="StartStopText"
-                                                               Text="Start Replay"
-                                                               FontSize="14"
-                                                               FontWeight="SemiBold"
-                                                               VerticalAlignment="Center"
-                                                               Foreground="{Binding Foreground, ElementName=StartStopButton}"/>
+                                                            Text="Start Replay"
+                                                            FontSize="14"
+                                                            FontWeight="SemiBold"
+                                                            VerticalAlignment="Center"
+                                                            Foreground="{Binding Foreground, ElementName=StartStopButton}"
+                                                            Margin="8,0,0,0"/>
                                                 </StackPanel>
                                             </ui:Button>
                                         </StackPanel>
@@ -392,9 +473,8 @@
                         </Border>
 
                         <Grid x:Name="StatsRow"
-                              Grid.Row="1"
-                              Margin="0,16,0,0"
-                             >
+                                Grid.Row="1"
+                                Margin="0,16,0,0">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*"/>
                                 <ColumnDefinition Width="*"/>
@@ -420,45 +500,48 @@
                                             BorderBrush="#26FFFFFF"
                                             VerticalAlignment="Center">
                                         <ui:FontIcon x:Name="CpuIconGlyph"
-                                                  Glyph="&#xE950;"
-                                                  FontFamily="{DynamicResource SymbolThemeFontFamily}"
-                                                  FontSize="24"
-                                                  Foreground="{DynamicResource AccentBrush}"
-                                                  HorizontalAlignment="Center"
-                                                  VerticalAlignment="Center"/>
+                                                Glyph="&#59728;"
+                                                FontFamily="{DynamicResource SymbolThemeFontFamily}"
+                                                FontSize="24"
+                                                Foreground="{DynamicResource AccentBrush}"
+                                                HorizontalAlignment="Center"
+                                                VerticalAlignment="Center"/>
                                     </Border>
                                     <StackPanel Grid.Column="1"
-                                               
-                                                VerticalAlignment="Center">
+                                            VerticalAlignment="Center"
+                                            Margin="16,0,0,0">
                                         <TextBlock Text="CPU Usage"
-                                                   FontSize="13"
-                                                   Foreground="{DynamicResource StatLabelBrush}"/>
+                                                FontSize="13"
+                                                Foreground="{DynamicResource StatLabelBrush}"/>
                                         <TextBlock x:Name="CpuValueText"
-                                                   Text="&#x2014;"
-                                                   FontSize="30"
-                                                   FontWeight="SemiBold"
-                                                   Foreground="{DynamicResource TextPrimaryBrush}"/>
+                                                Text="&#8212;"
+                                                FontSize="30"
+                                                FontWeight="SemiBold"
+                                                Foreground="{DynamicResource TextPrimaryBrush}"
+                                                Margin="0,2,0,0"/>
                                         <TextBlock x:Name="CpuHintText"
-                                                   Text="overall usage"
-                                                   FontSize="12"
-                                                   Foreground="{DynamicResource StatHintBrush}"/>
+                                                Text="overall usage"
+                                                FontSize="12"
+                                                Foreground="{DynamicResource StatHintBrush}"
+                                                Margin="0,2,0,0"/>
                                     </StackPanel>
                                     <Grid x:Name="CpuSparkHost"
-                                          Grid.Column="2"
-                                          HorizontalAlignment="Stretch"
-                                          VerticalAlignment="Stretch"
-                                          SizeChanged="SparkHost_SizeChanged">
+                                            Grid.Column="2"
+                                            HorizontalAlignment="Stretch"
+                                            VerticalAlignment="Stretch"
+                                            SizeChanged="SparkHost_SizeChanged"
+                                            Margin="16,0,0,0">
                                         <Polygon x:Name="CpuSparkArea"
-                                                 Opacity="0.18"
-                                                 Fill="{DynamicResource AccentBrush}"
-                                                 HorizontalAlignment="Left"
-                                                 VerticalAlignment="Top"/>
+                                                Opacity="0.18"
+                                                Fill="{DynamicResource AccentBrush}"
+                                                HorizontalAlignment="Left"
+                                                VerticalAlignment="Top"/>
                                         <Polyline x:Name="CpuSparkLine"
-                                                  Stroke="{DynamicResource AccentBrush}"
-                                                  StrokeThickness="2"
-                                                  StrokeLineJoin="Round"
-                                                  HorizontalAlignment="Left"
-                                                  VerticalAlignment="Top"/>
+                                                Stroke="{DynamicResource AccentBrush}"
+                                                StrokeThickness="2"
+                                                StrokeLineJoin="Round"
+                                                HorizontalAlignment="Left"
+                                                VerticalAlignment="Top"/>
                                     </Grid>
                                 </Grid>
                             </Border>
@@ -468,7 +551,8 @@
                                     Style="{StaticResource StatCard}"
                                     MinHeight="0"
                                     Padding="20,14"
-                                    VerticalAlignment="Stretch">
+                                    VerticalAlignment="Stretch"
+                                    Margin="16,0,0,0">
                                 <Grid>
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="Auto"/>
@@ -483,45 +567,48 @@
                                             BorderBrush="#26FFFFFF"
                                             VerticalAlignment="Center">
                                         <ui:FontIcon x:Name="RamIconGlyph"
-                                                  Glyph="&#xEEA0;"
-                                                  FontFamily="{DynamicResource SymbolThemeFontFamily}"
-                                                  FontSize="24"
-                                                  Foreground="{DynamicResource AccentBrush}"
-                                                  HorizontalAlignment="Center"
-                                                  VerticalAlignment="Center"/>
+                                                Glyph="&#61088;"
+                                                FontFamily="{DynamicResource SymbolThemeFontFamily}"
+                                                FontSize="24"
+                                                Foreground="{DynamicResource AccentBrush}"
+                                                HorizontalAlignment="Center"
+                                                VerticalAlignment="Center"/>
                                     </Border>
                                     <StackPanel Grid.Column="1"
-                                               
-                                                VerticalAlignment="Center">
+                                            VerticalAlignment="Center"
+                                            Margin="16,0,0,0">
                                         <TextBlock Text="Memory Usage"
-                                                   FontSize="13"
-                                                   Foreground="{DynamicResource StatLabelBrush}"/>
+                                                FontSize="13"
+                                                Foreground="{DynamicResource StatLabelBrush}"/>
                                         <TextBlock x:Name="RamValueText"
-                                                   Text="&#x2014;"
-                                                   FontSize="30"
-                                                   FontWeight="SemiBold"
-                                                   Foreground="{DynamicResource TextPrimaryBrush}"/>
+                                                Text="&#8212;"
+                                                FontSize="30"
+                                                FontWeight="SemiBold"
+                                                Foreground="{DynamicResource TextPrimaryBrush}"
+                                                Margin="0,2,0,0"/>
                                         <TextBlock x:Name="RamHintText"
-                                                   Text="memory in use"
-                                                   FontSize="12"
-                                                   Foreground="{DynamicResource StatHintBrush}"/>
+                                                Text="memory in use"
+                                                FontSize="12"
+                                                Foreground="{DynamicResource StatHintBrush}"
+                                                Margin="0,2,0,0"/>
                                     </StackPanel>
                                     <Grid x:Name="RamSparkHost"
-                                          Grid.Column="2"
-                                          HorizontalAlignment="Stretch"
-                                          VerticalAlignment="Stretch"
-                                          SizeChanged="SparkHost_SizeChanged">
+                                            Grid.Column="2"
+                                            HorizontalAlignment="Stretch"
+                                            VerticalAlignment="Stretch"
+                                            SizeChanged="SparkHost_SizeChanged"
+                                            Margin="16,0,0,0">
                                         <Polygon x:Name="RamSparkArea"
-                                                 Opacity="0.18"
-                                                 Fill="{DynamicResource AccentBrush}"
-                                                 HorizontalAlignment="Left"
-                                                 VerticalAlignment="Top"/>
+                                                Opacity="0.18"
+                                                Fill="{DynamicResource AccentBrush}"
+                                                HorizontalAlignment="Left"
+                                                VerticalAlignment="Top"/>
                                         <Polyline x:Name="RamSparkLine"
-                                                  Stroke="{DynamicResource AccentBrush}"
-                                                  StrokeThickness="2"
-                                                  StrokeLineJoin="Round"
-                                                  HorizontalAlignment="Left"
-                                                  VerticalAlignment="Top"/>
+                                                Stroke="{DynamicResource AccentBrush}"
+                                                StrokeThickness="2"
+                                                StrokeLineJoin="Round"
+                                                HorizontalAlignment="Left"
+                                                VerticalAlignment="Top"/>
                                     </Grid>
                                 </Grid>
                             </Border>
@@ -529,173 +616,259 @@
                     </Grid>
 
                     <Grid x:Name="GalleryPage"
-                          Visibility="Collapsed">
+                            Visibility="Collapsed">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="*"/>
                         </Grid.RowDefinitions>
 
                         <Grid x:Name="GalleryHeader"
-                              Margin="0,0,0,14">
+                                Margin="0,0,0,14">
                             <TextBlock Text="Gallery"
-                                       Style="{StaticResource Title}"
-                                       VerticalAlignment="Center"/>
+                                    Style="{StaticResource Title}"
+                                    VerticalAlignment="Center"/>
                             <TextBlock x:Name="GalleryCountText"
-                                       Style="{StaticResource Caption}"
-                                       HorizontalAlignment="Right"
-                                       VerticalAlignment="Center"/>
+                                    Style="{StaticResource Caption}"
+                                    HorizontalAlignment="Right"
+                                    VerticalAlignment="Center"/>
                         </Grid>
 
                         <Grid x:Name="GalleryBody"
-                              Grid.Row="1">
-                            <ui:VirtualizingGridView x:Name="GalleryGrid"
-                                      SelectionMode="Single"
-                                     
-                                      SelectionChanged="GalleryGrid_SelectionChanged"
-                                      Padding="8,8,10,8">
-                                <ui:VirtualizingGridView.ItemContainerStyle>
-                                    <Style TargetType="ListViewItem">
+                                Grid.Row="1">
+                            <ListBox x:Name="GalleryGrid"
+                                    SelectionMode="Single"
+                                    Padding="8,8,10,8"
+                                    Background="Transparent"
+                                    BorderThickness="0"
+                                    ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                    ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                    VirtualizingPanel.IsVirtualizing="True"
+                                    VirtualizingPanel.ScrollUnit="Pixel"
+                                    ScrollViewer.CanContentScroll="True"
+                                    SelectionChanged="GalleryGrid_SelectionChanged">
+                                <ListBox.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <ui:VirtualizingWrapPanel ItemSize="266,156"
+                                                SpacingMode="None"/>
+                                    </ItemsPanelTemplate>
+                                </ListBox.ItemsPanel>
+                                <ListBox.ItemContainerStyle>
+                                    <Style TargetType="ListBoxItem">
                                         <Setter Property="Margin"
                                                 Value="0,0,14,14"/>
                                         <Setter Property="Padding"
                                                 Value="0"/>
+                                        <Setter Property="Focusable"
+                                                Value="False"/>
+                                        <Setter Property="Template">
+                                            <Setter.Value>
+                                                <ControlTemplate TargetType="ListBoxItem">
+                                                    <ContentPresenter/>
+                                                </ControlTemplate>
+                                            </Setter.Value>
+                                        </Setter>
                                     </Style>
-                                </ui:VirtualizingGridView.ItemContainerStyle>
-                                <ui:VirtualizingGridView.ItemTemplate>
+                                </ListBox.ItemContainerStyle>
+                                <ListBox.ItemTemplate>
                                     <DataTemplate>
                                         <Border x:Name="CardRoot"
-                                              Width="252"
-                                              Height="142"
-                                              Background="{DynamicResource SettingsAreaBrush}"
-                                              BorderBrush="{DynamicResource SurfaceBorderBrush}"
-                                              BorderThickness="1"
-                                              CornerRadius="10">
-                                          <Grid>
-                                            <Border Background="{DynamicResource HoverBrush}"
-                                                    CornerRadius="10">
-                                                <ui:FontIcon Glyph="&#xE714;"
-                                                          FontFamily="{DynamicResource SymbolThemeFontFamily}"
-                                                          FontSize="28"
-                                                          Opacity="0.35"/>
-                                            </Border>
-                                            <Border x:Name="ThumbImage"
-                                                    CornerRadius="10">
-                                                <Border.Background>
-                                                    <ImageBrush ImageSource="{Binding Thumbnail}"
+                                                Width="252"
+                                                Height="142"
+                                                CornerRadius="10"
+                                                Background="{DynamicResource SettingsAreaBrush}"
+                                                BorderBrush="{DynamicResource SurfaceBorderBrush}"
+                                                BorderThickness="1"
+                                                RenderTransformOrigin="0.5,0.5"
+                                                Loaded="CardRoot_Loaded">
+                                            <Border.RenderTransform>
+                                                <ScaleTransform x:Name="CardScale"/>
+                                            </Border.RenderTransform>
+                                            <Grid>
+                                                <Border Background="{DynamicResource HoverBrush}"
+                                                        CornerRadius="10">
+                                                    <ui:FontIcon Glyph="&#59156;"
+                                                            FontFamily="{DynamicResource SymbolThemeFontFamily}"
+                                                            FontSize="28"
+                                                            Opacity="0.35"/>
+                                                </Border>
+                                                <Border x:Name="ThumbImage"
+                                                        CornerRadius="10">
+                                                    <Border.Background>
+                                                        <ImageBrush ImageSource="{Binding Thumbnail}"
                                                                 Stretch="UniformToFill"/>
-                                                </Border.Background>
-                                            </Border>
-                                            <Border Width="44"
-                                                    Height="44"
-                                                    CornerRadius="22"
-                                                    Background="#80000000"
-                                                    HorizontalAlignment="Center"
-                                                    VerticalAlignment="Center">
-                                                <ui:FontIcon Glyph="&#xE768;"
-                                                          FontFamily="{DynamicResource SymbolThemeFontFamily}"
-                                                          FontSize="16"
-                                                          Foreground="White"/>
-                                            </Border>
-
-                                            <Grid x:Name="CardDetails"
-                                                    Opacity="0"
-                                                    IsHitTestVisible="False">
-                                                <Border Background="#99000000"
-                                                        CornerRadius="6"
-                                                        Padding="6,2"
-                                                        Margin="8"
-                                                        HorizontalAlignment="Left"
-                                                        VerticalAlignment="Top">
-                                                    <TextBlock Text="{Binding SizeText}"
-                                                               FontSize="12"
-                                                               Foreground="White"/>
+                                                    </Border.Background>
                                                 </Border>
-                                                <Border Background="#99000000"
-                                                        CornerRadius="6"
-                                                        Padding="6,2"
-                                                        Margin="8"
-                                                        HorizontalAlignment="Right"
-                                                        VerticalAlignment="Top">
-                                                    <TextBlock Text="{Binding Fps}"
-                                                               FontSize="12"
-                                                               Foreground="White"/>
+                                                <Border Width="44"
+                                                        Height="44"
+                                                        CornerRadius="22"
+                                                        Background="#80000000"
+                                                        HorizontalAlignment="Center"
+                                                        VerticalAlignment="Center">
+                                                    <ui:FontIcon Glyph="&#59240;"
+                                                            FontFamily="{DynamicResource SymbolThemeFontFamily}"
+                                                            FontSize="16"
+                                                            Foreground="White"/>
                                                 </Border>
-                                                <Border Background="#99000000"
-                                                        CornerRadius="6"
-                                                        Padding="6,2"
-                                                        Margin="8"
-                                                        HorizontalAlignment="Right"
-                                                        VerticalAlignment="Bottom">
-                                                    <TextBlock Text="{Binding DurationText}"
-                                                               FontSize="12"
-                                                               Foreground="White"/>
-                                                </Border>
-                                                <StackPanel Orientation="Horizontal"
-                                                           
+                                                <Grid x:Name="CardDetails"
+                                                        Opacity="0"
+                                                        IsHitTestVisible="False">
+                                                    <Border Background="#99000000"
+                                                            CornerRadius="6"
+                                                            Padding="6,2"
+                                                            Margin="8"
+                                                            HorizontalAlignment="Left"
+                                                            VerticalAlignment="Top">
+                                                        <TextBlock Text="{Binding SizeText}"
+                                                                FontSize="12"
+                                                                Foreground="White"/>
+                                                    </Border>
+                                                    <Border Background="#99000000"
+                                                            CornerRadius="6"
+                                                            Padding="6,2"
+                                                            Margin="8"
+                                                            HorizontalAlignment="Right"
+                                                            VerticalAlignment="Top">
+                                                        <TextBlock Text="{Binding Fps}"
+                                                                FontSize="12"
+                                                                Foreground="White"/>
+                                                    </Border>
+                                                    <Border Background="#99000000"
+                                                            CornerRadius="6"
+                                                            Padding="6,2"
+                                                            Margin="8"
+                                                            HorizontalAlignment="Right"
+                                                            VerticalAlignment="Bottom">
+                                                        <TextBlock Text="{Binding DurationText}"
+                                                                FontSize="12"
+                                                                Foreground="White"/>
+                                                    </Border>
+                                                    <StackPanel Orientation="Horizontal"
                                                             Margin="8"
                                                             HorizontalAlignment="Left"
                                                             VerticalAlignment="Bottom">
-                                                    <ui:Button Width="34"
-                                                            Height="34"
-                                                            Padding="0"
-                                                            CornerRadius="17"
-                                                            Background="#A6000000"
-                                                            Foreground="White"
-                                                            Tag="{Binding}"
-                                                            ToolTipService.ToolTip="More options"
-                                                            Click="CardMoreButton_Click">
-                                                        <ui:FontIcon Glyph="&#xE712;"
-                                                                FontSize="14"/>
-                                                    </ui:Button>
-                                                    <ui:Button Width="34"
-                                                            Height="34"
-                                                            Padding="0"
-                                                            CornerRadius="17"
-                                                            Background="#A6000000"
-                                                            Foreground="White"
-                                                            Tag="{Binding}"
-                                                            ToolTipService.ToolTip="Show in File Explorer"
-                                                            Click="CardOpenFolderButton_Click">
-                                                        <ui:FontIcon Glyph="&#xE838;"
-                                                                FontSize="14"/>
-                                                    </ui:Button>
-                                                </StackPanel>
+                                                        <ui:Button Width="34"
+                                                                Height="34"
+                                                                Padding="0"
+                                                                CornerRadius="17"
+                                                                Background="#A6000000"
+                                                                Foreground="White"
+                                                                Tag="{Binding}"
+                                                                ToolTipService.ToolTip="More options"
+                                                                Click="CardMoreButton_Click">
+                                                            <ui:FontIcon Glyph="&#59154;"
+                                                                    FontFamily="{DynamicResource SymbolThemeFontFamily}"
+                                                                    FontSize="14"/>
+                                                        </ui:Button>
+                                                        <ui:Button Width="34"
+                                                                Height="34"
+                                                                Padding="0"
+                                                                CornerRadius="17"
+                                                                Background="#A6000000"
+                                                                Foreground="White"
+                                                                Tag="{Binding}"
+                                                                Margin="6,0,0,0"
+                                                                ToolTipService.ToolTip="Show in File Explorer"
+                                                                Click="CardOpenFolderButton_Click">
+                                                            <ui:FontIcon Glyph="&#59448;"
+                                                                    FontFamily="{DynamicResource SymbolThemeFontFamily}"
+                                                                    FontSize="14"/>
+                                                        </ui:Button>
+                                                    </StackPanel>
+                                                </Grid>
                                             </Grid>
-                                          </Grid>
                                         </Border>
+                                        <DataTemplate.Triggers>
+                                            <Trigger SourceName="CardRoot"
+                                                    Property="IsMouseOver"
+                                                    Value="True">
+                                                <Setter TargetName="CardDetails"
+                                                        Property="IsHitTestVisible"
+                                                        Value="True"/>
+                                                <Trigger.EnterActions>
+                                                    <BeginStoryboard>
+                                                        <Storyboard>
+                                                            <DoubleAnimation Storyboard.TargetName="CardScale"
+                                                                    Storyboard.TargetProperty="ScaleX"
+                                                                    To="1.03"
+                                                                    Duration="0:0:0.14">
+                                                                <DoubleAnimation.EasingFunction>
+                                                                    <CubicEase EasingMode="EaseOut"/>
+                                                                </DoubleAnimation.EasingFunction>
+                                                            </DoubleAnimation>
+                                                            <DoubleAnimation Storyboard.TargetName="CardScale"
+                                                                    Storyboard.TargetProperty="ScaleY"
+                                                                    To="1.03"
+                                                                    Duration="0:0:0.14">
+                                                                <DoubleAnimation.EasingFunction>
+                                                                    <CubicEase EasingMode="EaseOut"/>
+                                                                </DoubleAnimation.EasingFunction>
+                                                            </DoubleAnimation>
+                                                            <DoubleAnimation Storyboard.TargetName="CardDetails"
+                                                                    Storyboard.TargetProperty="Opacity"
+                                                                    To="1"
+                                                                    Duration="0:0:0.11"/>
+                                                        </Storyboard>
+                                                    </BeginStoryboard>
+                                                </Trigger.EnterActions>
+                                                <Trigger.ExitActions>
+                                                    <BeginStoryboard>
+                                                        <Storyboard>
+                                                            <DoubleAnimation Storyboard.TargetName="CardScale"
+                                                                    Storyboard.TargetProperty="ScaleX"
+                                                                    To="1"
+                                                                    Duration="0:0:0.16">
+                                                                <DoubleAnimation.EasingFunction>
+                                                                    <CubicEase EasingMode="EaseOut"/>
+                                                                </DoubleAnimation.EasingFunction>
+                                                            </DoubleAnimation>
+                                                            <DoubleAnimation Storyboard.TargetName="CardScale"
+                                                                    Storyboard.TargetProperty="ScaleY"
+                                                                    To="1"
+                                                                    Duration="0:0:0.16">
+                                                                <DoubleAnimation.EasingFunction>
+                                                                    <CubicEase EasingMode="EaseOut"/>
+                                                                </DoubleAnimation.EasingFunction>
+                                                            </DoubleAnimation>
+                                                            <DoubleAnimation Storyboard.TargetName="CardDetails"
+                                                                    Storyboard.TargetProperty="Opacity"
+                                                                    To="0"
+                                                                    Duration="0:0:0.09"/>
+                                                        </Storyboard>
+                                                    </BeginStoryboard>
+                                                </Trigger.ExitActions>
+                                            </Trigger>
+                                        </DataTemplate.Triggers>
                                     </DataTemplate>
-                                </ui:VirtualizingGridView.ItemTemplate>
-                            </ui:VirtualizingGridView>
-
+                                </ListBox.ItemTemplate>
+                            </ListBox>
                             <StackPanel x:Name="GalleryEmptyState"
-                                        Visibility="Collapsed"
-                                        HorizontalAlignment="Center"
-                                        VerticalAlignment="Center"
-                                        Orientation="Horizontal"
-                                       >
+                                    Visibility="Collapsed"
+                                    HorizontalAlignment="Center"
+                                    VerticalAlignment="Center"
+                                    Orientation="Horizontal">
                                 <Image Width="42"
-                                       Height="42"
-                                       Source="assets/icons/icon.png"
-                                       Stretch="Uniform"
-                                       Opacity="0.38"
-                                       VerticalAlignment="Center"/>
+                                        Height="42"
+                                        Source="pack://siteoforigin:,,,/assets/icons/icon.png"
+                                        Stretch="Uniform"
+                                        Opacity="0.38"
+                                        VerticalAlignment="Center"/>
                                 <TextBlock Text="No Clips Yet"
-                                           Style="{StaticResource Title}"
-                                           Opacity="0.55"
-                                           VerticalAlignment="Center"/>
+                                        Style="{StaticResource Title}"
+                                        Opacity="0.55"
+                                        VerticalAlignment="Center"
+                                        Margin="14,0,0,0"/>
                             </StackPanel>
                         </Grid>
                     </Grid>
 
                     <Grid x:Name="ViewerPage"
-                          Visibility="Collapsed">
+                            Visibility="Collapsed">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="*"/>
                         </Grid.RowDefinitions>
 
                         <ui:Button x:Name="ViewerBackButton"
-                               
                                 Style="{StaticResource BaseButtonStyle}"
                                 Height="36"
                                 Padding="14,0"
@@ -703,22 +876,21 @@
                                 HorizontalAlignment="Left"
                                 Click="ViewerBackButton_Click">
                             <StackPanel Orientation="Horizontal"
-                                       
-                                        VerticalAlignment="Center">
-                                <ui:FontIcon Glyph="&#xE72B;"
-                                          FontFamily="{DynamicResource SymbolThemeFontFamily}"
-                                          FontSize="14"
-                                          Foreground="{Binding Foreground, ElementName=ViewerBackButton}"/>
+                                    VerticalAlignment="Center">
+                                <ui:FontIcon Glyph="&#59179;"
+                                        FontFamily="{DynamicResource SymbolThemeFontFamily}"
+                                        FontSize="14"
+                                        Foreground="{Binding Foreground, ElementName=ViewerBackButton}"/>
                                 <TextBlock Text="Back to gallery"
-                                           VerticalAlignment="Center"
-                                           Foreground="{Binding Foreground, ElementName=ViewerBackButton}"/>
+                                        VerticalAlignment="Center"
+                                        Foreground="{Binding Foreground, ElementName=ViewerBackButton}"
+                                        Margin="8,0,0,0"/>
                             </StackPanel>
                         </ui:Button>
 
                         <Grid x:Name="PlayerViewport"
-                              Grid.Row="1"
-                              SizeChanged="PlayerViewport_SizeChanged"
-                             >
+                                Grid.Row="1"
+                                SizeChanged="PlayerViewport_SizeChanged">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*"/>
                             </Grid.ColumnDefinitions>
@@ -730,76 +902,85 @@
                                     HorizontalAlignment="Center">
                                 <Grid x:Name="InlinePlayerHost">
                                     <Image x:Name="ViewerPoster"
-                                           Stretch="Uniform"
-                                           IsHitTestVisible="False"/>
+                                            Stretch="Uniform"
+                                            IsHitTestVisible="False"/>
                                 </Grid>
                             </Border>
                         </Grid>
                     </Grid>
 
                     <ScrollViewer x:Name="GamesPage"
-                                  Visibility="Collapsed"
-                                  VerticalScrollBarVisibility="Auto"
-                                  HorizontalScrollBarVisibility="Disabled">
-                        <StackPanel
-                                    MaxWidth="980"
-                                    HorizontalAlignment="Stretch">
+                            Visibility="Collapsed"
+                            VerticalScrollBarVisibility="Auto"
+                            HorizontalScrollBarVisibility="Disabled">
+                        <StackPanel MaxWidth="980"
+                                HorizontalAlignment="Stretch">
                             <Grid>
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*"/>
                                     <ColumnDefinition Width="Auto"/>
                                 </Grid.ColumnDefinitions>
                                 <TextBlock Text="Games"
-                                           FontSize="28"
-                                           FontWeight="SemiBold"
-                                           VerticalAlignment="Center"/>
+                                        FontSize="28"
+                                        FontWeight="SemiBold"
+                                        VerticalAlignment="Center"/>
                                 <ui:Button Grid.Column="1"
                                         Click="AddGame_Click">
-                                    <StackPanel Orientation="Horizontal"
-                                               >
-                                        <ui:FontIcon Glyph="&#xE710;"
-                                                  FontSize="14"/>
-                                        <TextBlock Text="Add"/>
+                                    <StackPanel Orientation="Horizontal">
+                                        <ui:FontIcon Glyph="&#59152;"
+                                                FontSize="14"
+                                                FontFamily="{DynamicResource SymbolThemeFontFamily}"/>
+                                        <TextBlock Text="Add"
+                                                Margin="8,0,0,0"/>
                                     </StackPanel>
                                 </ui:Button>
                             </Grid>
                             <TextBlock Text="Capture requires a match in the built-in or custom games list and a window in foreground focus. Add custom apps by executable name, with an optional title keyword."
-                                       TextWrapping="Wrap"
-                                       Opacity="0.75"/>
+                                    TextWrapping="Wrap"
+                                    Opacity="0.75"
+                                    Margin="0,16,0,0"/>
                             <ui:InfoBar x:Name="GameInfoBar1"
-                                     IsOpen="True"
-                                     IsClosable="True"
-                                     Severity="Informational"
-                                     Title="Focus controls capture"
-                                     Message="Killing The Game Clears The Buffer Automatically And Changing Focus To Any Other App Will Pause The Buffer. The Buffer Will Be Unpaused When You Return Focus On The Same Game.">
+                                    IsOpen="True"
+                                    IsClosable="False"
+                                    Severity="Informational"
+                                    Title="Focus controls capture"
+                                    Message="Killing The Game Clears The Buffer Automatically And Changing Focus To Any Other App Will Pause The Buffer. The Buffer Will Be Unpaused When You Return Focus On The Same Game."
+                                    Margin="0,16,0,0">
+                                <ui:Button Content="Dismiss"
+                                        Click="DismissGameInfoBar1_Click"/>
                             </ui:InfoBar>
                             <ui:InfoBar x:Name="GameInfoBar2"
-                                     IsOpen="True"
-                                     IsClosable="True"
-                                     Severity="Informational"
-                                     Title="Built-in games">
+                                    IsOpen="True"
+                                    IsClosable="False"
+                                    Severity="Informational"
+                                    Title="Built-in games"
+                                    Margin="0,16,0,0">
+                                <ui:Button Content="Dismiss"
+                                        Click="DismissGameInfoBar2_Click"/>
                             </ui:InfoBar>
                             <TextBlock Text="Your apps"
-                                       FontSize="18"
-                                       FontWeight="SemiBold"/>
+                                    FontSize="18"
+                                    FontWeight="SemiBold"
+                                    Margin="0,16,0,0"/>
                             <StackPanel x:Name="GamesEmptyState"
-                                        HorizontalAlignment="Center"
-                                        Orientation="Horizontal"
-                                       
-                                        Margin="0,8,0,8">
-                                <ui:FontIcon Glyph="&#xE7FC;"
-                                          FontFamily="{DynamicResource SymbolThemeFontFamily}"
-                                          FontSize="42"
-                                          Foreground="{DynamicResource TextMutedBrush}"
-                                          Opacity="0.38"
-                                          VerticalAlignment="Center"/>
+                                    HorizontalAlignment="Center"
+                                    Orientation="Horizontal"
+                                    Margin="0,24,0,8">
+                                <ui:FontIcon Glyph="&#59388;"
+                                        FontFamily="{DynamicResource SymbolThemeFontFamily}"
+                                        FontSize="42"
+                                        Foreground="{DynamicResource TextMutedBrush}"
+                                        Opacity="0.38"
+                                        VerticalAlignment="Center"/>
                                 <TextBlock Text="No Custom Games Yet"
-                                           Style="{StaticResource Title}"
-                                           Opacity="0.55"
-                                           TextWrapping="Wrap"
-                                           VerticalAlignment="Center"/>
+                                        Style="{StaticResource Title}"
+                                        Opacity="0.55"
+                                        TextWrapping="Wrap"
+                                        VerticalAlignment="Center"
+                                        Margin="14,0,0,0"/>
                             </StackPanel>
-                            <ItemsControl x:Name="CustomGamesList">
+                            <ItemsControl x:Name="CustomGamesList"
+                                    Margin="0,16,0,0">
                                 <ItemsControl.ItemTemplate>
                                     <DataTemplate>
                                         <Border Style="{StaticResource SettingsCard}"
@@ -811,16 +992,18 @@
                                                 </Grid.ColumnDefinitions>
                                                 <StackPanel>
                                                     <TextBlock Text="{Binding Name}"
-                                                               FontWeight="SemiBold"/>
+                                                            FontWeight="SemiBold"/>
                                                     <TextBlock Text="{Binding Description}"
-                                                               TextWrapping="Wrap"
-                                                               Opacity="0.7"/>
+                                                            TextWrapping="Wrap"
+                                                            Opacity="0.7"
+                                                            Margin="0,4,0,0"/>
                                                 </StackPanel>
                                                 <ui:Button Grid.Column="1"
                                                         Content="Remove"
                                                         Tag="{Binding}"
                                                         Click="RemoveGame_Click"
-                                                        VerticalAlignment="Center"/>
+                                                        VerticalAlignment="Center"
+                                                        Margin="12,0,0,0"/>
                                             </Grid>
                                         </Border>
                                     </DataTemplate>
@@ -830,20 +1013,20 @@
                     </ScrollViewer>
 
                     <ScrollViewer x:Name="UpdatesPage"
-                                  Visibility="Collapsed"
-                                  VerticalScrollBarVisibility="Auto"
-                                  HorizontalScrollBarVisibility="Disabled">
+                            Visibility="Collapsed"
+                            VerticalScrollBarVisibility="Auto"
+                            HorizontalScrollBarVisibility="Disabled">
                         <StackPanel x:Name="UpdatesContent"
-                                   
-                                    MaxWidth="980"
-                                    HorizontalAlignment="Stretch">
+                                MaxWidth="980"
+                                HorizontalAlignment="Stretch">
                             <StackPanel>
                                 <TextBlock Text="Updates"
-                                           FontSize="28"
-                                           FontWeight="SemiBold"/>
+                                        FontSize="28"
+                                        FontWeight="SemiBold"/>
                             </StackPanel>
                             <Border Style="{StaticResource SettingsCard}"
-                                    Padding="24">
+                                    Padding="24"
+                                    Margin="0,20,0,0">
                                 <StackPanel>
                                     <Grid>
                                         <Grid.ColumnDefinitions>
@@ -855,31 +1038,32 @@
                                                 Width="56"
                                                 Height="56">
                                             <ui:FontIcon x:Name="UpdateIcon"
-                                                    Glyph="&#xE895;"
-                                                      FontFamily="{DynamicResource SymbolThemeFontFamily}"
-                                                      FontSize="26"
-                                                      Foreground="{DynamicResource AccentBrush}"
-                                                      RenderTransformOrigin="0.5,0.5">
+                                                    Glyph="&#59541;"
+                                                    FontFamily="{DynamicResource SymbolThemeFontFamily}"
+                                                    FontSize="26"
+                                                    Foreground="{DynamicResource AccentBrush}"
+                                                    RenderTransformOrigin="0.5,0.5">
                                                 <ui:FontIcon.RenderTransform>
                                                     <RotateTransform x:Name="UpdateIconRotation"/>
                                                 </ui:FontIcon.RenderTransform>
                                             </ui:FontIcon>
                                         </Border>
                                         <StackPanel Grid.Column="1"
-                                                   
-                                                    VerticalAlignment="Center">
+                                                VerticalAlignment="Center"
+                                                Margin="18,0,0,0">
                                             <TextBlock x:Name="UpdateHeading"
-                                                       Text="Keep Instant Replay up to date"
-                                                       FontSize="20"
-                                                       FontWeight="SemiBold"
-                                                       TextWrapping="Wrap"/>
+                                                    Text="Keep Instant Replay up to date"
+                                                    FontSize="20"
+                                                    FontWeight="SemiBold"
+                                                    TextWrapping="Wrap"/>
                                             <TextBlock x:Name="UpdateDescription"
-                                                       TextWrapping="Wrap"
-                                                       Foreground="{DynamicResource TextMutedBrush}"/>
+                                                    TextWrapping="Wrap"
+                                                    Foreground="{DynamicResource TextMutedBrush}"
+                                                    Margin="0,5,0,0"/>
                                         </StackPanel>
                                     </Grid>
                                     <StackPanel Orientation="Horizontal"
-                                               >
+                                            Margin="0,18,0,0">
                                         <ui:Button x:Name="CheckUpdatesButton"
                                                 Content="Check for updates"
                                                 Click="CheckUpdates_Click"/>
@@ -887,164 +1071,173 @@
                                                 Content="Download and install"
                                                 Style="{StaticResource AccentButtonStyle}"
                                                 Visibility="Collapsed"
-                                                Click="InstallUpdate_Click"/>
+                                                Click="InstallUpdate_Click"
+                                                Margin="12,0,0,0"/>
                                         <ui:Button x:Name="CancelUpdateButton"
                                                 Content="Cancel download"
                                                 Visibility="Collapsed"
-                                                Click="CancelUpdate_Click"/>
+                                                Click="CancelUpdate_Click"
+                                                Margin="12,0,0,0"/>
                                     </StackPanel>
                                     <ProgressBar x:Name="UpdateProgress"
-                                                 Visibility="Collapsed"
-                                                 Maximum="100"/>
+                                            Visibility="Collapsed"
+                                            Maximum="100"
+                                            Margin="0,18,0,0"/>
                                     <ui:InfoBar x:Name="UpdateStatusBar"
-                                             IsOpen="False"
-                                             IsClosable="True"/>
-                                    <Grid>
+                                            IsOpen="False"
+                                            IsClosable="False"
+                                            Margin="0,18,0,0"/>
+                                    <Grid Margin="0,18,0,0">
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="*"/>
                                             <ColumnDefinition Width="Auto"/>
                                         </Grid.ColumnDefinitions>
                                         <TextBlock x:Name="InstalledVersionLabel"
-                                                   Foreground="{DynamicResource TextMutedBrush}"/>
+                                                Foreground="{DynamicResource TextMutedBrush}"/>
                                         <TextBlock x:Name="LastUpdateCheckLabel"
-                                                   Grid.Column="1"
-                                                   Foreground="{DynamicResource TextMutedBrush}"/>
+                                                Grid.Column="1"
+                                                Foreground="{DynamicResource TextMutedBrush}"/>
                                     </Grid>
                                 </StackPanel>
                             </Border>
                             <Border x:Name="ReleaseNotesCard"
                                     Style="{StaticResource SettingsCard}"
-                                    Visibility="Collapsed">
+                                    Visibility="Collapsed"
+                                    Margin="0,20,0,0">
                                 <StackPanel>
                                     <TextBlock Text="What's new"
-                                               FontSize="18"
-                                               FontWeight="SemiBold"/>
-                                    <TextBlock x:Name="UpdateReleaseNotes"
-                                               TextWrapping="Wrap"
-                                              />
+                                            FontSize="18"
+                                            FontWeight="SemiBold"/>
+                                    <TextBox x:Name="UpdateReleaseNotes"
+                                            TextWrapping="Wrap"
+                                            IsReadOnly="True"
+                                            BorderThickness="0"
+                                            Background="Transparent"
+                                            Padding="0"
+                                            Margin="0,12,0,0"/>
                                 </StackPanel>
                             </Border>
                         </StackPanel>
                     </ScrollViewer>
 
                     <ScrollViewer x:Name="SettingsPage"
-                                  Visibility="Collapsed"
-                                  VerticalScrollBarVisibility="Auto"
-                                  Padding="0,0,12,0">
-                        <StackPanel x:Name="SettingsContent"
-                                   >
+                            Visibility="Collapsed"
+                            VerticalScrollBarVisibility="Auto"
+                            Padding="0,0,12,0">
+                        <StackPanel x:Name="SettingsContent">
                             <Border Style="{StaticResource SettingsCard}">
                                 <StackPanel>
                                     <StackPanel Orientation="Horizontal"
-                                               
-                                                Margin="0,0,0,12">
-                                        <ui:FontIcon Glyph="&#xE90F;"
-                                                  FontFamily="{DynamicResource SymbolThemeFontFamily}"
-                                                  FontSize="16"
-                                                  Foreground="{DynamicResource ErrorBrush}"/>
+                                            Margin="0,0,0,12">
+                                        <ui:FontIcon Glyph="&#59663;"
+                                                FontFamily="{DynamicResource SymbolThemeFontFamily}"
+                                                FontSize="16"
+                                                Foreground="{DynamicResource ErrorBrush}"/>
                                         <TextBlock Text="Replay target"
-                                                   FontSize="14"
-                                                   FontWeight="SemiBold"
-                                                   Foreground="{DynamicResource SettingsAreaTextBrush}"/>
+                                                FontSize="14"
+                                                FontWeight="SemiBold"
+                                                Foreground="{DynamicResource SettingsAreaTextBrush}"
+                                                Margin="10,0,0,0"/>
                                     </StackPanel>
-                                    <controls:SettingRow Label="Capture target"
-                                                         Margin="0,0,0,6">
+                                    <ns0:SettingRow Label="Capture target"
+                                            Margin="0,0,0,6">
                                         <ComboBox x:Name="CaptureTargetCombo"
-                                                  HorizontalAlignment="Stretch"
-                                                  SelectionChanged="CaptureTargetCombo_SelectionChanged">
+                                                HorizontalAlignment="Stretch"
+                                                SelectionChanged="CaptureTargetCombo_SelectionChanged">
                                             <ComboBoxItem Content="Whole desktop"/>
                                             <ComboBoxItem Content="Game Capture"/>
 
                                         </ComboBox>
-                                    </controls:SettingRow>
-                                    <controls:SettingRow x:Name="CaptureMonitorRow"
-                                                         Label="Display"
-                                                         Margin="0,0,0,6">
+                                    </ns0:SettingRow>
+                                    <ns0:SettingRow x:Name="CaptureMonitorRow"
+                                            Label="Display"
+                                            Margin="0,0,0,6">
                                         <ComboBox x:Name="CaptureMonitorCombo"
-                                                  HorizontalAlignment="Stretch"
-                                                  SelectionChanged="CaptureMonitorCombo_SelectionChanged"/>
-                                    </controls:SettingRow>
-                                    <controls:SettingRow x:Name="CaptureMethodRow"
-                                                         Label="Capture method"
-                                                         ToolTipService.ToolTip="Windows Graphics Capture targets windows and supports per-window options. DXGI duplication captures the whole display."
-                                                         Margin="0,0,0,6">
+                                                HorizontalAlignment="Stretch"
+                                                SelectionChanged="CaptureMonitorCombo_SelectionChanged"/>
+                                    </ns0:SettingRow>
+                                    <ns0:SettingRow x:Name="CaptureMethodRow"
+                                            Label="Capture method"
+                                            ToolTipService.ToolTip="Windows Graphics Capture targets windows and supports per-window options. DXGI duplication captures the whole display."
+                                            Margin="0,0,0,6">
                                         <ComboBox x:Name="CaptureMethodCombo"
-                                                  HorizontalAlignment="Stretch"
-                                                  SelectionChanged="CaptureMethodCombo_SelectionChanged">
+                                                HorizontalAlignment="Stretch"
+                                                SelectionChanged="CaptureMethodCombo_SelectionChanged">
                                             <ComboBoxItem Content="DXGI duplication"/>
                                             <ComboBoxItem Content="Windows Graphics Capture"/>
                                         </ComboBox>
-                                    </controls:SettingRow>
+                                    </ns0:SettingRow>
                                     <TextBlock x:Name="CaptureOptionsNote"
-                                               Text="Show mouse cursor and Only client area affect Windows Graphics Capture only. DXGI duplication always captures the whole display."
-                                               TextWrapping="Wrap"
-                                               FontSize="12"
-                                               Foreground="{DynamicResource TextFillColorSecondaryBrush}"
-                                               Margin="0,0,0,10"/>
-                                    <controls:SettingRow Label="Show mouse cursor"
-                                                         Margin="0,0,0,6">
+                                            Text="Show mouse cursor and Only client area affect Windows Graphics Capture only. DXGI duplication always captures the whole display."
+                                            TextWrapping="Wrap"
+                                            FontSize="12"
+                                            Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                            Margin="0,0,0,10"/>
+                                    <ns0:SettingRow Label="Show mouse cursor"
+                                            Margin="0,0,0,6">
                                         <CheckBox x:Name="CaptureCursorCheck"
-                                                  AutomationProperties.Name="Show mouse cursor in recordings"
-                                                  Checked="WindowCaptureOption_Changed"
-                                                  Unchecked="WindowCaptureOption_Changed"/>
-                                    </controls:SettingRow>
-                                    <controls:SettingRow Label="Only client area"
-                                                         Margin="0,0,0,6">
+                                                AutomationProperties.Name="Show mouse cursor in recordings"
+                                                Checked="WindowCaptureOption_Changed"
+                                                Unchecked="WindowCaptureOption_Changed"/>
+                                    </ns0:SettingRow>
+                                    <ns0:SettingRow Label="Only client area"
+                                            Margin="0,0,0,6">
                                         <CheckBox x:Name="CaptureClientAreaCheck"
-                                                  AutomationProperties.Name="Capture only the client area"
-                                                  Checked="WindowCaptureOption_Changed"
-                                                  Unchecked="WindowCaptureOption_Changed"/>
-                                    </controls:SettingRow>
-                                    <controls:SettingRow Label="Capture border"
-                                                         Margin="0,0,0,6">
+                                                AutomationProperties.Name="Capture only the client area"
+                                                Checked="WindowCaptureOption_Changed"
+                                                Unchecked="WindowCaptureOption_Changed"/>
+                                    </ns0:SettingRow>
+                                    <ns0:SettingRow Label="Capture border"
+                                            Margin="0,0,0,6">
                                         <CheckBox x:Name="CaptureBorderCheck"
-                                                  IsEnabled="False"
-                                                  Checked="WindowCaptureOption_Changed"
-                                                  Unchecked="WindowCaptureOption_Changed"/>
-                                    </controls:SettingRow>
+                                                IsEnabled="False"
+                                                Checked="WindowCaptureOption_Changed"
+                                                Unchecked="WindowCaptureOption_Changed"/>
+                                    </ns0:SettingRow>
 
                                 </StackPanel>
                             </Border>
-                            <Border Style="{StaticResource SettingsCard}">
+                            <Border Style="{StaticResource SettingsCard}"
+                                    Margin="0,12,0,0">
                                 <StackPanel>
                                     <StackPanel Orientation="Horizontal"
-                                               
-                                                Margin="0,0,0,14">
-                                        <ui:FontIcon Glyph="&#xE713;"
-                                                  FontFamily="{DynamicResource SymbolThemeFontFamily}"
-                                                  FontSize="16"
-                                                  Foreground="{DynamicResource AccentBrush}"/>
+                                            Margin="0,0,0,14">
+                                        <ui:FontIcon Glyph="&#59155;"
+                                                FontFamily="{DynamicResource SymbolThemeFontFamily}"
+                                                FontSize="16"
+                                                Foreground="{DynamicResource AccentBrush}"/>
                                         <TextBlock Text="Video quality"
-                                                   FontSize="14"
-                                                   FontWeight="SemiBold"
-                                                   Foreground="{DynamicResource SettingsAreaTextBrush}"/>
+                                                FontSize="14"
+                                                FontWeight="SemiBold"
+                                                Foreground="{DynamicResource SettingsAreaTextBrush}"
+                                                Margin="10,0,0,0"/>
                                     </StackPanel>
 
-                                    <controls:SettingRow Label="Replay duration"
-                                                         Margin="0,0,0,8">
+                                    <ns0:SettingRow Label="Replay duration"
+                                            Margin="0,0,0,8">
                                         <ComboBox x:Name="DurationCombo"
-                                                  HorizontalAlignment="Stretch"
-                                                  SelectionChanged="DurationCombo_SelectionChanged">
+                                                HorizontalAlignment="Stretch"
+                                                SelectionChanged="DurationCombo_SelectionChanged">
                                             <ComboBoxItem Content="30 seconds"/>
                                             <ComboBoxItem Content="60 seconds"/>
                                             <ComboBoxItem Content="120 seconds"/>
                                         </ComboBox>
-                                    </controls:SettingRow>
-                                    <controls:SettingRow Label="Frame rate"
-                                                         Margin="0,0,0,8">
+                                    </ns0:SettingRow>
+                                    <ns0:SettingRow Label="Frame rate"
+                                            Margin="0,0,0,8">
                                         <ComboBox x:Name="FpsCombo"
-                                                  HorizontalAlignment="Stretch"
-                                                  SelectionChanged="FpsCombo_SelectionChanged">
+                                                HorizontalAlignment="Stretch"
+                                                SelectionChanged="FpsCombo_SelectionChanged">
                                             <ComboBoxItem Content="30 FPS"/>
                                             <ComboBoxItem Content="60 FPS"/>
                                             <ComboBoxItem Content="120 FPS"/>
                                         </ComboBox>
-                                    </controls:SettingRow>
-                                    <controls:SettingRow Label="Quality"
-                                                         Margin="0,0,0,8">
+                                    </ns0:SettingRow>
+                                    <ns0:SettingRow Label="Quality"
+                                            Margin="0,0,0,8">
                                         <ComboBox x:Name="QualityCombo"
-                                                  HorizontalAlignment="Stretch"
-                                                  SelectionChanged="QualityCombo_SelectionChanged">
+                                                HorizontalAlignment="Stretch"
+                                                SelectionChanged="QualityCombo_SelectionChanged">
                                             <ComboBoxItem Content="Ultra fast"/>
                                             <ComboBoxItem Content="Very fast"/>
                                             <ComboBoxItem Content="Fast"/>
@@ -1053,30 +1246,30 @@
                                             <ComboBoxItem Content="Slower"/>
                                             <ComboBoxItem Content="Slowest"/>
                                         </ComboBox>
-                                    </controls:SettingRow>
-                                    <controls:SettingRow Label="Video codec"
-                                                        Margin="0,0,0,8">
+                                    </ns0:SettingRow>
+                                    <ns0:SettingRow Label="Video codec"
+                                            Margin="0,0,0,8">
                                         <ComboBox x:Name="CodecCombo"
-                                                  HorizontalAlignment="Stretch"
-                                                  SelectionChanged="CodecCombo_SelectionChanged">
+                                                HorizontalAlignment="Stretch"
+                                                SelectionChanged="CodecCombo_SelectionChanged">
                                             <ComboBoxItem Content="H.264"/>
                                             <ComboBoxItem Content="HEVC / H.265"/>
                                             <ComboBoxItem Content="AV1"/>
                                         </ComboBox>
-                                    </controls:SettingRow>
-                                    <controls:SettingRow Label="Buffer"
-                                                         ToolTipService.ToolTip="Continuous keeps one rolling replay. Segmented saves one clip per second and is better for games that change scenes often."
-                                                         Margin="0,0,0,8">
+                                    </ns0:SettingRow>
+                                    <ns0:SettingRow Label="Buffer"
+                                            ToolTipService.ToolTip="Continuous keeps one rolling replay. Segmented saves one clip per second and is better for games that change scenes often."
+                                            Margin="0,0,0,8">
                                         <ComboBox x:Name="BufferMethodCombo"
-                                                  HorizontalAlignment="Stretch"
-                                                  SelectionChanged="BufferMethodCombo_SelectionChanged">
+                                                HorizontalAlignment="Stretch"
+                                                SelectionChanged="BufferMethodCombo_SelectionChanged">
                                             <ComboBoxItem Content="Continuous"/>
                                             <ComboBoxItem Content="Segmented"/>
                                         </ComboBox>
-                                    </controls:SettingRow>
-                                    <controls:SettingRow Label="GPU"
-                                                         ToolTipService.ToolTip="Use hardware MFTs for encoding. Turn off to use the software encoder."
-                                                         Margin="0,0,0,8">
+                                    </ns0:SettingRow>
+                                    <ns0:SettingRow Label="GPU"
+                                            ToolTipService.ToolTip="Use hardware MFTs for encoding. Turn off to use the software encoder."
+                                            Margin="0,0,0,8">
                                         <Grid HorizontalAlignment="Stretch">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="Auto"/>
@@ -1084,118 +1277,123 @@
                                                 <ColumnDefinition Width="*"/>
                                             </Grid.ColumnDefinitions>
                                             <CheckBox x:Name="GpuEncoderCheck"
-                                                      Grid.Column="0"
-                                                      AutomationProperties.Name="GPU encoder"
-                                                      MinWidth="0"
-                                                      VerticalAlignment="Center"
-                                                      Checked="GpuEncoder_Changed"
-                                                      Unchecked="GpuEncoder_Changed"/>
+                                                    Grid.Column="0"
+                                                    AutomationProperties.Name="GPU encoder"
+                                                    MinWidth="0"
+                                                    VerticalAlignment="Center"
+                                                    Checked="GpuEncoder_Changed"
+                                                    Unchecked="GpuEncoder_Changed"/>
                                             <ComboBox x:Name="GpuPreferenceCombo"
-                                                      Grid.Column="2"
-                                                      Width="140"
-                                                      MaxWidth="140"
-                                                      HorizontalAlignment="Left"
-                                                      SelectionChanged="GpuPreferenceCombo_SelectionChanged">
+                                                    Grid.Column="2"
+                                                    Width="140"
+                                                    MaxWidth="140"
+                                                    HorizontalAlignment="Left"
+                                                    SelectionChanged="GpuPreferenceCombo_SelectionChanged">
                                                 <ComboBoxItem Content="Prefer iGPU"/>
                                                 <ComboBoxItem Content="Prefer dGPU"/>
                                             </ComboBox>
                                         </Grid>
-                                    </controls:SettingRow>
-                                    <controls:SettingRow Label="Bitrate (calculated)"
+                                    </ns0:SettingRow>
+                                    <ns0:SettingRow Label="Bitrate (calculated)"
                                             ToolTipService.ToolTip="Calculated from quality preset, frame rate and capture resolution. Used as the target for both CBR and VBR."
                                             Margin="0">
                                         <TextBlock x:Name="BitrateValueText"
-                                                   VerticalAlignment="Center"
-                                                   Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
-                                    </controls:SettingRow>
+                                                VerticalAlignment="Center"
+                                                Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+                                    </ns0:SettingRow>
                                 </StackPanel>
                             </Border>
-                            <Border Style="{StaticResource SettingsCard}">
+                            <Border Style="{StaticResource SettingsCard}"
+                                    Margin="0,12,0,0">
                                 <StackPanel>
                                     <StackPanel Orientation="Horizontal"
-                                               
-                                                Margin="0,0,0,14">
-                                        <ui:FontIcon Glyph="&#xE713;"
-                                                  FontFamily="{DynamicResource SymbolThemeFontFamily}"
-                                                  FontSize="16"
-                                                  Foreground="{DynamicResource AccentBrush}"/>
+                                            Margin="0,0,0,14">
+                                        <ui:FontIcon Glyph="&#59155;"
+                                                FontFamily="{DynamicResource SymbolThemeFontFamily}"
+                                                FontSize="16"
+                                                Foreground="{DynamicResource AccentBrush}"/>
                                         <TextBlock Text="Audio"
-                                                   FontSize="14"
-                                                   FontWeight="SemiBold"
-                                                   Foreground="{DynamicResource SettingsAreaTextBrush}"/>
+                                                FontSize="14"
+                                                FontWeight="SemiBold"
+                                                Foreground="{DynamicResource SettingsAreaTextBrush}"
+                                                Margin="10,0,0,0"/>
                                     </StackPanel>
 
                                     <TextBlock Text="Microphone"
-                                               Style="{StaticResource Mono}"
-                                               Margin="0,0,0,8"/>
+                                            Style="{StaticResource Mono}"
+                                            Margin="0,0,0,8"/>
                                     <ComboBox x:Name="MicCombo"
-                                              HorizontalAlignment="Stretch"
-                                              SelectionChanged="MicCombo_SelectionChanged"
-                                              Margin="0,0,0,14"/>
+                                            HorizontalAlignment="Stretch"
+                                            SelectionChanged="MicCombo_SelectionChanged"
+                                            Margin="0,0,0,14"/>
 
-                                    <controls:SettingRow Label="Record microphone"
-                                                         Margin="0,0,0,8">
+                                    <ns0:SettingRow Label="Record microphone"
+                                            Margin="0,0,0,8">
                                         <ui:ToggleSwitch x:Name="MicToggle"
-                                                      OnContent=""
-                                                      OffContent=""
-                                                      Click="MicToggle_Changed"/>
-                                    </controls:SettingRow>
-                                    <controls:SettingRow x:Name="RecordAudioRow"
-                                                         Label="Record system audio"
-                                                         Margin="0,0,0,8">
+                                                OnContent=""
+                                                OffContent=""
+                                                Checked="MicToggle_Changed"
+                                                Unchecked="MicToggle_Changed"/>
+                                    </ns0:SettingRow>
+                                    <ns0:SettingRow x:Name="RecordAudioRow"
+                                            Label="Record system audio"
+                                            Margin="0,0,0,8">
                                         <ui:ToggleSwitch x:Name="SysAudioToggle"
-                                                      OnContent=""
-                                                      OffContent=""
-                                                      Click="SysAudioToggle_Changed"/>
-                                    </controls:SettingRow>
-                                    <controls:SettingRow Label="Application local audio"
-                                                        Margin="0,0,0,8">
+                                                OnContent=""
+                                                OffContent=""
+                                                Checked="SysAudioToggle_Changed"
+                                                Unchecked="SysAudioToggle_Changed"/>
+                                    </ns0:SettingRow>
+                                    <ns0:SettingRow Label="Application local audio"
+                                            Margin="0,0,0,8">
                                         <ui:ToggleSwitch x:Name="ApplicationLocalAudioToggle"
-                                                      OnContent=""
-                                                      OffContent=""
-                                                      Click="ApplicationLocalAudioToggle_Changed"/>
-                                    </controls:SettingRow>
-                                    <controls:SettingRow Label="Audio codec"
-                                                        Margin="0,0,0,8">
+                                                OnContent=""
+                                                OffContent=""
+                                                Checked="ApplicationLocalAudioToggle_Changed"
+                                                Unchecked="ApplicationLocalAudioToggle_Changed"/>
+                                    </ns0:SettingRow>
+                                    <ns0:SettingRow Label="Audio codec"
+                                            Margin="0,0,0,8">
                                         <ComboBox x:Name="AudioCodecCombo"
-                                                  HorizontalAlignment="Stretch"
-                                                  SelectionChanged="AudioCodecCombo_SelectionChanged">
+                                                HorizontalAlignment="Stretch"
+                                                SelectionChanged="AudioCodecCombo_SelectionChanged">
                                             <ComboBoxItem Content="AAC"/>
                                             <ComboBoxItem Content="FLAC"/>
                                         </ComboBox>
-                                    </controls:SettingRow>
-                                    <controls:SettingRow x:Name="AudioBitrateRow"
-                                                        Label="Audio bitrate"
-                                                        Margin="0,0,0,8">
+                                    </ns0:SettingRow>
+                                    <ns0:SettingRow x:Name="AudioBitrateRow"
+                                            Label="Audio bitrate"
+                                            Margin="0,0,0,8">
                                         <ComboBox x:Name="AudioBitrateCombo"
-                                                  HorizontalAlignment="Stretch"
-                                                  SelectionChanged="AudioBitrateCombo_SelectionChanged">
+                                                HorizontalAlignment="Stretch"
+                                                SelectionChanged="AudioBitrateCombo_SelectionChanged">
                                             <ComboBoxItem Content="96 kbps"/>
                                             <ComboBoxItem Content="128 kbps"/>
                                             <ComboBoxItem Content="160 kbps"/>
                                             <ComboBoxItem Content="192 kbps"/>
                                         </ComboBox>
-                                    </controls:SettingRow>
+                                    </ns0:SettingRow>
                                 </StackPanel>
                             </Border>
-                            <Border Style="{StaticResource SettingsCard}">
+                            <Border Style="{StaticResource SettingsCard}"
+                                    Margin="0,12,0,0">
                                 <StackPanel>
                                     <StackPanel Orientation="Horizontal"
-                                               
-                                                Margin="0,0,0,14">
-                                        <ui:FontIcon Glyph="&#xE8B7;"
-                                                  FontFamily="{DynamicResource SymbolThemeFontFamily}"
-                                                  FontSize="16"
-                                                  Foreground="{DynamicResource AccentBrush}"/>
+                                            Margin="0,0,0,14">
+                                        <ui:FontIcon Glyph="&#59575;"
+                                                FontFamily="{DynamicResource SymbolThemeFontFamily}"
+                                                FontSize="16"
+                                                Foreground="{DynamicResource AccentBrush}"/>
                                         <TextBlock Text="Storage and hotkeys"
-                                                   FontSize="14"
-                                                   FontWeight="SemiBold"
-                                                   Foreground="{DynamicResource SettingsAreaTextBrush}"/>
+                                                FontSize="14"
+                                                FontWeight="SemiBold"
+                                                Foreground="{DynamicResource SettingsAreaTextBrush}"
+                                                Margin="10,0,0,0"/>
                                     </StackPanel>
 
                                     <TextBlock Text="Save location"
-                                               Style="{StaticResource Mono}"
-                                               Margin="0,0,0,8"/>
+                                            Style="{StaticResource Mono}"
+                                            Margin="0,0,0,8"/>
                                     <Grid Margin="0,0,0,14">
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="*"/>
@@ -1203,85 +1401,88 @@
                                             <ColumnDefinition Width="200"/>
                                         </Grid.ColumnDefinitions>
                                         <TextBox x:Name="SaveLocationBox"
-                                                 Grid.Column="0"
-                                                 Height="32"
-                                                 VerticalContentAlignment="Center"
-                                                 TextChanged="SaveLocationBox_TextChanged"/>
+                                                Grid.Column="0"
+                                                Height="32"
+                                                VerticalContentAlignment="Center"
+                                                TextChanged="SaveLocationBox_TextChanged"/>
                                         <ui:Button x:Name="BrowseSaveLocationButton"
-                                                controls:UiHover.IsEnabled="True"
+                                                ns0:UiHover.IsEnabled="True"
                                                 Grid.Column="2"
                                                 Height="32"
                                                 Padding="16,0"
                                                 HorizontalAlignment="Stretch"
                                                 Click="BrowseSaveLocationButton_Click">
                                             <StackPanel Orientation="Horizontal"
-                                                       
-                                                        VerticalAlignment="Center">
-                                                <ui:FontIcon Glyph="&#xE838;"
-                                                          FontFamily="{DynamicResource SymbolThemeFontFamily}"
-                                                          FontSize="14"
-                                                          Foreground="{Binding Foreground, ElementName=BrowseSaveLocationButton}"/>
+                                                    VerticalAlignment="Center">
+                                                <ui:FontIcon Glyph="&#59448;"
+                                                        FontFamily="{DynamicResource SymbolThemeFontFamily}"
+                                                        FontSize="14"
+                                                        Foreground="{Binding Foreground, ElementName=BrowseSaveLocationButton}"/>
                                                 <TextBlock Text="Browse"
-                                                           VerticalAlignment="Center"
-                                                           Foreground="{Binding Foreground, ElementName=BrowseSaveLocationButton}"/>
+                                                        VerticalAlignment="Center"
+                                                        Foreground="{Binding Foreground, ElementName=BrowseSaveLocationButton}"
+                                                        Margin="8,0,0,0"/>
                                             </StackPanel>
                                         </ui:Button>
                                     </Grid>
 
-                                    <controls:SettingRow Label="Save replay hotkey"
-                                                         Margin="0">
+                                    <ns0:SettingRow Label="Save replay hotkey"
+                                            Margin="0">
                                         <ui:Button x:Name="HotkeyCaptureButton"
-                                                controls:UiHover.IsEnabled="True"
+                                                ns0:UiHover.IsEnabled="True"
                                                 Height="32"
                                                 Padding="16,0"
                                                 HorizontalAlignment="Stretch"
                                                 Click="HotkeyCaptureButton_Click">
                                             <StackPanel Orientation="Horizontal"
-                                                       
-                                                        VerticalAlignment="Center">
-                                                <ui:FontIcon Glyph="&#xE765;"
-                                                          FontFamily="{DynamicResource SymbolThemeFontFamily}"
-                                                          FontSize="14"
-                                                          Foreground="{Binding Foreground, ElementName=HotkeyCaptureButton}"/>
+                                                    VerticalAlignment="Center">
+                                                <ui:FontIcon Glyph="&#59237;"
+                                                        FontFamily="{DynamicResource SymbolThemeFontFamily}"
+                                                        FontSize="14"
+                                                        Foreground="{Binding Foreground, ElementName=HotkeyCaptureButton}"/>
                                                 <TextBlock x:Name="HotkeyCaptureText"
-                                                           Text="CTRL + *"
-                                                           VerticalAlignment="Center"
-                                                           Foreground="{Binding Foreground, ElementName=HotkeyCaptureButton}"/>
+                                                        Text="CTRL + *"
+                                                        VerticalAlignment="Center"
+                                                        Foreground="{Binding Foreground, ElementName=HotkeyCaptureButton}"
+                                                        Margin="8,0,0,0"/>
                                             </StackPanel>
                                         </ui:Button>
-                                    </controls:SettingRow>
+                                    </ns0:SettingRow>
                                 </StackPanel>
                             </Border>
-                            <Border Style="{StaticResource SettingsCard}">
+                            <Border Style="{StaticResource SettingsCard}"
+                                    Margin="0,12,0,0">
                                 <StackPanel>
                                     <StackPanel Orientation="Horizontal"
-                                               
-                                                Margin="0,0,0,14">
-                                        <ui:FontIcon Glyph="&#xE771;"
-                                                  FontFamily="{DynamicResource SymbolThemeFontFamily}"
-                                                  FontSize="16"
-                                                  Foreground="{DynamicResource AccentBrush}"/>
+                                            Margin="0,0,0,14">
+                                        <ui:FontIcon Glyph="&#59249;"
+                                                FontFamily="{DynamicResource SymbolThemeFontFamily}"
+                                                FontSize="16"
+                                                Foreground="{DynamicResource AccentBrush}"/>
                                         <TextBlock Text="App"
-                                                   FontSize="14"
-                                                   FontWeight="SemiBold"
-                                                   Foreground="{DynamicResource SettingsAreaTextBrush}"/>
+                                                FontSize="14"
+                                                FontWeight="SemiBold"
+                                                Foreground="{DynamicResource SettingsAreaTextBrush}"
+                                                Margin="10,0,0,0"/>
                                     </StackPanel>
 
-                                    <controls:SettingRow Label="Start with Windows"
-                                                         Margin="0,0,0,8">
+                                    <ns0:SettingRow Label="Start with Windows"
+                                            Margin="0,0,0,8">
                                         <ui:ToggleSwitch x:Name="StartupToggle"
-                                                      OnContent=""
-                                                      OffContent=""
-                                                      Click="StartupToggle_Changed"/>
-                                    </controls:SettingRow>
-                                    <controls:SettingRow Label="Debug logging"
-                                                         ToolTipService.ToolTip="Writes detailed capture diagnostics to a debug log in the temporary folder."
-                                                         Margin="0,0,0,8">
+                                                OnContent=""
+                                                OffContent=""
+                                                Checked="StartupToggle_Changed"
+                                                Unchecked="StartupToggle_Changed"/>
+                                    </ns0:SettingRow>
+                                    <ns0:SettingRow Label="Debug logging"
+                                            ToolTipService.ToolTip="Writes detailed capture diagnostics to a debug log in the temporary folder."
+                                            Margin="0,0,0,8">
                                         <ui:ToggleSwitch x:Name="DebugLoggingToggle"
-                                                      OnContent=""
-                                                      OffContent=""
-                                                      Click="DebugLoggingToggle_Changed"/>
-                                    </controls:SettingRow>
+                                                OnContent=""
+                                                OffContent=""
+                                                Checked="DebugLoggingToggle_Changed"
+                                                Unchecked="DebugLoggingToggle_Changed"/>
+                                    </ns0:SettingRow>
                                 </StackPanel>
                             </Border>
                         </StackPanel>
@@ -1289,15 +1490,18 @@
                 </Grid>
 
                 <ui:InfoBar x:Name="StatusInfoBar"
-                         Canvas.ZIndex="20"
-                         HorizontalAlignment="Stretch"
-                         VerticalAlignment="Bottom"
-                         Margin="20,0,20,12"
-                         IsOpen="False"
-                         IsClosable="True"
-                         Severity="Informational"
-                         Title=""
-                         Message="">
+                        Canvas.ZIndex="20"
+                        HorizontalAlignment="Stretch"
+                        VerticalAlignment="Bottom"
+                        Margin="20,0,20,12"
+                        IsOpen="False"
+                        IsClosable="True"
+                        Severity="Informational"
+                        Title=""
+                        Message="">
+                    <ui:Button Content=""
+                            Visibility="Collapsed"
+                            x:Name="StatusInfoActionButton"/>
                 </ui:InfoBar>
 
                 <Border x:Name="PendingChangesFlyout"
@@ -1311,27 +1515,26 @@
                         Opacity="0"
                         RenderTransformOrigin="0.5,0.5">
                     <Border.Background>
-                        <SolidColorBrush Color="#CC202020"/>
+                        <SolidColorBrush Color="#99202020"/>
                     </Border.Background>
                     <Border.RenderTransform>
                         <TranslateTransform x:Name="PendingFlyoutSlide"
-                                            Y="-6"/>
+                                Y="-6"/>
                     </Border.RenderTransform>
                     <StackPanel Orientation="Horizontal"
-                                VerticalAlignment="Center">
-                        <ui:FontIcon Glyph="&#xE7BA;"
-                                  FontFamily="{DynamicResource SymbolThemeFontFamily}"
-                                  FontSize="14"
-                                  Foreground="{DynamicResource AccentBrush}"
-                                  VerticalAlignment="Center"
-                                  Margin="0,0,8,0"/>
+                            VerticalAlignment="Center">
+                        <ui:FontIcon Glyph="&#59322;"
+                                FontFamily="{DynamicResource SymbolThemeFontFamily}"
+                                FontSize="14"
+                                Foreground="{DynamicResource AccentBrush}"
+                                VerticalAlignment="Center"
+                                Margin="0,0,8,0"/>
                         <TextBlock Text="Unsaved changes"
-                                   FontFamily="Segoe UI Variable"
-                                   FontSize="{StaticResource BodyFontSize}"
-                                  
-                                   Foreground="{DynamicResource TextPrimaryBrush}"
-                                   VerticalAlignment="Center"
-                                   Margin="0,0,12,0"/>
+                                FontFamily="Segoe UI Variable"
+                                FontSize="{StaticResource BodyFontSize}"
+                                Foreground="{DynamicResource TextPrimaryBrush}"
+                                VerticalAlignment="Center"
+                                Margin="0,0,12,0"/>
                         <ui:Button x:Name="PendingSaveButton"
                                 Style="{StaticResource AccentButtonStyle}"
                                 VerticalAlignment="Center"
@@ -1339,44 +1542,33 @@
                                 Click="PendingSaveButton_Click"
                                 ToolTipService.ToolTip="Save your changes and restart the capture engine">
                             <StackPanel Orientation="Horizontal">
-                                <ui:FontIcon Glyph="&#xE74E;"
-                                          FontFamily="{DynamicResource SymbolThemeFontFamily}"
-                                          FontSize="14"
-                                          Margin="0,0,6,0"/>
+                                <ui:FontIcon Glyph="&#59214;"
+                                        FontFamily="{DynamicResource SymbolThemeFontFamily}"
+                                        FontSize="14"
+                                        Margin="0,0,6,0"/>
                                 <TextBlock Text="Save"
-                                           FontFamily="Segoe UI Variable"
-                                           FontSize="{StaticResource BodyFontSize}"/>
+                                        FontFamily="Segoe UI Variable"
+                                        FontSize="{StaticResource BodyFontSize}"/>
                             </StackPanel>
                         </ui:Button>
                         <ui:Button x:Name="PendingDiscardButton"
-                               
                                 Style="{StaticResource BaseButtonStyle}"
                                 VerticalAlignment="Center"
                                 Click="PendingDiscardButton_Click"
                                 ToolTipService.ToolTip="Discard your changes and restore the previous values">
                             <StackPanel Orientation="Horizontal">
-                                <ui:FontIcon Glyph="&#xE74D;"
-                                          FontFamily="{DynamicResource SymbolThemeFontFamily}"
-                                          FontSize="14"
-                                          Margin="0,0,6,0"/>
+                                <ui:FontIcon Glyph="&#59213;"
+                                        FontFamily="{DynamicResource SymbolThemeFontFamily}"
+                                        FontSize="14"
+                                        Margin="0,0,6,0"/>
                                 <TextBlock Text="Discard"
-                                           FontFamily="Segoe UI Variable"
-                                           FontSize="{StaticResource BodyFontSize}"/>
+                                        FontFamily="Segoe UI Variable"
+                                        FontSize="{StaticResource BodyFontSize}"/>
                             </StackPanel>
                         </ui:Button>
                     </StackPanel>
                 </Border>
             </Grid>
-            </local:AppNavigationView.ContentOverlay>
-        </local:AppNavigationView>
-
-        <ui:SnackbarPresenter x:Name="RootSnackbarPresenter"
-                              Grid.Row="2"
-                              Panel.ZIndex="50"
-                              Margin="0,0,0,24"
-                              HorizontalAlignment="Center"
-                              VerticalAlignment="Bottom"
-                              MaxWidth="520" />
-
+        </Grid>
     </Grid>
 </ui:FluentWindow>

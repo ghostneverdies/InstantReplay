@@ -1,4 +1,10 @@
-﻿namespace InstantReplay.Models;
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+namespace InstantReplay.Models;
 
 public enum SaveReplayOutcome
 {
@@ -22,21 +28,17 @@ public readonly struct SaveReplayResult
         Path = path;
     }
 
-    public string UserMessage()
+    public string UserMessage() => Outcome switch
     {
-        return Outcome switch
-        {
-            SaveReplayOutcome.Success => $"Replay saved to {Path}",
-            SaveReplayOutcome.NotRecording => "Recorder isn't running — try starting capture first.",
-            SaveReplayOutcome.NoSegments => "Still buffering — nothing to save yet. Try again in a few seconds.",
-            SaveReplayOutcome.WriteBlocked =>
-                "Save blocked by Windows security. Open Windows Security → Virus & threat protection → " +
-                "Manage ransomware protection → Controlled folder access, and allow Instant Replay.exe " +
-                "through it, then try again.",
-            SaveReplayOutcome.MergeFailed => "Failed to save replay (see log for details).",
-            SaveReplayOutcome.LowMemory => "Replay save skipped: Windows is running low on committed memory. Close other apps or enable a system-managed page file before trying again.",
-            _ => "Failed to save replay (see log for details).",
-        };
-    }
-
+        SaveReplayOutcome.Success => $"Replay saved to {Path}",
+        SaveReplayOutcome.NotRecording => "Recorder isn't running — try starting capture first.",
+        SaveReplayOutcome.NoSegments => "Still buffering — nothing to save yet. Try again in a few seconds.",
+        SaveReplayOutcome.WriteBlocked =>
+            "Save blocked by Windows security. Open Windows Security → Virus & threat protection → " +
+            "Manage ransomware protection → Controlled folder access, and allow Instant Replay.exe " +
+            "through it, then try again.",
+        SaveReplayOutcome.MergeFailed => "Failed to save replay (see log for details).",
+        SaveReplayOutcome.LowMemory => "Replay save skipped: Windows is running low on committed memory. Close other apps or enable a system-managed page file before trying again.",
+        _ => "Failed to save replay (see log for details).",
+    };
 }

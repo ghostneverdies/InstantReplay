@@ -1,9 +1,12 @@
-using System.Windows;
-using System.Windows.Controls;
-using System.Windows.Media;
-using Wpf.Ui.Controls;
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using System.ComponentModel;
 using System.Globalization;
+using System.Windows.Media;
 using InstantReplay.Core;
 
 namespace InstantReplay.Models;
@@ -23,7 +26,7 @@ public sealed class ReplayItem : INotifyPropertyChanged
     private int _videoWidth;
     private int _videoHeight;
     private double _fps;
-    private System.Windows.Media.ImageSource? _thumbnail;
+    private ImageSource? _thumbnail;
 
     public ReplayItem(string folderPath, string videoPath, DateTime created, long sizeBytes)
     {
@@ -45,7 +48,7 @@ public sealed class ReplayItem : INotifyPropertyChanged
     internal bool QueuedAsVisible;
     internal int Failures;
     internal readonly TaskCompletionSource<bool> Prepared =
-        new(TaskCreationOptions.RunContinuationsAsynchronously);
+        new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
     public volatile bool MetadataLoaded;
 
@@ -67,10 +70,10 @@ public sealed class ReplayItem : INotifyPropertyChanged
     public int VideoHeight => _videoHeight;
     public double Fps => _fps;
 
-    public System.Windows.Media.ImageSource? Thumbnail => _thumbnail;
+    public ImageSource? Thumbnail => _thumbnail;
 
     internal void ApplyPrepared(bool hasMetadata, TimeSpan duration, int width, int height, double fps,
-        System.Windows.Media.ImageSource? thumbnail)
+        ImageSource? thumbnail)
     {
         if (hasMetadata)
         {
@@ -116,9 +119,5 @@ public sealed class ReplayItem : INotifyPropertyChanged
         return mb >= 1024 ? $"{mb / 1024.0:0.0} GB" : $"{mb:0.0} MB";
     }
 
-    private void Raise(string name)
-    {
-        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
-    }
-
+    private void Raise(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
 }

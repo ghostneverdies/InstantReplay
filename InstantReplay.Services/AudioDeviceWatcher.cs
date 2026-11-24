@@ -1,4 +1,10 @@
-﻿using System.Runtime.InteropServices;
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Runtime.InteropServices;
 using InstantReplay.Native;
 
 namespace InstantReplay.Services;
@@ -15,7 +21,7 @@ public sealed class AudioDeviceWatcher : IMMNotificationClient, IDisposable
         try
         {
             _enumerator = (IMMDeviceEnumerator)new MMDeviceEnumeratorComObject();
-            _ = _enumerator.RegisterEndpointNotificationCallback(this);
+            _enumerator.RegisterEndpointNotificationCallback(this);
             _registered = true;
         }
         catch (Exception ex)
@@ -24,22 +30,9 @@ public sealed class AudioDeviceWatcher : IMMNotificationClient, IDisposable
         }
     }
 
-    void IMMNotificationClient.OnDeviceStateChanged(string deviceId, int newState)
-    {
-        DevicesChanged?.Invoke();
-    }
-
-    void IMMNotificationClient.OnDeviceAdded(string deviceId)
-    {
-        DevicesChanged?.Invoke();
-    }
-
-    void IMMNotificationClient.OnDeviceRemoved(string deviceId)
-    {
-        DevicesChanged?.Invoke();
-    }
-
-
+    void IMMNotificationClient.OnDeviceStateChanged(string deviceId, int newState) => DevicesChanged?.Invoke();
+    void IMMNotificationClient.OnDeviceAdded(string deviceId) => DevicesChanged?.Invoke();
+    void IMMNotificationClient.OnDeviceRemoved(string deviceId) => DevicesChanged?.Invoke();
     void IMMNotificationClient.OnDefaultDeviceChanged(int flow, int role, string deviceId) { }
     void IMMNotificationClient.OnPropertyValueChanged(string deviceId, PropertyKey key) { }
 
@@ -48,14 +41,14 @@ public sealed class AudioDeviceWatcher : IMMNotificationClient, IDisposable
         try
         {
             if (_registered && _enumerator != null)
-                _ = _enumerator.UnregisterEndpointNotificationCallback(this);
+                _enumerator.UnregisterEndpointNotificationCallback(this);
         }
         catch (Exception ex)
         {
             Logger.Warn($"AudioDeviceWatcher: could not unregister cleanly: {ex.Message}");
         }
         if (_enumerator != null && Marshal.IsComObject(_enumerator))
-            _ = Marshal.ReleaseComObject(_enumerator);
+            Marshal.ReleaseComObject(_enumerator);
         _enumerator = null;
     }
 }

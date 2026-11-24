@@ -1,4 +1,7 @@
-namespace InstantReplay.Services;
+using System;
+
+namespace InstantReplay.Services
+{
 
 public static class WindowsTheme
 {
@@ -102,7 +105,72 @@ public static class StartupManager
 
     private static string BuildCommand()
     {
-        string exe = ProcessPath ?? "InstantReplay.exe";
+        string exe = Compat.ProcessPath ?? "InstantReplay.exe";
         return $"\"{exe}\" --tray";
+    }
+}
+}
+
+namespace System.Runtime.CompilerServices
+{
+    // Lets C# 9+ records and init-only setters compile against .NET Framework 4.8.
+    internal static class IsExternalInit { }
+}
+
+namespace InstantReplay.Services
+{
+    /// <summary>Stand-ins for .NET 8 APIs that .NET Framework 4.8 does not have.</summary>
+    public static class Compat
+    {
+        private static readonly System.Diagnostics.Stopwatch Clock = System.Diagnostics.Stopwatch.StartNew();
+
+        /// <summary>Monotonic milliseconds since process start (Compat.TickCount64 replacement).</summary>
+        public static long TickCount64 => Clock.ElapsedMilliseconds;
+
+        public static string? ProcessPath
+        {
+            get
+            {
+                try
+                {
+                    using (var process = System.Diagnostics.Process.GetCurrentProcess())
+                        return process.MainModule?.FileName;
+                }
+                catch { return null; }
+            }
+        }
+
+        public static int Clamp(int value, int min, int max) => value < min ? min : value > max ? max : value;
+        public static long Clamp(long value, long min, long max) => value < min ? min : value > max ? max : value;
+        public static double Clamp(double value, double min, double max) => value < min ? min : value > max ? max : value;
+        public static float Clamp(float value, float min, float max) => value < min ? min : value > max ? max : value;
+
+        public static void MoveOverwrite(string source, string destination)
+        {
+            if (System.IO.File.Exists(destination)) System.IO.File.Replace(source, destination, null);
+            else System.IO.File.Move(source, destination);
+        }
+
+        public static System.Threading.Tasks.Task WriteAllBytesAsync(string path, byte[] bytes) =>
+            System.Threading.Tasks.Task.Run(() => System.IO.File.WriteAllBytes(path, bytes));
+
+        public static string ToHexString(byte[] bytes) => BitConverter.ToString(bytes).Replace("-", "");
+
+        public static byte[] FromHexString(string hex)
+        {
+            if (hex.Length % 2 != 0) throw new FormatException("Odd-length hex string.");
+            var bytes = new byte[hex.Length / 2];
+            for (int i = 0; i < bytes.Length; i++)
+                bytes[i] = Convert.ToByte(hex.Substring(i * 2, 2), 16);
+            return bytes;
+        }
+
+        public static bool FixedTimeEquals(byte[] left, byte[] right)
+        {
+            if (left.Length != right.Length) return false;
+            int diff = 0;
+            for (int i = 0; i < left.Length; i++) diff |= left[i] ^ right[i];
+            return diff == 0;
+        }
     }
 }

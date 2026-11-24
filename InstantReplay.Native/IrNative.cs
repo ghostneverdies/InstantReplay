@@ -1,4 +1,11 @@
-﻿using System.Runtime.InteropServices;
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Text;
 
 namespace InstantReplay.Native;
@@ -13,25 +20,29 @@ internal static class IrNative
 
     private const string Dll = "engine";
 
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr LoadLibraryW(string fileName);
+
+    // .NET Framework has no NativeLibrary.SetDllImportResolver. Pre-loading the engine by full path registers
+    // the module as "engine.dll", so the DllImport("engine") binding below resolves to that already-loaded copy.
     static IrNative()
     {
-        // .NET Framework has no DllImportResolver. Add engine\bin to the DLL
-        // search path so DllImport("engine") finds the shipped native payload
-        // (and its dependencies) whether the app runs from ship\ or a ZIP.
         try
         {
-            string engineDir = Path.Combine(AppContext.BaseDirectory, "engine", "bin");
-            if (File.Exists(Path.Combine(engineDir, "engine.dll")))
-                SetDllDirectory(engineDir);
+            string baseDir = AppContext.BaseDirectory;
+            foreach (string candidate in new[]
+            {
+                Path.Combine(baseDir, "engine", "bin", "engine.dll"),
+                Path.Combine(baseDir, "engine.dll"),
+            })
+            {
+                if (File.Exists(candidate) && LoadLibraryW(candidate) != IntPtr.Zero) return;
+            }
         }
-        catch
+        catch (Exception)
         {
-            // DllImport will still search the executable directory.
         }
     }
-
-    [DllImport("kernel32.dll", EntryPoint = "SetDllDirectoryW", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern bool SetDllDirectory(string pathName);
 
     [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
     internal static extern int IR_Create(out IntPtr engine);

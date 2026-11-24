@@ -1,4 +1,10 @@
-﻿using System.Diagnostics;
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 
 namespace InstantReplay.Services;
@@ -32,11 +38,8 @@ internal static class HookInjector
     public static string OverlayDllPath =>
         Path.Combine(AppContext.BaseDirectory, "engine", "hooks", "bin", OverlayDll);
 
-    public static bool HasModule(uint processId, string moduleName)
-    {
-        return IsModuleLoaded(processId, moduleName);
-    }
-
+    public static bool HasModule(uint processId, string moduleName) =>
+        IsModuleLoaded(processId, moduleName);
 
     public static bool RequestShutdown(uint processId, out string error)
     {
@@ -75,7 +78,7 @@ internal static class HookInjector
             shutdown = new IntPtr(remote.BaseAddress.ToInt64() +
                 (localExport.ToInt64() - local.ToInt64()));
         }
-        finally { _ = FreeLibrary(local); }
+        finally { FreeLibrary(local); }
 
         IntPtr process = OpenProcess(ProcessCreateThread | ProcessVmOperation | ProcessVmRead |
             ProcessQueryInformation, false, (int)processId);
@@ -102,12 +105,12 @@ internal static class HookInjector
                     return false;
                 }
             }
-            finally { _ = CloseHandle(thread); }
+            finally { CloseHandle(thread); }
         }
-        finally { _ = CloseHandle(process); }
+        finally { CloseHandle(process); }
 
-        long deadline = Environment.TickCount + 7000;
-        while (Environment.TickCount < deadline)
+        long deadline = Compat.TickCount64 + 7000;
+        while (Compat.TickCount64 < deadline)
         {
             if (!IsModuleLoaded(processId, remote.Name))
             {
@@ -158,7 +161,7 @@ internal static class HookInjector
         foreach (string loaded in EnumerateModules(processId))
         {
             string stem = Path.GetFileNameWithoutExtension(loaded);
-            if (markers.Any(marker => stem.Contains(marker, StringComparison.OrdinalIgnoreCase)))
+            if (markers.Any(marker => stem.IndexOf(marker, StringComparison.OrdinalIgnoreCase) >= 0))
             {
                 module = loaded;
                 return true;
@@ -227,7 +230,7 @@ internal static class HookInjector
         }
         finally
         {
-            _ = CloseHandle(handle);
+            CloseHandle(handle);
         }
 
         return true;
@@ -274,8 +277,8 @@ internal static class HookInjector
                 return false;
             }
 
-            long deadline = Environment.TickCount + 5000;
-            while (Environment.TickCount < deadline)
+            long deadline = Compat.TickCount64 + 5000;
+            while (Compat.TickCount64 < deadline)
             {
                 if (IsModuleLoaded(processId, name))
                 {
@@ -290,15 +293,15 @@ internal static class HookInjector
         }
         finally
         {
-            if (hook != IntPtr.Zero) _ = UnhookWindowsHookEx(hook);
-            _ = FreeLibrary(local);
+            if (hook != IntPtr.Zero) UnhookWindowsHookEx(hook);
+            FreeLibrary(local);
         }
     }
 
     private static bool WaitForEvent(string name, int timeoutMs)
     {
-        long deadline = Environment.TickCount + timeoutMs;
-        while (Environment.TickCount < deadline)
+        long deadline = Compat.TickCount64 + timeoutMs;
+        while (Compat.TickCount64 < deadline)
         {
             try
             {
@@ -346,17 +349,14 @@ internal static class HookInjector
                     } while (Module32NextW(snapshot, ref entry));
                 }
             }
-            finally { _ = CloseHandle(snapshot); }
+            finally { CloseHandle(snapshot); }
         }
         found = default;
         return false;
     }
 
-    private static IEnumerable<string> EnumerateModules(uint processId)
-    {
-        return EnumerateModules(processId, out _);
-    }
-
+    private static IEnumerable<string> EnumerateModules(uint processId) =>
+        EnumerateModules(processId, out _);
 
     private static List<string> EnumerateModules(uint processId, out string diagnostic)
     {
@@ -382,7 +382,7 @@ internal static class HookInjector
                 }
                 else snapshotError = Marshal.GetLastWin32Error();
             }
-            finally { _ = CloseHandle(snapshot); }
+            finally { CloseHandle(snapshot); }
             if (modules.Count > 0) break;
             if (snapshotError == 24) Thread.Sleep(10); else break;
         }

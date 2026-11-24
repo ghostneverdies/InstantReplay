@@ -1,4 +1,10 @@
-﻿using System.Reflection;
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using InstantReplay.Services;
@@ -51,15 +57,11 @@ public sealed class Settings
     public bool ApplicationLocalAudio { get; set; } = true;
 
     // Media Foundation writes MP4 only. Legacy container choices map to .mp4.
-    public static string ContainerExtension(string container)
-    {
-        return "mp4";
-    }
-
+    public static string ContainerExtension(string container) => "mp4";
 
     public string CaptureMethod { get; set; } = "Dxgi";
     public string CaptureTarget { get; set; } = "Display";
-    public List<GameRule> SpecificWindows { get; set; } = [];
+    public List<GameRule> SpecificWindows { get; set; } = new List<GameRule>();
     public int CaptureMonitorIndex { get; set; } = -1;
     public bool CaptureClientArea { get; set; } = true;
     public bool CaptureCursor { get; set; } = true;
@@ -73,13 +75,10 @@ public sealed class Settings
 
     public string BackgroundNotice { get; set; } = "Once";
 
-    public string GetEffectiveSaveDestination()
-    {
-        return string.IsNullOrWhiteSpace(SaveDestination)
+    public string GetEffectiveSaveDestination() =>
+        string.IsNullOrWhiteSpace(SaveDestination)
             ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyPictures), "Instant Replay")
             : SaveDestination;
-    }
-
 
     private static string PathOnDisk => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
@@ -117,7 +116,7 @@ public sealed class Settings
                     // value and keeps switching between WGC and DXGI per detected window.
                     loaded.CaptureMethod = string.Equals(loaded.CaptureMethod, "Wgc", StringComparison.OrdinalIgnoreCase)
                         ? "Wgc" : "Dxgi";
-                    loaded.SpecificWindows ??= [];
+                    loaded.SpecificWindows ??= new List<GameRule>();
                     // Rounded corners are always enabled for WGC now that the option is hidden.
                     loaded.CaptureRoundedCorners = true;
 
@@ -168,7 +167,7 @@ public sealed class Settings
         {
             CaptureRoundedCorners = true;
             string path = PathOnDisk;
-            _ = Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             File.WriteAllText(path, JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true }));
         }
         catch (Exception ex)
@@ -183,7 +182,7 @@ public sealed class Settings
         try
         {
             string path = PathOnDisk;
-            _ = Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
 
             Dictionary<string, JsonElement>? onDisk = null;
             if (File.Exists(path))

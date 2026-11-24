@@ -1,3 +1,9 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Runtime.InteropServices;
 using InstantReplay.Services;
 
@@ -51,7 +57,6 @@ public sealed class TaskbarBadge : IDisposable
     private struct FLASHWINFO
     {
         public int cbSize;
-        public IntPtr hwnd;
         public uint dwFlags;
         public uint uCount;
         public uint dwTimeout;
@@ -112,16 +117,9 @@ public sealed class TaskbarBadge : IDisposable
         }
     }
 
-    public void Clear()
-    {
-        SetOverlay(IntPtr.Zero, BadgeKind.None);
-    }
+    public void Clear() => SetOverlay(IntPtr.Zero, BadgeKind.None);
 
-    public void Reset()
-    {
-        _kind = BadgeKind.None;
-    }
-
+    public void Reset() => _kind = BadgeKind.None;
 
     public void Flash()
     {
@@ -132,12 +130,11 @@ public sealed class TaskbarBadge : IDisposable
             var info = new FLASHWINFO
             {
                 cbSize = Marshal.SizeOf<FLASHWINFO>(),
-                hwnd = _hwnd,
-                dwFlags = FlashwTray | FlashwTimer,
+                dwFlags = (int)(FlashwTray | FlashwTimer),
                 uCount = uint.MaxValue,
                 dwTimeout = 0,
             };
-            _ = FlashWindowEx(_hwnd, ref info);
+            FlashWindowEx(_hwnd, ref info);
         }
         catch (Exception ex)
         {
@@ -153,10 +150,9 @@ public sealed class TaskbarBadge : IDisposable
             var info = new FLASHWINFO
             {
                 cbSize = Marshal.SizeOf<FLASHWINFO>(),
-                hwnd = _hwnd,
-                dwFlags = FlashwStop,
+                dwFlags = (int)FlashwStop,
             };
-            _ = FlashWindowEx(_hwnd, ref info);
+            FlashWindowEx(_hwnd, ref info);
         }
         catch (Exception ex)
         {
@@ -174,7 +170,7 @@ public sealed class TaskbarBadge : IDisposable
         {
             Logger.Warn($"Taskbar overlay cleanup failed: {ex.Message}");
         }
-        if (_taskbar != null && Marshal.IsComObject(_taskbar)) _ = Marshal.ReleaseComObject(_taskbar);
+        if (_taskbar != null && Marshal.IsComObject(_taskbar)) Marshal.ReleaseComObject(_taskbar);
         _taskbar = null;
     }
 }

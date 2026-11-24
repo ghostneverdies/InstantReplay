@@ -1,3 +1,8 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Threading.Tasks;
 using System.Threading;
 using InstantReplay.Models;
 using InstantReplay.Native;
@@ -45,7 +50,7 @@ public static class EncoderDetector
         }
         finally
         {
-            _ = Gate.Release();
+            Gate.Release();
         }
     }
 

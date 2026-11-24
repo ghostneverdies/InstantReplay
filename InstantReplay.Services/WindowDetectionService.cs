@@ -1,3 +1,9 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Runtime.InteropServices;
 using InstantReplay.Models;
 
@@ -58,7 +64,7 @@ internal static class WindowDetectionService
         }
         finally
         {
-            if (previousDpi != IntPtr.Zero) _ = SetThreadDpiAwarenessContext(previousDpi);
+            if (previousDpi != IntPtr.Zero) SetThreadDpiAwarenessContext(previousDpi);
         }
     }
 
@@ -92,7 +98,7 @@ internal static class WindowDetectionService
     public static List<IntPtr> EnumerateMonitors()
     {
         var found = new List<(IntPtr Handle, bool Primary)>();
-        _ = EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, (IntPtr handle, IntPtr hdc, ref Rect rect, IntPtr data) =>
+        EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, (IntPtr handle, IntPtr hdc, ref Rect rect, IntPtr data) =>
         {
             var info = new MonitorInfoEx { Size = Marshal.SizeOf<MonitorInfoEx>(), Device = string.Empty };
             bool primary = GetMonitorInfoW(handle, ref info) && (info.Flags & 1) != 0;

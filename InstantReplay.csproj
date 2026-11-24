@@ -26,6 +26,9 @@
 
   <ItemGroup>
     <Reference Include="System.Net.Http" />
+    <Reference Include="System.IO.Compression" />
+    <Reference Include="System.IO.Compression.FileSystem" />
+    <Reference Include="Microsoft.VisualBasic" />
   </ItemGroup>
 
   <ItemGroup>
@@ -105,22 +108,5 @@
       Command="powershell -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\engine\hooks\build.ps1&quot;" />
   </Target>
 
-  <Target Name="ReorganizePublish" AfterTargets="Publish">
-    <ItemGroup>
-      <_PublishSymbols Include="$(PublishDir)*.pdb" />
-    </ItemGroup>
-
-    <MakeDir Directories="$(PublishDir)meta" />
-    <MakeDir Directories="$(PublishDir)symbols" Condition="'@(_PublishSymbols)' != ''" />
-    <MakeDir Directories="$(PublishDir)assets" Condition="Exists('$(PublishDir)icon.ico')" />
-
-    <Move SourceFiles="@(_PublishSymbols)" DestinationFolder="$(PublishDir)symbols"
-      Condition="'@(_PublishSymbols)' != ''" />
-    <Move SourceFiles="$(PublishDir)icon.ico" DestinationFolder="$(PublishDir)assets"
-      Condition="Exists('$(PublishDir)icon.ico')" />
-
-    <Message Importance="high"
-      Text="Publish layout reorganized: engine/, symbols/." />
-  </Target>
 
 </Project>

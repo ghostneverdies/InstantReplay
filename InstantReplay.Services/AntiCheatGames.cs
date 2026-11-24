@@ -1,4 +1,10 @@
-﻿using System.Text.Json;
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Text.Json;
 
 namespace InstantReplay.Services;
 
@@ -57,14 +63,13 @@ internal static class AntiCheatGames
         string path = Path.Combine(AppContext.BaseDirectory, "assets", "games", "anticheat_games.json");
         try
         {
-            var entries = JsonSerializer.Deserialize<Entry[]>(File.ReadAllText(path), JsonOptions) ?? [];
+            var entries = JsonSerializer.Deserialize<Entry[]>(File.ReadAllText(path), JsonOptions) ?? Array.Empty<Entry>();
             var games = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             foreach (Entry entry in entries)
             {
                 string exe = Path.GetFileName(entry.Executable?.Trim() ?? "");
                 if (exe.Length == 0) continue;
-                if (!games.ContainsKey(exe))
-                    games[exe] = string.IsNullOrWhiteSpace(entry.Name) ? exe : entry.Name!.Trim();
+                if (!games.ContainsKey(exe)) games[exe] = string.IsNullOrWhiteSpace(entry.Name) ? exe : entry.Name!.Trim();
             }
             Logger.Info($"Anti-cheat game list loaded: {games.Count} executables will never be injected.");
             return new Catalog(games, false);

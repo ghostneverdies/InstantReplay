@@ -1,5 +1,3 @@
-; Instant Replay targets .NET Framework 4.8, which is preinstalled on supported
-; Windows systems. No .NET or WebView2 bootstrapper is bundled.
 SetCompressor /SOLID lzma
 
 !include "MUI2.nsh"
@@ -153,11 +151,30 @@ Section "Instant Replay (Required)" SecMain
         Delete "$INSTDIR\*.exe"
         Delete "$INSTDIR\*.json"
         Delete "$INSTDIR\*.pdb"
+        Delete "$INSTDIR\*.winmd"
+        Delete "$INSTDIR\*.pri"
+        Delete "$INSTDIR\*.xbf"
+        Delete "$INSTDIR\*.mui"
         RMDir /r "$INSTDIR\engine"
         RMDir /r "$INSTDIR\assets"
         RMDir /r "$INSTDIR\mediaplayer"
         RMDir /r "$INSTDIR\meta"
         RMDir /r "$INSTDIR\symbols"
+        RMDir /r "$INSTDIR\Themes"
+        RMDir /r "$INSTDIR\Microsoft.UI.Xaml"
+        FindFirst $0 $1 "$INSTDIR\*.*"
+        ShipLocaleLoop:
+            StrCmp $1 "" ShipLocaleDone
+            StrCmp $1 "." ShipLocaleNext
+            StrCmp $1 ".." ShipLocaleNext
+            StrCmp $1 "${MyAppFolder}" ShipLocaleNext
+            IfFileExists "$INSTDIR\$1\*.mui" 0 ShipLocaleNext
+            RMDir /r "$INSTDIR\$1"
+            ShipLocaleNext:
+            FindNext $0 $1
+            Goto ShipLocaleLoop
+        ShipLocaleDone:
+        FindClose $0
     ${EndIf}
 
     WriteRegStr HKLM "Software\Classes\${MyAppAssocExt}\OpenWithProgids" "${MyAppAssocKey}" ""

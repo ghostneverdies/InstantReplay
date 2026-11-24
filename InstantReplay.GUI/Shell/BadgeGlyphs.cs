@@ -1,6 +1,12 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Runtime.InteropServices;
+using System.Windows.Media;
 using InstantReplay.Services;
-using Color = System.Windows.Media.Color;
 
 namespace InstantReplay.GUI.Shell;
 
@@ -103,19 +109,15 @@ public static class BadgeGlyphs
 
     private const uint AntialiasedQuality = 4;
 
-    private static BITMAPINFOHEADER TopDownBgra(int width, int height)
+    private static BITMAPINFOHEADER TopDownBgra(int width, int height) => new()
     {
-        return new()
-        {
-            biSize = Marshal.SizeOf<BITMAPINFOHEADER>(),
-            biWidth = width,
-            biHeight = -height,
-            biPlanes = 1,
-            biBitCount = 32,
-            biCompression = 0,
-        };
-    }
-
+        biSize = Marshal.SizeOf<BITMAPINFOHEADER>(),
+        biWidth = width,
+        biHeight = -height,
+        biPlanes = 1,
+        biBitCount = 32,
+        biCompression = 0,
+    };
 
     public static bool TryRenderGlyphBgra(int codepoint, Color color, int size, out byte[] bgra)
     {
@@ -145,7 +147,7 @@ public static class BadgeGlyphs
             oldBmp = SelectObject(dc, dib);
 
             var white = new byte[size * size * 4];
-            for (int i = 0; i < white.Length; i++) white[i] = 0xFF;
+            Array.Fill(white, (byte)0xFF);
             Marshal.Copy(white, 0, bits, white.Length);
 
             font = CreateFont(-size, 0, 0, 0, 400, NoItalic, NoUnderline, NoStrikeOut,
@@ -153,12 +155,12 @@ public static class BadgeGlyphs
             if (font == IntPtr.Zero) return false;
 
             oldFont = SelectObject(dc, font);
-            _ = SetBkMode(dc, TransParentBk);
+            SetBkMode(dc, TransParentBk);
 
             string glyph = char.ConvertFromUtf32(codepoint);
             if (!GetTextExtentPoint32W(dc, glyph, glyph.Length, out SIZE extent)) return false;
             if (!TextOutW(dc, (size - extent.CX) / 2, (size - extent.CY) / 2, glyph, glyph.Length)) return false;
-            _ = GdiFlush();
+            GdiFlush();
 
             var raw = new byte[size * size * 4];
             Marshal.Copy(bits, raw, 0, raw.Length);
@@ -183,12 +185,12 @@ public static class BadgeGlyphs
         }
         finally
         {
-            if (oldFont != IntPtr.Zero && dc != IntPtr.Zero) _ = SelectObject(dc, oldFont);
-            if (oldBmp != IntPtr.Zero && dc != IntPtr.Zero) _ = SelectObject(dc, oldBmp);
-            if (font != IntPtr.Zero) _ = DeleteObject(font);
-            if (dib != IntPtr.Zero) _ = DeleteObject(dib);
-            if (dc != IntPtr.Zero) _ = DeleteDC(dc);
-            if (screen != IntPtr.Zero) _ = ReleaseDC(IntPtr.Zero, screen);
+            if (oldFont != IntPtr.Zero && dc != IntPtr.Zero) SelectObject(dc, oldFont);
+            if (oldBmp != IntPtr.Zero && dc != IntPtr.Zero) SelectObject(dc, oldBmp);
+            if (font != IntPtr.Zero) DeleteObject(font);
+            if (dib != IntPtr.Zero) DeleteObject(dib);
+            if (dc != IntPtr.Zero) DeleteDC(dc);
+            if (screen != IntPtr.Zero) ReleaseDC(IntPtr.Zero, screen);
         }
     }
 
@@ -221,9 +223,9 @@ public static class BadgeGlyphs
         finally
         {
             if (maskPin.IsAllocated) maskPin.Free();
-            if (mask != IntPtr.Zero) _ = DeleteObject(mask);
-            if (dib != IntPtr.Zero) _ = DeleteObject(dib);
-            if (screen != IntPtr.Zero) _ = ReleaseDC(IntPtr.Zero, screen);
+            if (mask != IntPtr.Zero) DeleteObject(mask);
+            if (dib != IntPtr.Zero) DeleteObject(dib);
+            if (screen != IntPtr.Zero) ReleaseDC(IntPtr.Zero, screen);
         }
     }
 
@@ -249,7 +251,7 @@ public static class BadgeGlyphs
             if (icon != IntPtr.Zero) return icon;
         }
 
-        return CreateGlyphIconFromFile("assets\\icons\\icon.ico", size);
+        return IntPtr.Zero;
     }
 
     private static void PutPixel(byte[] bgra, int size, int x, int y, byte r, byte g, byte b, byte a)
@@ -270,7 +272,7 @@ public static class BadgeGlyphs
             for (int x = 0; x < size; x++)
             {
                 double d = Math.Sqrt((x + 0.5 - c) * (x + 0.5 - c) + (y + 0.5 - c) * (y + 0.5 - c));
-                double coverage = Clamp(radius - d + 0.5, 0, 1);
+                double coverage = Compat.Clamp(radius - d + 0.5, 0, 1);
                 if (coverage > 0) PutPixel(bgra, size, x, y, color.R, color.G, color.B, (byte)Math.Round(coverage * 255));
             }
     }
@@ -346,7 +348,7 @@ public static class BadgeGlyphs
         }
         finally
         {
-            _ = DestroyIcon(appIcon);
+            DestroyIcon(appIcon);
         }
     }
 
@@ -410,9 +412,9 @@ public static class BadgeGlyphs
         finally
         {
             if (buffer != IntPtr.Zero) Marshal.FreeHGlobal(buffer);
-            if (info.hbmColor != IntPtr.Zero) _ = DeleteObject(info.hbmColor);
-            if (info.hbmMask != IntPtr.Zero) _ = DeleteObject(info.hbmMask);
-            if (screen != IntPtr.Zero) _ = ReleaseDC(IntPtr.Zero, screen);
+            if (info.hbmColor != IntPtr.Zero) DeleteObject(info.hbmColor);
+            if (info.hbmMask != IntPtr.Zero) DeleteObject(info.hbmMask);
+            if (screen != IntPtr.Zero) ReleaseDC(IntPtr.Zero, screen);
         }
     }
 }

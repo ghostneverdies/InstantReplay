@@ -1,37 +1,26 @@
-using System.Collections.ObjectModel;
-using System.Drawing;
-using System.Drawing.Imaging;
-using System.Globalization;
+using System;
+using System.Collections.Generic;
 using System.IO;
-using System.Reflection;
-using System.Runtime.InteropServices;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Collections.ObjectModel;
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
-using System.Windows;
-using System.Windows.Controls;
+using System.Runtime.InteropServices;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
+using Microsoft.VisualBasic.FileIO;
 using InstantReplay.Models;
 using InstantReplay.Services;
-using Wpf.Ui.Controls;
 
 namespace InstantReplay.Core;
 
 public sealed class ReplayLibrary
 {
-    private const uint FO_DELETE = 3;
-    private const ushort FOF_SILENT = 0x0004;
-    private const ushort FOF_NOCONFIRMATION = 0x0010;
-    private const ushort FOF_ALLOWUNDO = 0x0040;
-    private const ushort FOF_NOERRORUI = 0x0400;
-    private const ushort DeleteToRecycleBinFlags =
-        FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI;
-
-    private const uint SIIGBF_BIGGERSIZEOK = 0x00000001;
-    private const uint SIIGBF_THUMBNAILONLY = 0x00000008;
-
     private readonly record struct ScanEntry(string Folder, string Video, DateTime Created, long Size);
 
     private sealed record MetaCache(TimeSpan Duration, int Width, int Height, double Fps, long Length, long Ticks);
@@ -51,17 +40,9 @@ public sealed class ReplayLibrary
 
     public ReplayLibrary(Dispatcher dispatcher)
     {
-        _debounce = new DispatcherTimer(DispatcherPriority.Normal, dispatcher)
-        {
-            Interval = TimeSpan.FromMilliseconds(600),
-        };
-        _debounce.Tick += (_, _) => FolderChanged?.Invoke();
         Dispatcher = dispatcher;
-    }
-
-    public ReplayLibrary()
-        : this(Application.Current?.Dispatcher ?? System.Windows.Threading.Dispatcher.CurrentDispatcher)
-    {
+        _debounce = new DispatcherTimer(DispatcherPriority.Normal, dispatcher) { Interval = TimeSpan.FromMilliseconds(600) };
+        _debounce.Tick += (_, _) => { _debounce.Stop(); FolderChanged?.Invoke(); };
     }
 
     public Dispatcher Dispatcher { get; }
@@ -76,17 +57,14 @@ public sealed class ReplayLibrary
     {
         string name = Path.GetFileName(folderPath.TrimEnd('\\', '/'));
         byte[] hash;
-        using (SHA1 sha = SHA1.Create())
-            hash = sha.ComputeHash(Encoding.UTF8.GetBytes(folderPath.ToLowerInvariant()));
-        string suffix = BitConverter.ToString(hash).Replace("-", "").Substring(0, 8);
+        using (var sha1 = SHA1.Create())
+            hash = sha1.ComputeHash(Encoding.UTF8.GetBytes(folderPath.ToLowerInvariant()));
+        string suffix = Compat.ToHexString(hash).Substring(0, 8);
         return Path.Combine(ThumbnailRoot, $"{name}_{suffix}.jpg");
     }
 
-    private static string LegacyThumbnailPathFor(string thumbPath)
-    {
-        return Path.Combine(Path.GetTempPath(), "thumbnails", Path.GetFileName(thumbPath));
-    }
-
+    private static string LegacyThumbnailPathFor(string thumbPath) =>
+        Path.Combine(Path.GetTempPath(), "thumbnails", Path.GetFileName(thumbPath));
 
     public async Task WarmUpAsync(string dir)
     {
@@ -184,7 +162,7 @@ public sealed class ReplayLibrary
                 if (!visible || item.QueuedAsVisible) return;
                 item.QueuedAsVisible = true;
                 _visible.Push(item);
-                _ = _signal.Release();
+                _signal.Release();
                 return;
             }
 
@@ -193,7 +171,7 @@ public sealed class ReplayLibrary
             item.PrepareState = StateQueued;
             item.QueuedAsVisible = visible;
             if (visible) _visible.Push(item); else _background.Enqueue(item);
-            _ = _signal.Release();
+            _signal.Release();
         }
     }
 
@@ -265,7 +243,7 @@ public sealed class ReplayLibrary
                         item.QueuedAsVisible = false;
                         if (!produced) item.Failures++;
                     }
-                    _ = item.Prepared.TrySetResult(true);
+                    item.Prepared.TrySetResult(true);
                 }
             }
         }
@@ -294,7 +272,7 @@ public sealed class ReplayLibrary
         bool hasThumbnail = File.Exists(item.ThumbPath);
         if (meta == null && !hasThumbnail) return false;
 
-        DispatcherPriority priority = visible ? DispatcherPriority.Normal : DispatcherPriority.Background;
+        var priority = visible ? DispatcherPriority.Normal : DispatcherPriority.Background;
         await OnUiAsync(() =>
         {
             ImageSource? source = hasThumbnail && item.Thumbnail == null
@@ -314,68 +292,32 @@ public sealed class ReplayLibrary
         {
             string legacy = LegacyThumbnailPathFor(item.ThumbPath);
             if (!File.Exists(legacy)) return;
-            _ = Directory.CreateDirectory(Path.GetDirectoryName(item.ThumbPath)!);
+            Directory.CreateDirectory(Path.GetDirectoryName(item.ThumbPath)!);
             File.Copy(legacy, item.ThumbPath, overwrite: false);
         }
         catch { }
     }
 
-    private async Task<MetaCache?> ReadVideoMetaAsync(ReplayItem item)
+    private Task<MetaCache?> ReadVideoMetaAsync(ReplayItem item)
     {
-        return await Task.Run(() => ReadVideoMeta(item)).ConfigureAwait(false);
-    }
-
-
-    private static MetaCache? ReadVideoMeta(ReplayItem item)
-    {
-        try
+        return Task.Run<MetaCache?>(() =>
         {
-            var info = new FileInfo(item.VideoPath);
-            using var reader = new ShellPropertyReader(item.VideoPath);
-            TimeSpan duration = ParseShellDuration(reader.Get("System.Media.Duration"));
-            int width = ToInt(reader.Get("System.Video.FrameWidth"));
-            int height = ToInt(reader.Get("System.Video.FrameHeight"));
-            double fps = ParseShellFrameRate(reader.Get("System.Video.FrameRate"));
-            return new MetaCache(duration, width, height, fps, info.Length, info.LastWriteTimeUtc.Ticks);
-        }
-        catch (Exception ex)
-        {
-            Logger.Warn($"Gallery: reading video properties failed: {ex.Message}");
-            return null;
-        }
+            try
+            {
+                var info = new FileInfo(item.VideoPath);
+                ShellVideoInfo video = ShellMedia.ReadVideoInfo(item.VideoPath);
+                return new MetaCache(video.Duration, video.Width, video.Height, video.Fps,
+                    info.Length, info.LastWriteTimeUtc.Ticks);
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn($"Gallery: reading video properties failed: {ex.Message}");
+                return null;
+            }
+        });
     }
 
-    private static TimeSpan ParseShellDuration(object? value)
-    {
-        if (value is long or int or uint or ulong or short or ushort)
-        {
-            try { return TimeSpan.FromTicks(Convert.ToInt64(value, CultureInfo.InvariantCulture)); }
-            catch { return TimeSpan.Zero; }
-        }
-        if (value is string text && TimeSpan.TryParse(text, CultureInfo.InvariantCulture, out TimeSpan parsed))
-            return parsed;
-        return TimeSpan.Zero;
-    }
-
-    private static int ToInt(object? value)
-    {
-        if (value == null) return 0;
-        try { return Convert.ToInt32(value, CultureInfo.InvariantCulture); }
-        catch { return 0; }
-    }
-
-    private static double ParseShellFrameRate(object? value)
-    {
-        if (value == null) return 0;
-        try { return Convert.ToDouble(value, CultureInfo.InvariantCulture) / 1000.0; }
-        catch { return 0; }
-    }
-
-    private static string MetaCachePathFor(string thumbPath)
-    {
-        return thumbPath + ".meta.json";
-    }
-
+    private static string MetaCachePathFor(string thumbPath) => thumbPath + ".meta.json";
 
     private static MetaCache? TryReadMetaCache(ReplayItem item)
     {
@@ -401,7 +343,7 @@ public sealed class ReplayLibrary
         try
         {
             string path = MetaCachePathFor(item.ThumbPath);
-            _ = Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             File.WriteAllText(path, JsonSerializer.Serialize(meta));
         }
         catch (Exception ex)
@@ -413,19 +355,25 @@ public sealed class ReplayLibrary
     private static async Task GenerateThumbnailAsync(ReplayItem item)
     {
         string thumbPath = item.ThumbPath;
-        _ = Directory.CreateDirectory(Path.GetDirectoryName(thumbPath)!);
+        Directory.CreateDirectory(Path.GetDirectoryName(thumbPath)!);
 
-        byte[]? bytes = await Task.Run(() =>
-            GetShellThumbnailBytes(item.VideoPath) ?? GetIconThumbnailBytes(item.VideoPath)).ConfigureAwait(false);
-        if (bytes == null) return;
+        byte[]? bytes = null;
+        try
+        {
+            bytes = await Task.Run(() => ShellMedia.CreateThumbnailJpeg(item.VideoPath, 480)).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            Logger.Debug($"Gallery: shell thumbnail unavailable for '{item.VideoPath}': {ex.Message}");
+        }
+
+        if (bytes == null || bytes.Length == 0) return;
 
         string temporary = thumbPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try
         {
-            using (var stream = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None))
-                await stream.WriteAsync(bytes, 0, bytes.Length).ConfigureAwait(false);
-            if (File.Exists(thumbPath)) File.Delete(thumbPath);
-            File.Move(temporary, thumbPath);
+            await Compat.WriteAllBytesAsync(temporary, bytes).ConfigureAwait(false);
+            Compat.MoveOverwrite(temporary, thumbPath);
             Logger.Debug($"Gallery: thumbnail generated for '{Path.GetFileName(item.FolderPath)}'.");
         }
         finally
@@ -434,88 +382,19 @@ public sealed class ReplayLibrary
         }
     }
 
-    private static byte[]? GetShellThumbnailBytes(string videoPath)
-    {
-        IShellItemImageFactory? factory = null;
-        IntPtr hbm = IntPtr.Zero;
-        try
-        {
-            Guid iid = typeof(IShellItemImageFactory).GUID;
-            SHCreateItemFromParsingName(videoPath, IntPtr.Zero, ref iid, out factory);
-            factory.GetImage(new ShellImageSize { Cx = 480, Cy = 480 },
-                SIIGBF_THUMBNAILONLY | SIIGBF_BIGGERSIZEOK, out hbm);
-            if (hbm == IntPtr.Zero) return null;
-
-            using (Bitmap bitmap = Bitmap.FromHbitmap(hbm))
-            using (var stream = new MemoryStream())
-            {
-                bitmap.Save(stream, ImageFormat.Jpeg);
-                return stream.ToArray();
-            }
-        }
-        catch (Exception ex)
-        {
-            Logger.Debug($"Gallery: shell thumbnail unavailable for '{videoPath}': {ex.Message}");
-            return null;
-        }
-        finally
-        {
-            if (hbm != IntPtr.Zero) _ = DeleteObject(hbm);
-            if (factory != null)
-            {
-                try { _ = Marshal.ReleaseComObject(factory); } catch { }
-            }
-        }
-    }
-
-    private static byte[]? GetIconThumbnailBytes(string videoPath)
-    {
-        try
-        {
-            using Icon icon = Icon.ExtractAssociatedIcon(videoPath);
-            using Bitmap bitmap = icon.ToBitmap();
-            using var stream = new MemoryStream();
-            bitmap.Save(stream, ImageFormat.Png);
-            return stream.ToArray();
-        }
-        catch
-        {
-            return null;
-        }
-    }
-
     private Task OnUiAsync(Action action, DispatcherPriority priority = DispatcherPriority.Normal)
     {
-        var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        try
-        {
-            _ = Dispatcher.BeginInvoke(priority, (Action)(() =>
-            {
-                try { action(); _ = tcs.TrySetResult(true); }
-                catch (Exception ex) { _ = tcs.TrySetException(ex); }
-            }));
-        }
-        catch
-        {
-            // The dispatcher is shutting down; mirror the old TryEnqueue(false) behavior.
-            _ = tcs.TrySetResult(true);
-        }
-        return tcs.Task;
-    }
-
-    private void PostToUi(Action action)
-    {
-        try { _ = Dispatcher.BeginInvoke(action); }
-        catch { }
+        return Dispatcher.InvokeAsync(action, priority).Task;
     }
 
     private static ImageSource CreateThumbnailSource(string thumbPath)
     {
         var image = new BitmapImage();
         image.BeginInit();
-        image.CacheOption = BitmapCacheOption.OnLoad;
         image.DecodePixelWidth = 480;
-        image.UriSource = new Uri(Path.GetFullPath(thumbPath), UriKind.Absolute);
+        image.CacheOption = BitmapCacheOption.OnLoad;
+        image.CreateOptions = BitmapCreateOptions.IgnoreColorProfile;
+        image.UriSource = new Uri(thumbPath);
         image.EndInit();
         image.Freeze();
         return image;
@@ -525,10 +404,11 @@ public sealed class ReplayLibrary
     {
         try
         {
-            await Task.Run(() => DeleteToRecycleBin(item.FolderPath));
+            await Task.Run(() => FileSystem.DeleteDirectory(item.FolderPath,
+                UIOption.OnlyErrorDialogs, RecycleOption.SendToRecycleBin));
             try { File.Delete(item.ThumbPath); } catch { }
             try { File.Delete(MetaCachePathFor(item.ThumbPath)); } catch { }
-            _ = Items.Remove(item);
+            Items.Remove(item);
             return true;
         }
         catch (Exception ex)
@@ -536,26 +416,6 @@ public sealed class ReplayLibrary
             Logger.Warn($"Gallery: deleting '{item.FolderPath}' failed: {ex.Message}");
             return false;
         }
-    }
-
-    private static void DeleteToRecycleBin(string path)
-    {
-        if (!Directory.Exists(path)) return;
-        try
-        {
-            var op = new ShFileOpStruct
-            {
-                hwnd = IntPtr.Zero,
-                wFunc = FO_DELETE,
-                pFrom = path + "\0", // SHFileOperation expects a double NUL-terminated list.
-                fFlags = DeleteToRecycleBinFlags,
-            };
-            if (SHFileOperation(ref op) == 0) return;
-        }
-        catch { }
-
-        // Fallback when the shell refuses the operation (e.g. unavailable recycle bin).
-        Directory.Delete(path, recursive: true);
     }
 
     private void Watch(string dir)
@@ -575,10 +435,10 @@ public sealed class ReplayLibrary
                 IncludeSubdirectories = true,
                 NotifyFilter = NotifyFilters.FileName | NotifyFilters.DirectoryName,
             };
-            FileSystemEventHandler onChange = (_, _) => PostToUi(() => { _debounce.Stop(); _debounce.Start(); });
+            FileSystemEventHandler onChange = (_, _) => Dispatcher.BeginInvoke(new Action(() => { _debounce.Stop(); _debounce.Start(); }));
             watcher.Created += onChange;
             watcher.Deleted += onChange;
-            watcher.Renamed += (_, _) => PostToUi(() => { _debounce.Stop(); _debounce.Start(); });
+            watcher.Renamed += (_, _) => Dispatcher.BeginInvoke(new Action(() => { _debounce.Stop(); _debounce.Start(); }));
             watcher.EnableRaisingEvents = true;
             _watcher = watcher;
         }
@@ -587,103 +447,156 @@ public sealed class ReplayLibrary
             Logger.Warn($"Gallery: could not watch '{dir}': {ex.Message}");
         }
     }
+}
+
+
+internal readonly struct ShellVideoInfo
+{
+    public ShellVideoInfo(TimeSpan duration, int width, int height, double fps)
+    {
+        Duration = duration; Width = width; Height = height; Fps = fps;
+    }
+
+    public TimeSpan Duration { get; }
+    public int Width { get; }
+    public int Height { get; }
+    public double Fps { get; }
+}
+
+/// <summary>
+/// Video metadata and thumbnails straight from the Windows shell (the same providers Explorer uses).
+/// Replaces the WinRT StorageFile/VideoProperties/GetThumbnailAsync calls, which .NET Framework 4.8 cannot use.
+/// </summary>
+internal static class ShellMedia
+{
+    private static readonly Guid IidShellItem = new Guid("43826D1E-E718-42EE-BC55-A1E261C37BFE");
+    private static readonly Guid IidShellItemImageFactory = new Guid("BCC18B79-BA16-442F-80C4-8A59C30C463B");
+    private static readonly Guid IidPropertyStore = new Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99");
+
+    private static readonly Guid FmtidMedia = new Guid("64440490-4C8B-11D1-8B70-080036B11A03");
+    private static readonly Guid FmtidVideo = new Guid("64440491-4C8B-11D1-8B70-080036B11A03");
+
+    private const uint SiigbfBiggerSizeOk = 0x01;
+    private const uint SiigbfThumbnailOnly = 0x08;
+    private const uint GpsDefault = 0;
 
     [StructLayout(LayoutKind.Sequential)]
-    private struct ShellImageSize
+    private struct Size { public int Cx, Cy; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PropertyKeyNative
     {
-        public int Cx;
-        public int Cy;
+        public Guid Fmtid;
+        public uint Pid;
     }
 
-    [ComImport]
-    [Guid("BCC18B79-BA16-442F-80C4-8A59C30C463B")]
-    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    // PROPVARIANT: 2-byte type, 6 reserved bytes, then a union (8 bytes on x86, 16 on x64).
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PropVariantNative
+    {
+        public ushort Vt;
+        public ushort Reserved1, Reserved2, Reserved3;
+        public ulong Value;
+        public ulong Value2;
+    }
+
+    [ComImport, Guid("BCC18B79-BA16-442F-80C4-8A59C30C463B"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
     private interface IShellItemImageFactory
     {
-        void GetImage(ShellImageSize size, uint flags, out IntPtr hbitmap);
+        [PreserveSig]
+        int GetImage(Size size, uint flags, out IntPtr phbm);
     }
 
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    private struct ShFileOpStruct
+    [ComImport, Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IPropertyStoreNative
     {
-        public IntPtr hwnd;
-        public uint wFunc;
-        [MarshalAs(UnmanagedType.LPWStr)] public string pFrom;
-        [MarshalAs(UnmanagedType.LPWStr)] public string? pTo;
-        public ushort fFlags;
-        [MarshalAs(UnmanagedType.Bool)] public bool fAnyOperationsAborted;
-        public IntPtr hNameMappings;
-        [MarshalAs(UnmanagedType.LPWStr)] public string? lpszProgressTitle;
+        [PreserveSig] int GetCount(out uint count);
+        [PreserveSig] int GetAt(uint index, out PropertyKeyNative key);
+        [PreserveSig] int GetValue(ref PropertyKeyNative key, out PropVariantNative value);
+        [PreserveSig] int SetValue(ref PropertyKeyNative key, ref PropVariantNative value);
+        [PreserveSig] int Commit();
     }
 
-    [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = false)]
-    private static extern void SHCreateItemFromParsingName(
-        [MarshalAs(UnmanagedType.LPWStr)] string path, IntPtr bindContext, ref Guid riid,
-        out IShellItemImageFactory factory);
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = true)]
+    private static extern int SHCreateItemFromParsingName(string path, IntPtr bindContext, ref Guid riid,
+        [MarshalAs(UnmanagedType.Interface)] out object shellItem);
 
-    [DllImport("shell32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern int SHFileOperation(ref ShFileOpStruct fileOp);
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = true)]
+    private static extern int SHGetPropertyStoreFromParsingName(string path, IntPtr bindContext, uint flags, ref Guid riid,
+        [MarshalAs(UnmanagedType.Interface)] out IPropertyStoreNative store);
+
+    [DllImport("ole32.dll")]
+    private static extern int PropVariantClear(ref PropVariantNative value);
 
     [DllImport("gdi32.dll")]
-    private static extern bool DeleteObject(IntPtr hObject);
+    private static extern bool DeleteObject(IntPtr handle);
 
-    /// <summary>
-    /// Minimal net48 replacement for WinRT StorageFile property retrieval. Reads the
-    /// same shell properties used by the old implementation through Shell.Application.
-    /// </summary>
-    private sealed class ShellPropertyReader : IDisposable
+    private static ulong ReadUInt64(IPropertyStoreNative store, Guid fmtid, uint pid)
     {
-        private readonly object _shell;
-        private readonly object? _item;
-
-        public ShellPropertyReader(string videoPath)
+        var key = new PropertyKeyNative { Fmtid = fmtid, Pid = pid };
+        if (store.GetValue(ref key, out PropVariantNative value) != 0) return 0;
+        try
         {
-            Type? shellType = Type.GetTypeFromProgID("Shell.Application");
-            if (shellType == null) throw new InvalidOperationException("Shell.Application is unavailable.");
-            _shell = Activator.CreateInstance(shellType)!;
-            _item = null;
-
-            try
+            switch (value.Vt)
             {
-                string folder = Path.GetDirectoryName(videoPath) ?? "";
-                string file = Path.GetFileName(videoPath);
-                object? ns = shellType.InvokeMember("NameSpace", BindingFlags.InvokeMethod, null, _shell,
-                    new object[] { folder });
-                _item = ns?.GetType().InvokeMember("ParseName", BindingFlags.InvokeMethod, null, ns,
-                    new object[] { file });
-                Release(ns);
-            }
-            catch
-            {
-                Release(_shell);
-                throw;
+                case 21: // VT_UI8
+                case 20: // VT_I8
+                    return value.Value;
+                case 19: // VT_UI4
+                case 3:  // VT_I4
+                    return (uint)(value.Value & 0xFFFFFFFF);
+                default:
+                    return 0;
             }
         }
+        finally { PropVariantClear(ref value); }
+    }
 
-        public object? Get(string canonicalName)
+    public static ShellVideoInfo ReadVideoInfo(string path)
+    {
+        Guid iid = IidPropertyStore;
+        int hr = SHGetPropertyStoreFromParsingName(path, IntPtr.Zero, GpsDefault, ref iid, out IPropertyStoreNative store);
+        if (hr != 0) throw new COMException("The shell could not read the video properties.", hr);
+        try
         {
-            if (_item == null) return null;
-            try
+            ulong duration100ns = ReadUInt64(store, FmtidMedia, 3);   // System.Media.Duration
+            ulong width = ReadUInt64(store, FmtidVideo, 3);           // System.Video.FrameWidth
+            ulong height = ReadUInt64(store, FmtidVideo, 4);          // System.Video.FrameHeight
+            ulong frameRate = ReadUInt64(store, FmtidVideo, 6);       // System.Video.FrameRate (frames per 1000 s)
+            return new ShellVideoInfo(
+                TimeSpan.FromTicks((long)Math.Min(duration100ns, (ulong)long.MaxValue)),
+                (int)Math.Min(width, int.MaxValue), (int)Math.Min(height, int.MaxValue),
+                frameRate > 0 ? frameRate / 1000.0 : 0);
+        }
+        finally { Marshal.ReleaseComObject(store); }
+    }
+
+    public static byte[]? CreateThumbnailJpeg(string path, int width)
+    {
+        Guid iid = IidShellItem;
+        int hr = SHCreateItemFromParsingName(path, IntPtr.Zero, ref iid, out object item);
+        if (hr != 0) throw new COMException("The shell could not open the video.", hr);
+        IntPtr bitmap = IntPtr.Zero;
+        try
+        {
+            var factory = (IShellItemImageFactory)item;
+            hr = factory.GetImage(new Size { Cx = width, Cy = width * 9 / 16 }, SiigbfBiggerSizeOk | SiigbfThumbnailOnly, out bitmap);
+            if (hr != 0 || bitmap == IntPtr.Zero) throw new COMException("The shell has no thumbnail for this video.", hr);
+
+            BitmapSource source = System.Windows.Interop.Imaging.CreateBitmapSourceFromHBitmap(
+                bitmap, IntPtr.Zero, System.Windows.Int32Rect.Empty, BitmapSizeOptions.FromEmptyOptions());
+            var encoder = new JpegBitmapEncoder { QualityLevel = 90 };
+            encoder.Frames.Add(BitmapFrame.Create(source));
+            using (var stream = new MemoryStream())
             {
-                return _item.GetType().InvokeMember("ExtendedProperty", BindingFlags.InvokeMethod, null, _item,
-                    new object[] { canonicalName });
-            }
-            catch
-            {
-                return null;
+                encoder.Save(stream);
+                return stream.ToArray();
             }
         }
-
-        public void Dispose()
+        finally
         {
-            Release(_item);
-            Release(_shell);
-        }
-
-        private static void Release(object? comObject)
-        {
-            if (comObject == null) return;
-            try { _ = Marshal.ReleaseComObject(comObject); } catch { }
+            if (bitmap != IntPtr.Zero) DeleteObject(bitmap);
+            Marshal.ReleaseComObject(item);
         }
     }
 }

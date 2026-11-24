@@ -1,18 +1,18 @@
+using System;
+using System.Collections.Generic;
+using System.Windows.Input;
 
 namespace InstantReplay.GUI.Helpers;
 
 public static class HotkeyDisplay
 {
     private const uint VkOemComma = 0xBC, VkOemPeriod = 0xBE, VkOemQuestion = 0xBF,
-                         VkOemSemicolon = 0xBA, VkOemQuotes = 0xDE, VkOemPlus = 0xBB, VkOemMinus = 0xBD,
-                         VkMultiply = 0x6A, VkAdd = 0x6B, VkSubtract = 0x6D, VkDivide = 0x6F, VkDecimal = 0x6E,
-                         VkNumPad0 = 0x60, VkNumPad9 = 0x69, VkD0 = 0x30, VkD9 = 0x39, VkSpace = 0x20;
+                        VkOemSemicolon = 0xBA, VkOemQuotes = 0xDE, VkOemPlus = 0xBB, VkOemMinus = 0xBD,
+                        VkMultiply = 0x6A, VkAdd = 0x6B, VkSubtract = 0x6D, VkDivide = 0x6F, VkDecimal = 0x6E,
+                        VkNumPad0 = 0x60, VkNumPad9 = 0x69, VkD0 = 0x30, VkD9 = 0x39, VkSpace = 0x20;
 
-    public static string Format(uint modifiers, uint vk)
-    {
-        return string.Join(" + ", Parts(modifiers, vk));
-    }
-
+    public static string Format(uint modifiers, uint vk) =>
+        string.Join(" + ", Parts(modifiers, vk));
 
     public static IReadOnlyList<string> Parts(uint modifiers, uint vk)
     {
@@ -49,22 +49,36 @@ public static class HotkeyDisplay
         if (vk is >= VkNumPad0 and <= VkNumPad9) return "NUM " + (vk - VkNumPad0);
         if (vk is >= VkD0 and <= VkD9) return (vk - VkD0).ToString();
 
-        // Win32 virtual keys are translated through WPF's input interop layer;
-        // Windows.System.VirtualKey (WinUI) does not exist on .NET Framework.
         Key key = KeyInterop.KeyFromVirtualKey((int)vk);
-        return key == Key.None ? vk.ToString() : key.ToString().ToUpperInvariant();
+        switch (key)
+        {
+            case Key.Return: return "ENTER";
+            case Key.Prior: return "PAGEUP";
+            case Key.Next: return "PAGEDOWN";
+            case Key.Capital: return "CAPSLOCK";
+            case Key.None: return "0X" + vk.ToString("X2");
+        }
+        return key.ToString().ToUpperInvariant();
     }
 
     public static uint? ModifierBitForKey(Key key)
     {
-        return key switch
+        switch (key)
         {
-            Key.LeftCtrl or Key.RightCtrl => MainWindow.ModControl,
-            Key.LeftAlt or Key.RightAlt or Key.System => MainWindow.ModAlt,
-            Key.LeftShift or Key.RightShift => MainWindow.ModShift,
-            Key.LWin or Key.RWin => MainWindow.ModWin,
-            _ => null,
-        };
+            case Key.LeftCtrl:
+            case Key.RightCtrl:
+                return MainWindow.ModControl;
+            case Key.LeftAlt:
+            case Key.RightAlt:
+                return MainWindow.ModAlt;
+            case Key.LeftShift:
+            case Key.RightShift:
+                return MainWindow.ModShift;
+            case Key.LWin:
+            case Key.RWin:
+                return MainWindow.ModWin;
+            default:
+                return null;
+        }
     }
-
 }

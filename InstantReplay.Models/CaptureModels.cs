@@ -1,3 +1,9 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 namespace InstantReplay.Models;
 
 public enum CaptureMethod
@@ -56,10 +62,7 @@ internal sealed record WindowSnapshot(
         ? $"wgc:{Handle.ToInt64()}"
         : $"dxgi:{MonitorIndex}";
 
-    public override string ToString()
-    {
-        return $"{Mode} on display {MonitorIndex + 1}/{MonitorCount} ({DisplayWidth}x{DisplayHeight}, " +
+    public override string ToString() =>
+        $"{Mode} on display {MonitorIndex + 1}/{MonitorCount} ({DisplayWidth}x{DisplayHeight}, " +
         $"native {NativeWidth}x{NativeHeight}, window {WindowWidth}x{WindowHeight}; {Reason})";
-    }
-
 }

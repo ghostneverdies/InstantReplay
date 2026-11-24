@@ -1,3 +1,9 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Text;
 using InstantReplay.Models;
 using InstantReplay.Native;
@@ -79,12 +85,12 @@ public sealed class ReplayEngine : IDisposable
 
             int mon = monitorIndex;
             int secs = Math.Max(ringSeconds, 1);
-            int rate = Clamp(fps, 15, 240);
+            int rate = Compat.Clamp(fps, 15, 240);
             int bps = Math.Max(bitrateKbps, 1);
             int capW = Math.Max(0, outputWidthCap), capH = Math.Max(0, outputHeightCap);
 
             if (canvasWidth > 0 && canvasHeight > 0)
-                _ = IrNative.IR_SetCanvasHint(_engine, canvasWidth, canvasHeight);
+                IrNative.IR_SetCanvasHint(_engine, canvasWidth, canvasHeight);
             if (IrNative.IR_SetCaptureTarget(_engine, targetWindow, captureOptions) != IrNative.OK)
             {
                 _hasError = true;
@@ -171,7 +177,7 @@ public sealed class ReplayEngine : IDisposable
     {
         lock (_opLock)
         {
-            if (_engine != IntPtr.Zero) _ = IrNative.IR_SetPaused(_engine, paused ? 1 : 0);
+            if (_engine != IntPtr.Zero) IrNative.IR_SetPaused(_engine, paused ? 1 : 0);
         }
     }
 
@@ -543,9 +549,5 @@ public sealed class ReplayEngine : IDisposable
         }
     }
 
-    public void Dispose()
-    {
-        Shutdown();
-    }
-
+    public void Dispose() => Shutdown();
 }

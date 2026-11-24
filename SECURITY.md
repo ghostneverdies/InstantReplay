@@ -27,7 +27,7 @@ Instant Replay is a free, open-source replay recorder. This document describes t
 - No telemetry, analytics or tracking.
 - No background services or scheduled tasks.
 - No modification of system files or Windows settings beyond its own registry entries.
-- The app bundles its WinUI runtime and requires WebView2 for local replay playback. It uses no Java helpers or virtual audio drivers; encoding and MP4 writing use Windows Media Foundation.
+- The app targets .NET Framework 4.8 and requires WebView2 for local replay playback. It uses no Java helpers or virtual audio drivers; encoding and MP4 writing use Windows Media Foundation.
 
 The GitHub button opens the project's page in your browser; an interactive installer can also open it after installation. When the WebView2 Runtime is missing, a persistent warning has a **Download WebView2** button that opens Microsoft's official Runtime download page. The app does not automatically download or install WebView2.
 
@@ -37,7 +37,7 @@ The app contacts GitHub's public Releases API for `ghostneverdies/InstantReplay`
 
 Installing requires an explicit **Download and install** or **Update now** action. The app accepts only newer numeric stable versions and the expected `InstantReplaySetup.exe` asset from this repository's HTTPS release URLs. Download redirects must remain on supported GitHub asset hosts. It checks download size and SHA-256 before handing off, and the helper rechecks the hash before execution. These checks detect corrupted or mismatched downloads; they rely on GitHub and the repository owner's account and are not an independent publisher signature. The updater refuses automatic installation when the release lacks a valid checksum.
 
-A WinUI reminder can also offer **Update now** and **Not now**, at most once every 24 hours. Its timestamp is persisted independently of update checks. It waits until the app is in foreground use. Declining performs no download, installation, or capture restart; choosing **Update now** authorizes the same verified installer flow.
+An in-app reminder can also offer **Update now** and **Not now**, at most once every 24 hours. Its timestamp is persisted independently of update checks. It waits until the app is in foreground use. Declining performs no download, installation, or capture restart; choosing **Update now** authorizes the same verified installer flow.
 
 A locally generated, temporary PowerShell helper runs without a visible console, waits for the app to exit, requests elevation for the NSIS installer, and reopens the app under the original user after the installer exits. The helper uses `-NoProfile -NonInteractive -ExecutionPolicy Bypass` for its own locally written script; it does not change the machine's execution-policy settings or download scripts. Administrator approval remains controlled by Windows. Installation clears the current in-memory replay buffer. Download cancellation leaves capture running. No updater service or scheduled task is installed.
 

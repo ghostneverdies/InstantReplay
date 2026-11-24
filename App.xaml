@@ -3,139 +3,15 @@
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
-    xmlns:controls="clr-namespace:InstantReplay.GUI.Controls"
-    xmlns:sys="clr-namespace:System;assembly=mscorlib">
+    ShutdownMode="OnExplicitShutdown">
     <Application.Resources>
         <ResourceDictionary>
             <ResourceDictionary.MergedDictionaries>
-                <ui:ThemesDictionary Theme="Dark" />
-                <ui:ControlsDictionary />
-                <ResourceDictionary>
-
-                    <!-- Theme-aware aliases mapped onto WPF UI fluent brushes. -->
-                    <SolidColorBrush x:Key="BgBrush" Color="{DynamicResource SolidBackgroundFillColorTransparent}" />
-                    <SolidColorBrush x:Key="SurfaceBrush" Color="{DynamicResource ControlFillColorDefault}" />
-                    <SolidColorBrush x:Key="SurfaceBorderBrush" Color="{DynamicResource ControlStrokeColorDefault}" />
-                    <SolidColorBrush x:Key="AccentBrush" Color="{DynamicResource AccentFillColorDefault}" />
-                    <SolidColorBrush x:Key="AccentTextBrush" Color="{DynamicResource TextOnAccentFillColorPrimary}" />
-                    <SolidColorBrush x:Key="AccentDimBrush" Color="{DynamicResource AccentFillColorSecondary}" />
-                    <SolidColorBrush x:Key="RecBrush" Color="#B84A4F" />
-                    <SolidColorBrush x:Key="HeartRedBrush" Color="#ED4956" />
-                    <SolidColorBrush x:Key="DonateBrush" Color="#26A17B" />
-                    <SolidColorBrush x:Key="ErrorBrush" Color="{DynamicResource SystemFillColorCritical}" />
-                    <SolidColorBrush x:Key="SuccessBrush" Color="{DynamicResource SystemFillColorSuccess}" />
-                    <SolidColorBrush x:Key="HoverBrush" Color="{DynamicResource SubtleFillColorSecondary}" />
-                    <SolidColorBrush x:Key="TitleBarHoverBrush" Color="{DynamicResource SubtleFillColorSecondary}" />
-                    <SolidColorBrush x:Key="TitleBarPressedBrush" Color="{DynamicResource SubtleFillColorTertiary}" />
-                    <SolidColorBrush x:Key="TextPrimaryBrush" Color="{DynamicResource TextFillColorPrimary}" />
-                    <SolidColorBrush x:Key="TextMutedBrush" Color="{DynamicResource TextFillColorSecondary}" />
-                    <SolidColorBrush x:Key="StatLabelBrush" Color="{DynamicResource TextFillColorTertiary}" />
-                    <SolidColorBrush x:Key="StatHintBrush" Color="{DynamicResource TextFillColorSecondary}" />
-                    <SolidColorBrush x:Key="StatCardBrush" Color="{DynamicResource CardBackgroundFillColorDefault}" />
-                    <SolidColorBrush x:Key="StatCardBorderBrush" Color="{DynamicResource CardStrokeColorDefault}" />
-                    <SolidColorBrush x:Key="HomeBarTrackBrush" Color="{DynamicResource ControlFillColorSecondary}" />
-                    <SolidColorBrush x:Key="SettingsAreaBrush" Color="{DynamicResource ControlFillColorDefault}" />
-                    <SolidColorBrush x:Key="SettingsAreaTextBrush" Color="{DynamicResource TextFillColorPrimary}" />
-                    <SolidColorBrush x:Key="SettingsAreaMutedBrush" Color="{DynamicResource TextFillColorSecondary}" />
-                    <SolidColorBrush x:Key="HeroBackgroundBrush" Color="{DynamicResource AccentFillColorSecondary}" />
-                    <SolidColorBrush x:Key="HeroBorderBrush" Color="{DynamicResource CardStrokeColorDefault}" />
-                    <!-- Density / typography values. -->
-                    <sys:Double x:Key="SpacingXS">6</sys:Double>
-                    <sys:Double x:Key="SpacingSM">8</sys:Double>
-                    <sys:Double x:Key="SpacingMD">12</sys:Double>
-                    <sys:Double x:Key="SpacingLG">14</sys:Double>
-                    <sys:Double x:Key="SpacingXL">18</sys:Double>
-                    <Thickness x:Key="CardPadding">18</Thickness>
-                    <Thickness x:Key="ContentFrameMargin">20,16,20,12</Thickness>
-                    <Thickness x:Key="ApplyButtonMargin">20,0,20,12</Thickness>
-                    <sys:Double x:Key="CaptionFontSize">12</sys:Double>
-                    <sys:Double x:Key="BodyFontSize">14</sys:Double>
-                    <sys:Double x:Key="HelperFontSize">12</sys:Double>
-                    <sys:Double x:Key="StepperButtonSize">32</sys:Double>
-                    <sys:Double x:Key="NavItemHeight">40</sys:Double>
-                    <Thickness x:Key="ButtonPadding">16,8</Thickness>
-                    <FontFamily x:Key="SymbolThemeFontFamily">Segoe Fluent Icons,Segoe MDL2 Assets</FontFamily>
-
-                    <Style x:Key="Title" TargetType="TextBlock">
-                        <Setter Property="FontFamily" Value="Segoe UI Variable"/>
-                        <Setter Property="FontSize" Value="20"/>
-                        <Setter Property="FontWeight" Value="SemiBold"/>
-                        <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}"/>
-                    </Style>
-                    <Style x:Key="Caption" TargetType="TextBlock">
-                        <Setter Property="FontFamily" Value="Segoe UI Variable"/>
-                        <Setter Property="FontSize" Value="{DynamicResource CaptionFontSize}"/>
-                        <Setter Property="Foreground" Value="{DynamicResource TextMutedBrush}"/>
-                    </Style>
-                    <Style x:Key="Mono" TargetType="TextBlock">
-                        <Setter Property="FontFamily" Value="Consolas"/>
-                        <Setter Property="FontSize" Value="{DynamicResource BodyFontSize}"/>
-                        <Setter Property="Foreground" Value="{DynamicResource TextMutedBrush}"/>
-                    </Style>
-
-                    <!-- Replacements for the old WinUI control styles. -->
-                    <Style x:Key="AccentButtonStyle" TargetType="ui:Button">
-                        <Setter Property="Appearance" Value="Primary" />
-                    </Style>
-                    <Style x:Key="HomeAccentButtonStyle" TargetType="ui:Button">
-                        <Setter Property="Appearance" Value="Primary" />
-                    </Style>
-                    <Style x:Key="BaseButtonStyle" TargetType="ui:Button">
-                        <Setter Property="Appearance" Value="Secondary" />
-                    </Style>
-                    <Style x:Key="HomeNeutralButtonStyle" TargetType="ui:Button">
-                        <Setter Property="Appearance" Value="Secondary" />
-                    </Style>
-                    <Style x:Key="TitleBarIconButtonStyle" TargetType="ui:Button">
-                        <Setter Property="Appearance" Value="Transparent" />
-                    </Style>
-                    <Style x:Key="TitleBarCloseButtonStyle" TargetType="ui:Button">
-                        <Setter Property="Appearance" Value="Transparent" />
-                    </Style>
-                    <Style x:Key="StatCard" TargetType="Border">
-                        <Setter Property="Background" Value="{DynamicResource StatCardBrush}" />
-                        <Setter Property="BorderBrush" Value="{DynamicResource StatCardBorderBrush}" />
-                        <Setter Property="BorderThickness" Value="1" />
-                        <Setter Property="CornerRadius" Value="14" />
-                    </Style>
-                    <Style x:Key="SettingsCard" TargetType="Border">
-                        <Setter Property="Background" Value="{DynamicResource SettingsAreaBrush}" />
-                        <Setter Property="BorderBrush" Value="{DynamicResource SurfaceBorderBrush}" />
-                        <Setter Property="BorderThickness" Value="1" />
-                        <Setter Property="CornerRadius" Value="10" />
-                        <Setter Property="Padding" Value="16" />
-                    </Style>
-                    <Style x:Key="PendingChangesBar" TargetType="Border">
-                        <Setter Property="Background" Value="#CC202020" />
-                        <Setter Property="BorderBrush" Value="#33FFFFFF" />
-                        <Setter Property="BorderThickness" Value="1" />
-                        <Setter Property="CornerRadius" Value="10" />
-                        <Setter Property="Padding" Value="14" />
-                    </Style>
-                    <Style TargetType="controls:SettingRow">
-                        <Setter Property="Margin" Value="0,0,0,12" />
-                        <Setter Property="Template">
-                            <Setter.Value>
-                                <ControlTemplate TargetType="controls:SettingRow">
-                                    <Grid>
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*" />
-                                            <ColumnDefinition Width="200" />
-                                        </Grid.ColumnDefinitions>
-                                        <TextBlock Grid.Column="0"
-                                                   Text="{TemplateBinding Label}"
-                                                   Style="{StaticResource Mono}"
-                                                   VerticalAlignment="Center" />
-                                        <ContentPresenter Grid.Column="1"
-                                                          Content="{TemplateBinding Content}"
-                                                          VerticalAlignment="Center" />
-                                    </Grid>
-                                </ControlTemplate>
-                            </Setter.Value>
-                        </Setter>
-                    </Style>
-
-                </ResourceDictionary>
+                <ui:ThemesDictionary Theme="Dark"/>
+                <ui:ControlsDictionary/>
+                <ResourceDictionary Source="InstantReplay.GUI/Themes/Theme.xaml"/>
+                <ResourceDictionary Source="InstantReplay.GUI/Themes/Density.xaml"/>
+                <ResourceDictionary Source="InstantReplay.GUI/Themes/Styles.xaml"/>
             </ResourceDictionary.MergedDictionaries>
         </ResourceDictionary>
     </Application.Resources>

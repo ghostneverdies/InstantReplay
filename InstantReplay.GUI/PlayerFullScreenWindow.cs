@@ -1,32 +1,47 @@
+using System;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Threading;
 using InstantReplay.GUI.Helpers;
 using InstantReplay.Services;
 using Microsoft.Web.WebView2.Wpf;
-using Wpf.Ui.Controls;
 
 namespace InstantReplay.GUI;
 
-public sealed class PlayerFullScreenWindow : FluentWindow
+/// <summary>A rectangle in physical screen pixels (replaces Windows.Graphics.RectInt32).</summary>
+public readonly struct ScreenRect
+{
+    public ScreenRect(int x, int y, int width, int height)
+    {
+        X = x; Y = y; Width = width; Height = height;
+    }
+
+    public int X { get; }
+    public int Y { get; }
+    public int Width { get; }
+    public int Height { get; }
+}
+
+public sealed class PlayerFullScreenWindow : Window
 {
     private const int OpenMs = 320;
     private const int CloseMs = 260;
 
     private const uint SwpNoZOrder = 0x0004, SwpNoActivate = 0x0010, SwpNoOwnerZOrder = 0x0200;
     private const int DwmaCloak = 13;
+    private const int GwlpHwndParent = -8;
 
-    private readonly WebView2 _web = new();
-    private readonly Grid _root = new() { Background = new SolidColorBrush(Colors.Black) };
-    private readonly InfoBar _errorBar;
+    private readonly WebView2 _web = new WebView2();
+    private readonly Grid _root = new Grid { Background = Brushes.Black };
 
     private IntPtr _hwnd;
-    private Int32Rect _fullBounds;
-    private Int32Rect _restBounds;
-    private Int32Rect _currentBounds;
+    private ScreenRect _fullBounds;
+    private ScreenRect _restBounds;
     private bool _opened;
     private bool _closing;
     private Action? _cancelAnimation;
@@ -34,44 +49,25 @@ public sealed class PlayerFullScreenWindow : FluentWindow
     public PlayerFullScreenWindow()
     {
         Title = "Instant Replay";
-        WindowBackdropType = Wpf.Ui.Controls.WindowBackdropType.None;
-        WindowCornerPreference = Wpf.Ui.Controls.WindowCornerPreference.DoNotRound;
-        WindowStyle = System.Windows.WindowStyle.None;
-        ResizeMode = System.Windows.ResizeMode.NoResize;
+        WindowStyle = WindowStyle.None;
+        ResizeMode = ResizeMode.NoResize;
         ShowInTaskbar = false;
-        WindowStartupLocation = System.Windows.WindowStartupLocation.Manual;
-
+        ShowActivated = true;
+        Background = Brushes.Black;
+        WindowStartupLocation = WindowStartupLocation.Manual;
         _web.DefaultBackgroundColor = System.Drawing.Color.Black;
-        _errorBar = new InfoBar
-        {
-            Severity = InfoBarSeverity.Error,
-            Title = "Couldn't play replay",
-            Message = "",
-            IsClosable = true,
-            IsOpen = false,
-            Margin = new Thickness(32),
-            HorizontalAlignment = HorizontalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Center,
-        };
-
-        _ = _root.Children.Add(_web);
-        _ = _root.Children.Add(_errorBar);
+        _root.Children.Add(_web);
         Content = _root;
-
-        KeyUp += (_, e) =>
-        {
-            if (e.Key == Key.Escape) Shutdown();
-        };
     }
 
     public bool WebReady { get; private set; }
 
     public event Action<bool>? NavigationCompleted;
 
-    /// <summary>Notified when WebView2 initialization fails (for example, a missing runtime).</summary>
-    public event Action<Exception>? WebError;
+    public Func<ScreenRect?>? ReturnBounds { get; set; }
 
-    public Func<Int32Rect?>? ReturnBounds { get; set; }
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW")]
+    private static extern IntPtr SetOwnerLongPtr(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
 
     [DllImport("user32.dll")]
     private static extern bool SetWindowPos(IntPtr hWnd, IntPtr after, int x, int y, int cx, int cy, uint flags);
@@ -80,22 +76,21 @@ public sealed class PlayerFullScreenWindow : FluentWindow
     private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
 
     public async Task OpenAsync(string url, Action<string> onMessage, IntPtr ownerHwnd = default,
-        Int32Rect? sourceBounds = null)
+        ScreenRect? sourceBounds = null)
     {
         try
         {
-            var helper = new WindowInteropHelper(this);
-            if (ownerHwnd != IntPtr.Zero) helper.Owner = ownerHwnd;
-            _hwnd = helper.EnsureHandle();
+            _hwnd = new WindowInteropHelper(this).EnsureHandle();
+            if (ownerHwnd != IntPtr.Zero)
+                SetOwnerLongPtr(_hwnd, GwlpHwndParent, ownerHwnd);
 
             _fullBounds = ResolveDisplayBounds(sourceBounds, ownerHwnd);
             _restBounds = sourceBounds ?? CenterInset(_fullBounds, 0.58);
-            _currentBounds = _restBounds;
 
+            Apply(_restBounds);
             Cloak(true);
             Show();
-            Apply(_restBounds);
-            _ = Activate();
+            Activate();
 
             await PlayerWebViewShared.WaitForLoadedAsync(_web, TimeSpan.FromSeconds(6));
             await _web.EnsureCoreWebView2Async();
@@ -105,12 +100,12 @@ public sealed class PlayerFullScreenWindow : FluentWindow
             cwv.WebMessageReceived += (_, e) => onMessage(PlayerWebViewShared.ToPlainJson(e.WebMessageAsJson ?? ""));
             cwv.NavigationCompleted += (_, e) =>
             {
-                try { _ = _web.Focus(); } catch { }
+                try { _web.Focus(); } catch { }
                 PlayOpenAnimation();
                 NavigationCompleted?.Invoke(e.IsSuccess);
             };
             cwv.Navigate(url);
-            try { _ = _web.Focus(); } catch { }
+            try { _web.Focus(); } catch { }
             WebReady = true;
 
             var failsafe = new DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
@@ -120,7 +115,6 @@ public sealed class PlayerFullScreenWindow : FluentWindow
         catch (Exception ex)
         {
             Logger.Error($"Fullscreen WebView2 init failed: {ex.Message}", ex);
-            ShowLoadError(ex);
         }
     }
 
@@ -147,14 +141,14 @@ public sealed class PlayerFullScreenWindow : FluentWindow
 
         try
         {
-            if (!_opened)
+            if (_hwnd == IntPtr.Zero || !_opened)
             {
                 Finish();
                 return;
             }
 
-            Int32Rect from = _currentBounds;
-            Int32Rect target = ReturnBounds?.Invoke() ?? _restBounds;
+            ScreenRect from = CurrentBounds();
+            ScreenRect target = ReturnBounds?.Invoke() ?? _restBounds;
             AnimateBounds(from, target, CloseMs, EaseInOutCubic, Finish);
         }
         catch (Exception ex)
@@ -164,35 +158,29 @@ public sealed class PlayerFullScreenWindow : FluentWindow
         }
     }
 
-    private void ShowLoadError(Exception ex)
+    private ScreenRect CurrentBounds()
     {
-        WebReady = false;
-        try
-        {
-            Cloak(false);
-            bool runtimeMissing = PlayerWebViewShared.IsRuntimeMissing(ex);
-            _errorBar.Title = runtimeMissing ? "WebView2 runtime is missing" : "Couldn't play replay";
-            _errorBar.Message = PlayerWebViewShared.DescribeLoadFailure(ex);
-            _web.Visibility = Visibility.Collapsed;
-            _errorBar.IsOpen = true;
-        }
-        catch (Exception uiEx)
-        {
-            Logger.Warn($"Could not show fullscreen player error: {uiEx.Message}");
-        }
-        WebError?.Invoke(ex);
+        if (GetWindowRect(_hwnd, out NativeRect r))
+            return new ScreenRect(r.Left, r.Top, r.Right - r.Left, r.Bottom - r.Top);
+        return _fullBounds;
     }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeRect { public int Left, Top, Right, Bottom; }
+
+    [DllImport("user32.dll")]
+    private static extern bool GetWindowRect(IntPtr hWnd, out NativeRect rect);
 
     private void PlayOpenAnimation()
     {
-        if (_opened || _closing) return;
+        if (_opened || _closing || _hwnd == IntPtr.Zero) return;
         _opened = true;
 
         Cloak(false);
-        AnimateBounds(_restBounds, _fullBounds, OpenMs, EaseOutQuint, () => Apply(_fullBounds));
+        AnimateBounds(_restBounds, _fullBounds, OpenMs, EaseOutQuint, () => { });
     }
 
-    private void AnimateBounds(Int32Rect from, Int32Rect to, int milliseconds, Func<double, double> ease, Action done)
+    private void AnimateBounds(ScreenRect from, ScreenRect to, int milliseconds, Func<double, double> ease, Action done)
     {
         _cancelAnimation?.Invoke();
 
@@ -234,67 +222,59 @@ public sealed class PlayerFullScreenWindow : FluentWindow
         safety.Start();
     }
 
-    private void Apply(Int32Rect r)
+    private void Apply(ScreenRect r)
     {
-        _currentBounds = r;
         if (_hwnd == IntPtr.Zero) return;
-        _ = SetWindowPos(_hwnd, IntPtr.Zero, r.X, r.Y, Math.Max(1, r.Width), Math.Max(1, r.Height),
+        SetWindowPos(_hwnd, IntPtr.Zero, r.X, r.Y, Math.Max(1, r.Width), Math.Max(1, r.Height),
             SwpNoZOrder | SwpNoActivate | SwpNoOwnerZOrder);
     }
 
-    private static Int32Rect Lerp(Int32Rect a, Int32Rect b, double t)
-    {
-        return new(
+    private static ScreenRect Lerp(ScreenRect a, ScreenRect b, double t) => new ScreenRect(
         (int)Math.Round(a.X + (b.X - a.X) * t),
         (int)Math.Round(a.Y + (b.Y - a.Y) * t),
         (int)Math.Round(a.Width + (b.Width - a.Width) * t),
         (int)Math.Round(a.Height + (b.Height - a.Height) * t));
-    }
 
-    private static double EaseOutQuint(double t)
-    {
-        return 1 - Math.Pow(1 - t, 5);
-    }
+    private static double EaseOutQuint(double t) => 1 - Math.Pow(1 - t, 5);
 
-    private static double EaseInOutCubic(double t)
-    {
-        return t < 0.5 ? 4 * t * t * t : 1 - Math.Pow(-2 * t + 2, 3) / 2;
-    }
-
+    private static double EaseInOutCubic(double t) =>
+        t < 0.5 ? 4 * t * t * t : 1 - Math.Pow(-2 * t + 2, 3) / 2;
 
     private void Cloak(bool on)
     {
         try
         {
             int value = on ? 1 : 0;
-            _ = DwmSetWindowAttribute(_hwnd, DwmaCloak, ref value, sizeof(int));
+            DwmSetWindowAttribute(_hwnd, DwmaCloak, ref value, sizeof(int));
         }
         catch { }
     }
 
-    private static Int32Rect ResolveDisplayBounds(Int32Rect? source, IntPtr ownerHwnd)
+    private static ScreenRect ResolveDisplayBounds(ScreenRect? source, IntPtr ownerHwnd)
     {
         try
         {
-            var screen = source is { } r
-                ? System.Windows.Forms.Screen.FromPoint(new System.Drawing.Point(r.X + r.Width / 2, r.Y + r.Height / 2))
-                : ownerHwnd != IntPtr.Zero
-                    ? System.Windows.Forms.Screen.FromHandle(ownerHwnd)
-                    : System.Windows.Forms.Screen.PrimaryScreen;
-            var bounds = screen!.Bounds;
-            return new Int32Rect(bounds.X, bounds.Y, bounds.Width, bounds.Height);
+            System.Windows.Forms.Screen screen;
+            if (source is { } r)
+                screen = System.Windows.Forms.Screen.FromPoint(new System.Drawing.Point(r.X + r.Width / 2, r.Y + r.Height / 2));
+            else if (ownerHwnd != IntPtr.Zero)
+                screen = System.Windows.Forms.Screen.FromHandle(ownerHwnd);
+            else
+                screen = System.Windows.Forms.Screen.PrimaryScreen ?? System.Windows.Forms.Screen.AllScreens[0];
+            System.Drawing.Rectangle b = screen.Bounds;
+            return new ScreenRect(b.X, b.Y, b.Width, b.Height);
         }
         catch
         {
-            var bounds = System.Windows.Forms.Screen.PrimaryScreen!.Bounds;
-            return new Int32Rect(bounds.X, bounds.Y, bounds.Width, bounds.Height);
+            System.Drawing.Rectangle b = System.Windows.Forms.Screen.AllScreens[0].Bounds;
+            return new ScreenRect(b.X, b.Y, b.Width, b.Height);
         }
     }
 
-    private static Int32Rect CenterInset(Int32Rect outer, double fraction)
+    private static ScreenRect CenterInset(ScreenRect outer, double fraction)
     {
         int w = (int)(outer.Width * fraction);
         int h = (int)(outer.Height * fraction);
-        return new Int32Rect(outer.X + (outer.Width - w) / 2, outer.Y + (outer.Height - h) / 2, w, h);
+        return new ScreenRect(outer.X + (outer.Width - w) / 2, outer.Y + (outer.Height - h) / 2, w, h);
     }
 }

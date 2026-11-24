@@ -20,9 +20,6 @@ concurrency:
   group: release-${{ inputs.version }}
   cancel-in-progress: false
 
-env:
-  DOTNET_VERSION: "8.0.x"
-
 jobs:
   release:
     runs-on: windows-latest
@@ -52,10 +49,10 @@ jobs:
 
           Write-Host "Building version $version (file version $quad, tag v$version)"
 
-      - name: Install .NET
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: ${{ env.DOTNET_VERSION }}
+      # The app targets .NET Framework 4.8 (WPF + WPF-UI). The windows runner already has the
+      # 4.8 targeting pack, and MSBuild from Visual Studio builds the SDK-style project.
+      - name: Set up MSBuild (.NET Framework 4.8)
+        uses: microsoft/setup-msbuild@v2
 
       - name: Build native engine
         shell: cmd
@@ -67,12 +64,15 @@ jobs:
       - name: Publish application
         shell: pwsh
         run: |
-          dotnet publish InstantReplay.csproj `
-            -c Release `
+          msbuild InstantReplay.csproj -t:Restore -p:Configuration=Release -p:Platform=x64
+          if ($LASTEXITCODE -ne 0) { throw "msbuild restore failed" }
+          msbuild InstantReplay.csproj `
+            -t:Publish `
+            -p:Configuration=Release `
             -p:Platform=x64 `
             -p:Version=${{ steps.version.outputs.version }} `
-            -o bin/publish/win-x64
-          if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed" }
+            -p:PublishDir="$PWD\bin\publish\win-x64\"
+          if ($LASTEXITCODE -ne 0) { throw "msbuild publish failed" }
 
       - name: Verify publish layout
         shell: pwsh
@@ -94,7 +94,7 @@ jobs:
         shell: pwsh
         run: |
           $name = "InstantReplay-${{ steps.version.outputs.version }}-win64-portable"
-          # 7z keeps the WPF payload fast and memory-friendly; fall back to Compress-Archive.
+          # 7z is fast and memory-friendly; fall back to Compress-Archive.
           $sevenZip = Join-Path $env:ProgramFiles "7-Zip\7z.exe"
           if (Test-Path $sevenZip) {
             & $sevenZip a -tzip -mx=5 -bso0 -bsp0 "$name.zip" ".\bin\publish\win-x64\*"

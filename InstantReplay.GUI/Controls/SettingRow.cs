@@ -1,3 +1,5 @@
+using System.Windows;
+using System.Windows.Controls;
 
 namespace InstantReplay.GUI.Controls;
 
@@ -12,8 +14,8 @@ public sealed class SettingRow : ContentControl
         set => SetValue(LabelProperty, value);
     }
 
-    public SettingRow()
+    static SettingRow()
     {
-        DefaultStyleKey = typeof(SettingRow);
+        DefaultStyleKeyProperty.OverrideMetadata(typeof(SettingRow), new FrameworkPropertyMetadata(typeof(SettingRow)));
     }
 }
