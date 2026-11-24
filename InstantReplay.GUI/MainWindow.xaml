@@ -3,6 +3,7 @@
         xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
         xmlns:controls="clr-namespace:InstantReplay.GUI.Controls"
         xmlns:models="clr-namespace:InstantReplay.Models"
+        xmlns:tray="clr-namespace:Wpf.Ui.Tray.Controls;assembly=Wpf.Ui.Tray"
         x:Class="InstantReplay.GUI.MainWindow"
         Title="Instant Replay"
         Width="760"
@@ -15,13 +16,17 @@
         WindowBackdropType="Mica"
         WindowCornerPreference="Round"
         UseLayoutRounding="True"
+        SnapsToDevicePixels="True"
+        TextOptions.TextFormattingMode="Display"
+        TextOptions.TextRenderingMode="ClearType"
+        RenderOptions.ClearTypeHint="Enabled"
+        RenderOptions.BitmapScalingMode="HighQuality"
         Closing="Window_Closing"
         Activated="Window_Activated"
         Deactivated="Window_Deactivated"
         PreviewKeyDown="Window_PreviewKeyDown"
         PreviewKeyUp="Window_PreviewKeyUp">
-    <Grid xmlns:ns0="using:InstantReplay.GUI.Controls"
-            x:Name="RootGrid"
+    <Grid x:Name="RootGrid"
             Background="{DynamicResource BgBrush}">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
@@ -60,7 +65,8 @@
                             Width="44">
                         <Image Source="{DynamicResource GitHubLogoSource}"
                                 Width="18"
-                                Height="18"/>
+                                Height="18"
+                                RenderOptions.BitmapScalingMode="HighQuality"/>
                     </ui:Button>
                 </StackPanel>
             </ui:TitleBar.TrailingContent>
@@ -253,6 +259,24 @@
                         </StackPanel>
                     </RadioButton>
                 </StackPanel>
+
+                <!-- Single shared WinUI-style selection pill, animated between items. -->
+                <Canvas x:Name="NavSelectionOverlay"
+                        Grid.RowSpan="3"
+                        IsHitTestVisible="False"
+                        Panel.ZIndex="1">
+                    <Border x:Name="SelectionPill"
+                            Canvas.Left="4"
+                            Width="3"
+                            Height="16"
+                            CornerRadius="1.5"
+                            Opacity="0"
+                            Background="{DynamicResource SystemAccentColorPrimaryBrush}">
+                        <Border.RenderTransform>
+                            <TranslateTransform x:Name="PillTransform" Y="0"/>
+                        </Border.RenderTransform>
+                    </Border>
+                </Canvas>
             </Grid>
             <Grid Grid.Column="1">
                 <Grid x:Name="PagesHost"
@@ -421,7 +445,7 @@
                                                 Orientation="Horizontal"
                                                 Margin="0,26,0,0">
                                             <ui:Button x:Name="SaveReplayButton"
-                                                    ns0:UiHover.IsEnabled="True"
+                                                    controls:UiHover.IsEnabled="True"
                                                     Style="{StaticResource HomeAccentButtonStyle}"
                                                     Height="46"
                                                     MinWidth="160"
@@ -443,7 +467,7 @@
                                                 </StackPanel>
                                             </ui:Button>
                                             <ui:Button x:Name="StartStopButton"
-                                                    ns0:UiHover.IsEnabled="True"
+                                                    controls:UiHover.IsEnabled="True"
                                                     Style="{StaticResource HomeNeutralButtonStyle}"
                                                     Height="46"
                                                     MinWidth="140"
@@ -1139,7 +1163,7 @@
                                                 Foreground="{DynamicResource SettingsAreaTextBrush}"
                                                 Margin="10,0,0,0"/>
                                     </StackPanel>
-                                    <ns0:SettingRow Label="Capture target"
+                                    <controls:SettingRow Label="Capture target"
                                             Margin="0,0,0,6">
                                         <ComboBox x:Name="CaptureTargetCombo"
                                                 HorizontalAlignment="Stretch"
@@ -1148,15 +1172,15 @@
                                             <ComboBoxItem Content="Game Capture"/>
 
                                         </ComboBox>
-                                    </ns0:SettingRow>
-                                    <ns0:SettingRow x:Name="CaptureMonitorRow"
+                                    </controls:SettingRow>
+                                    <controls:SettingRow x:Name="CaptureMonitorRow"
                                             Label="Display"
                                             Margin="0,0,0,6">
                                         <ComboBox x:Name="CaptureMonitorCombo"
                                                 HorizontalAlignment="Stretch"
                                                 SelectionChanged="CaptureMonitorCombo_SelectionChanged"/>
-                                    </ns0:SettingRow>
-                                    <ns0:SettingRow x:Name="CaptureMethodRow"
+                                    </controls:SettingRow>
+                                    <controls:SettingRow x:Name="CaptureMethodRow"
                                             Label="Capture method"
                                             ToolTipService.ToolTip="Windows Graphics Capture targets windows and supports per-window options. DXGI duplication captures the whole display."
                                             Margin="0,0,0,6">
@@ -1166,34 +1190,34 @@
                                             <ComboBoxItem Content="DXGI duplication"/>
                                             <ComboBoxItem Content="Windows Graphics Capture"/>
                                         </ComboBox>
-                                    </ns0:SettingRow>
+                                    </controls:SettingRow>
                                     <TextBlock x:Name="CaptureOptionsNote"
                                             Text="Show mouse cursor and Only client area affect Windows Graphics Capture only. DXGI duplication always captures the whole display."
                                             TextWrapping="Wrap"
                                             FontSize="12"
                                             Foreground="{DynamicResource TextFillColorSecondaryBrush}"
                                             Margin="0,0,0,10"/>
-                                    <ns0:SettingRow Label="Show mouse cursor"
+                                    <controls:SettingRow Label="Show mouse cursor"
                                             Margin="0,0,0,6">
                                         <CheckBox x:Name="CaptureCursorCheck"
                                                 AutomationProperties.Name="Show mouse cursor in recordings"
                                                 Checked="WindowCaptureOption_Changed"
                                                 Unchecked="WindowCaptureOption_Changed"/>
-                                    </ns0:SettingRow>
-                                    <ns0:SettingRow Label="Only client area"
+                                    </controls:SettingRow>
+                                    <controls:SettingRow Label="Only client area"
                                             Margin="0,0,0,6">
                                         <CheckBox x:Name="CaptureClientAreaCheck"
                                                 AutomationProperties.Name="Capture only the client area"
                                                 Checked="WindowCaptureOption_Changed"
                                                 Unchecked="WindowCaptureOption_Changed"/>
-                                    </ns0:SettingRow>
-                                    <ns0:SettingRow Label="Capture border"
+                                    </controls:SettingRow>
+                                    <controls:SettingRow Label="Capture border"
                                             Margin="0,0,0,6">
                                         <CheckBox x:Name="CaptureBorderCheck"
                                                 IsEnabled="False"
                                                 Checked="WindowCaptureOption_Changed"
                                                 Unchecked="WindowCaptureOption_Changed"/>
-                                    </ns0:SettingRow>
+                                    </controls:SettingRow>
 
                                 </StackPanel>
                             </Border>
@@ -1213,7 +1237,7 @@
                                                 Margin="10,0,0,0"/>
                                     </StackPanel>
 
-                                    <ns0:SettingRow Label="Replay duration"
+                                    <controls:SettingRow Label="Replay duration"
                                             Margin="0,0,0,8">
                                         <ComboBox x:Name="DurationCombo"
                                                 HorizontalAlignment="Stretch"
@@ -1222,8 +1246,8 @@
                                             <ComboBoxItem Content="60 seconds"/>
                                             <ComboBoxItem Content="120 seconds"/>
                                         </ComboBox>
-                                    </ns0:SettingRow>
-                                    <ns0:SettingRow Label="Frame rate"
+                                    </controls:SettingRow>
+                                    <controls:SettingRow Label="Frame rate"
                                             Margin="0,0,0,8">
                                         <ComboBox x:Name="FpsCombo"
                                                 HorizontalAlignment="Stretch"
@@ -1232,8 +1256,8 @@
                                             <ComboBoxItem Content="60 FPS"/>
                                             <ComboBoxItem Content="120 FPS"/>
                                         </ComboBox>
-                                    </ns0:SettingRow>
-                                    <ns0:SettingRow Label="Quality"
+                                    </controls:SettingRow>
+                                    <controls:SettingRow Label="Quality"
                                             Margin="0,0,0,8">
                                         <ComboBox x:Name="QualityCombo"
                                                 HorizontalAlignment="Stretch"
@@ -1246,8 +1270,8 @@
                                             <ComboBoxItem Content="Slower"/>
                                             <ComboBoxItem Content="Slowest"/>
                                         </ComboBox>
-                                    </ns0:SettingRow>
-                                    <ns0:SettingRow Label="Video codec"
+                                    </controls:SettingRow>
+                                    <controls:SettingRow Label="Video codec"
                                             Margin="0,0,0,8">
                                         <ComboBox x:Name="CodecCombo"
                                                 HorizontalAlignment="Stretch"
@@ -1256,8 +1280,8 @@
                                             <ComboBoxItem Content="HEVC / H.265"/>
                                             <ComboBoxItem Content="AV1"/>
                                         </ComboBox>
-                                    </ns0:SettingRow>
-                                    <ns0:SettingRow Label="Buffer"
+                                    </controls:SettingRow>
+                                    <controls:SettingRow Label="Buffer"
                                             ToolTipService.ToolTip="Continuous keeps one rolling replay. Segmented saves one clip per second and is better for games that change scenes often."
                                             Margin="0,0,0,8">
                                         <ComboBox x:Name="BufferMethodCombo"
@@ -1266,8 +1290,8 @@
                                             <ComboBoxItem Content="Continuous"/>
                                             <ComboBoxItem Content="Segmented"/>
                                         </ComboBox>
-                                    </ns0:SettingRow>
-                                    <ns0:SettingRow Label="GPU"
+                                    </controls:SettingRow>
+                                    <controls:SettingRow Label="GPU"
                                             ToolTipService.ToolTip="Use hardware MFTs for encoding. Turn off to use the software encoder."
                                             Margin="0,0,0,8">
                                         <Grid HorizontalAlignment="Stretch">
@@ -1293,14 +1317,14 @@
                                                 <ComboBoxItem Content="Prefer dGPU"/>
                                             </ComboBox>
                                         </Grid>
-                                    </ns0:SettingRow>
-                                    <ns0:SettingRow Label="Bitrate (calculated)"
+                                    </controls:SettingRow>
+                                    <controls:SettingRow Label="Bitrate (calculated)"
                                             ToolTipService.ToolTip="Calculated from quality preset, frame rate and capture resolution. Used as the target for both CBR and VBR."
                                             Margin="0">
                                         <TextBlock x:Name="BitrateValueText"
                                                 VerticalAlignment="Center"
                                                 Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
-                                    </ns0:SettingRow>
+                                    </controls:SettingRow>
                                 </StackPanel>
                             </Border>
                             <Border Style="{StaticResource SettingsCard}"
@@ -1327,15 +1351,15 @@
                                             SelectionChanged="MicCombo_SelectionChanged"
                                             Margin="0,0,0,14"/>
 
-                                    <ns0:SettingRow Label="Record microphone"
+                                    <controls:SettingRow Label="Record microphone"
                                             Margin="0,0,0,8">
                                         <ui:ToggleSwitch x:Name="MicToggle"
                                                 OnContent=""
                                                 OffContent=""
                                                 Checked="MicToggle_Changed"
                                                 Unchecked="MicToggle_Changed"/>
-                                    </ns0:SettingRow>
-                                    <ns0:SettingRow x:Name="RecordAudioRow"
+                                    </controls:SettingRow>
+                                    <controls:SettingRow x:Name="RecordAudioRow"
                                             Label="Record system audio"
                                             Margin="0,0,0,8">
                                         <ui:ToggleSwitch x:Name="SysAudioToggle"
@@ -1343,16 +1367,16 @@
                                                 OffContent=""
                                                 Checked="SysAudioToggle_Changed"
                                                 Unchecked="SysAudioToggle_Changed"/>
-                                    </ns0:SettingRow>
-                                    <ns0:SettingRow Label="Application local audio"
+                                    </controls:SettingRow>
+                                    <controls:SettingRow Label="Application local audio"
                                             Margin="0,0,0,8">
                                         <ui:ToggleSwitch x:Name="ApplicationLocalAudioToggle"
                                                 OnContent=""
                                                 OffContent=""
                                                 Checked="ApplicationLocalAudioToggle_Changed"
                                                 Unchecked="ApplicationLocalAudioToggle_Changed"/>
-                                    </ns0:SettingRow>
-                                    <ns0:SettingRow Label="Audio codec"
+                                    </controls:SettingRow>
+                                    <controls:SettingRow Label="Audio codec"
                                             Margin="0,0,0,8">
                                         <ComboBox x:Name="AudioCodecCombo"
                                                 HorizontalAlignment="Stretch"
@@ -1360,8 +1384,8 @@
                                             <ComboBoxItem Content="AAC"/>
                                             <ComboBoxItem Content="FLAC"/>
                                         </ComboBox>
-                                    </ns0:SettingRow>
-                                    <ns0:SettingRow x:Name="AudioBitrateRow"
+                                    </controls:SettingRow>
+                                    <controls:SettingRow x:Name="AudioBitrateRow"
                                             Label="Audio bitrate"
                                             Margin="0,0,0,8">
                                         <ComboBox x:Name="AudioBitrateCombo"
@@ -1372,7 +1396,7 @@
                                             <ComboBoxItem Content="160 kbps"/>
                                             <ComboBoxItem Content="192 kbps"/>
                                         </ComboBox>
-                                    </ns0:SettingRow>
+                                    </controls:SettingRow>
                                 </StackPanel>
                             </Border>
                             <Border Style="{StaticResource SettingsCard}"
@@ -1406,7 +1430,7 @@
                                                 VerticalContentAlignment="Center"
                                                 TextChanged="SaveLocationBox_TextChanged"/>
                                         <ui:Button x:Name="BrowseSaveLocationButton"
-                                                ns0:UiHover.IsEnabled="True"
+                                                controls:UiHover.IsEnabled="True"
                                                 Grid.Column="2"
                                                 Height="32"
                                                 Padding="16,0"
@@ -1426,10 +1450,10 @@
                                         </ui:Button>
                                     </Grid>
 
-                                    <ns0:SettingRow Label="Save replay hotkey"
+                                    <controls:SettingRow Label="Save replay hotkey"
                                             Margin="0">
                                         <ui:Button x:Name="HotkeyCaptureButton"
-                                                ns0:UiHover.IsEnabled="True"
+                                                controls:UiHover.IsEnabled="True"
                                                 Height="32"
                                                 Padding="16,0"
                                                 HorizontalAlignment="Stretch"
@@ -1447,7 +1471,7 @@
                                                         Margin="8,0,0,0"/>
                                             </StackPanel>
                                         </ui:Button>
-                                    </ns0:SettingRow>
+                                    </controls:SettingRow>
                                 </StackPanel>
                             </Border>
                             <Border Style="{StaticResource SettingsCard}"
@@ -1466,15 +1490,15 @@
                                                 Margin="10,0,0,0"/>
                                     </StackPanel>
 
-                                    <ns0:SettingRow Label="Start with Windows"
+                                    <controls:SettingRow Label="Start with Windows"
                                             Margin="0,0,0,8">
                                         <ui:ToggleSwitch x:Name="StartupToggle"
                                                 OnContent=""
                                                 OffContent=""
                                                 Checked="StartupToggle_Changed"
                                                 Unchecked="StartupToggle_Changed"/>
-                                    </ns0:SettingRow>
-                                    <ns0:SettingRow Label="Debug logging"
+                                    </controls:SettingRow>
+                                    <controls:SettingRow Label="Debug logging"
                                             ToolTipService.ToolTip="Writes detailed capture diagnostics to a debug log in the temporary folder."
                                             Margin="0,0,0,8">
                                         <ui:ToggleSwitch x:Name="DebugLoggingToggle"
@@ -1482,7 +1506,7 @@
                                                 OffContent=""
                                                 Checked="DebugLoggingToggle_Changed"
                                                 Unchecked="DebugLoggingToggle_Changed"/>
-                                    </ns0:SettingRow>
+                                    </controls:SettingRow>
                                 </StackPanel>
                             </Border>
                         </StackPanel>
@@ -1530,7 +1554,7 @@
                                 VerticalAlignment="Center"
                                 Margin="0,0,8,0"/>
                         <TextBlock Text="Unsaved changes"
-                                FontFamily="Segoe UI Variable"
+                                FontFamily="{StaticResource AppFontFamily}"
                                 FontSize="{StaticResource BodyFontSize}"
                                 Foreground="{DynamicResource TextPrimaryBrush}"
                                 VerticalAlignment="Center"
@@ -1547,7 +1571,7 @@
                                         FontSize="14"
                                         Margin="0,0,6,0"/>
                                 <TextBlock Text="Save"
-                                        FontFamily="Segoe UI Variable"
+                                        FontFamily="{StaticResource AppFontFamily}"
                                         FontSize="{StaticResource BodyFontSize}"/>
                             </StackPanel>
                         </ui:Button>
@@ -1562,7 +1586,7 @@
                                         FontSize="14"
                                         Margin="0,0,6,0"/>
                                 <TextBlock Text="Discard"
-                                        FontFamily="Segoe UI Variable"
+                                        FontFamily="{StaticResource AppFontFamily}"
                                         FontSize="{StaticResource BodyFontSize}"/>
                             </StackPanel>
                         </ui:Button>
@@ -1570,5 +1594,65 @@
                 </Border>
             </Grid>
         </Grid>
+
+        <!-- WPF-UI Tray: Fluent animated context menu with glyphs. -->
+        <tray:NotifyIcon x:Name="AppTrayIcon"
+                         TooltipText="Instant Replay"
+                         MenuOnRightClick="True"
+                         FocusOnLeftClick="True"
+                         LeftDoubleClick="TrayLeftDoubleClick"
+                         MenuFontSize="14">
+            <tray:NotifyIcon.Menu>
+                <ContextMenu ContextMenuOpening="TrayMenu_Opening"
+                             SnapsToDevicePixels="True"
+                             TextOptions.TextFormattingMode="Display"
+                             TextOptions.TextRenderingMode="ClearType"
+                             RenderOptions.ClearTypeHint="Enabled"
+                             RenderOptions.BitmapScalingMode="HighQuality">
+                    <ui:MenuItem x:Name="TrayStartupItem"
+                                 Header="Start with Windows"
+                                 IsCheckable="True"
+                                 Click="TrayStartup_Click">
+                        <ui:MenuItem.Icon>
+                            <ui:FontIcon Glyph="&#xE7E8;"
+                                         FontFamily="{DynamicResource SymbolThemeFontFamily}"
+                                         FontSize="16"/>
+                        </ui:MenuItem.Icon>
+                    </ui:MenuItem>
+                    <Separator/>
+                    <ui:MenuItem Header="Save Replay" InputGestureText="Alt+S"
+                                 Click="TraySaveReplay_Click">
+                        <ui:MenuItem.Icon>
+                            <ui:FontIcon Glyph="&#xE74E;"
+                                         FontFamily="{DynamicResource SymbolThemeFontFamily}"
+                                         FontSize="16"/>
+                        </ui:MenuItem.Icon>
+                    </ui:MenuItem>
+                    <ui:MenuItem Header="Open Window" Click="TrayOpenWindow_Click">
+                        <ui:MenuItem.Icon>
+                            <ui:FontIcon Glyph="&#xE8A7;"
+                                         FontFamily="{DynamicResource SymbolThemeFontFamily}"
+                                         FontSize="16"/>
+                        </ui:MenuItem.Icon>
+                    </ui:MenuItem>
+                    <Separator/>
+                    <ui:MenuItem Header="Restart App" Click="TrayRestart_Click">
+                        <ui:MenuItem.Icon>
+                            <ui:FontIcon Glyph="&#xE72C;"
+                                         FontFamily="{DynamicResource SymbolThemeFontFamily}"
+                                         FontSize="16"/>
+                        </ui:MenuItem.Icon>
+                    </ui:MenuItem>
+                    <Separator/>
+                    <ui:MenuItem Header="Exit" Click="TrayExit_Click">
+                        <ui:MenuItem.Icon>
+                            <ui:FontIcon Glyph="&#xE8BB;"
+                                         FontFamily="{DynamicResource SymbolThemeFontFamily}"
+                                         FontSize="16"/>
+                        </ui:MenuItem.Icon>
+                    </ui:MenuItem>
+                </ContextMenu>
+            </tray:NotifyIcon.Menu>
+        </tray:NotifyIcon>
     </Grid>
 </ui:FluentWindow>
