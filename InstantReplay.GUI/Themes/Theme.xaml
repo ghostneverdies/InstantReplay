@@ -13,6 +13,13 @@
     <SolidColorBrush x:Key="AccentDimBrush" Color="#004E8C"/>
     <SolidColorBrush x:Key="HeroBackgroundBrush" Color="#003A6A"/>
 
+    <!-- Opaque control surfaces. WPF-UI's translucent defaults let dropdown
+         popups and toggle tracks show the content underneath. -->
+    <SolidColorBrush x:Key="ComboPopupBrush" Color="#FF1C1922"/>
+    <SolidColorBrush x:Key="ComboPopupBorderBrush" Color="#FF3A3442"/>
+    <SolidColorBrush x:Key="ToggleTrackOffBrush" Color="#FF3A3442"/>
+    <SolidColorBrush x:Key="ToggleStrokeOffBrush" Color="#FF5A5262"/>
+
     <SolidColorBrush x:Key="BgBrush" Color="#00131116"/>
     <SolidColorBrush x:Key="SurfaceBrush" Color="#661C1922"/>
     <SolidColorBrush x:Key="SurfaceBorderBrush" Color="#702E2838"/>
@@ -56,6 +63,10 @@
         <SolidColorBrush x:Key="StatLabelBrush" Color="#99FFFFFF"/>
         <SolidColorBrush x:Key="StatHintBrush" Color="#CCFFFFFF"/>
         <SolidColorBrush x:Key="HeroBorderBrush" Color="#40FFFFFF"/>
+        <SolidColorBrush x:Key="ComboPopupBrush" Color="#FF1C1922"/>
+        <SolidColorBrush x:Key="ComboPopupBorderBrush" Color="#FF3A3442"/>
+        <SolidColorBrush x:Key="ToggleTrackOffBrush" Color="#FF3A3442"/>
+        <SolidColorBrush x:Key="ToggleStrokeOffBrush" Color="#FF5A5262"/>
         <BitmapImage x:Key="GitHubLogoSource" UriSource="pack://siteoforigin:,,,/assets/icons/github_dark_mode.png"/>
     </ResourceDictionary>
 
@@ -80,6 +91,10 @@
         <SolidColorBrush x:Key="StatLabelBrush" Color="#8A000000"/>
         <SolidColorBrush x:Key="StatHintBrush" Color="#B3000000"/>
         <SolidColorBrush x:Key="HeroBorderBrush" Color="#40FFFFFF"/>
+        <SolidColorBrush x:Key="ComboPopupBrush" Color="#FFFFFFFF"/>
+        <SolidColorBrush x:Key="ComboPopupBorderBrush" Color="#FFDAD2E8"/>
+        <SolidColorBrush x:Key="ToggleTrackOffBrush" Color="#FFE8E8E8"/>
+        <SolidColorBrush x:Key="ToggleStrokeOffBrush" Color="#FFB8B8B8"/>
         <BitmapImage x:Key="GitHubLogoSource" UriSource="pack://siteoforigin:,,,/assets/icons/github_light_mode.png"/>
     </ResourceDictionary>
 
