@@ -41,6 +41,8 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     [DllImport("user32.dll")] private static extern int GetSystemMetrics(int nIndex);
     [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] private static extern bool DestroyIcon(IntPtr hIcon);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr LoadImageW(IntPtr hinst, string lpszName, uint uType, int cx, int cy, uint fuLoad);
     [DllImport("user32.dll")] private static extern bool EnableWindow(IntPtr hWnd, bool bEnable);
     [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr hWnd);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern uint RegisterWindowMessage(string lpString);
@@ -191,6 +193,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     private readonly UiQueue _dq;
 
     private TrayIcon? _trayIcon;
+    private IntPtr _defaultTrayIcon;
     private DispatcherTimer? _debugStatsTimer;
     private DispatcherTimer? _bufferHealthTimer;
     private DispatcherTimer? _micRefreshTimer;
@@ -317,7 +320,13 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
 
         _currentPage = HomePage;
 
-        RootGrid.Loaded += (_, _) => InitAudioToggles();
+        RootGrid.Loaded += (_, _) =>
+        {
+            InitAudioToggles();
+            MoveSelectionPill(SelectedNav() ?? NavHomeItem, animate: false);
+        };
+        NavPane.SizeChanged += (_, _) =>
+            MoveSelectionPill(SelectedNav() ?? NavHomeItem, animate: false);
 
         RefreshMicrophonesInBackground();
         InitDurationSegments();
@@ -515,11 +524,6 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             _taskbarBadge?.Reset();
             _dq.TryEnqueue(() => RefreshAppBadge());
         }
-        if (msg == WM_APP + 1 && _trayIcon is not null)
-        {
-            _trayIcon.HandleMessage(lParam);
-            handled = true;
-        }
         return IntPtr.Zero;
     }
 
@@ -690,7 +694,9 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
 
     private const double NavPaneOpenWidth = 220;
     private const double NavPaneCompactWidth = 48;
+    private const double SelectionPillHeight = 16;
     private bool _navPaneOpen = true;
+    private double _lastPillY = -1;
 
     private IEnumerable<RadioButton> NavItems()
     {
@@ -704,9 +710,62 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     private void SelectNav(RadioButton item)
     {
         foreach (RadioButton nav in NavItems()) nav.IsChecked = ReferenceEquals(nav, item);
+        MoveSelectionPill(item);
     }
 
     private RadioButton? SelectedNav() => NavItems().FirstOrDefault(n => n.IsChecked == true);
+
+    /// <summary>
+    /// Glides the single shared selection pill to the active sidebar item. The
+    /// static per-item indicator is disabled in App.xaml so only this pill shows.
+    /// </summary>
+    private void MoveSelectionPill(RadioButton item, bool animate = true)
+    {
+        if (SelectionPill is null || PillTransform is null) return;
+
+        Dispatcher.BeginInvoke(() =>
+        {
+            if (!item.IsVisible || !NavPane.IsVisible)
+            {
+                SelectionPill.Opacity = 0;
+                return;
+            }
+
+            Point origin;
+            try { origin = item.TransformToAncestor(NavPane).Transform(new Point(0, 0)); }
+            catch (InvalidOperationException) { return; } // item detached from the visual tree
+            double targetY = origin.Y + (item.ActualHeight - SelectionPillHeight) / 2.0;
+            // Nested items indent their indicator; our items are flat but keep the
+            // pill hugging the same 4px inset used by the nav item template.
+            Canvas.SetLeft(SelectionPill, Math.Max(0, origin.X + 4));
+
+            if (_lastPillY < 0 || !animate)
+            {
+                PillTransform.BeginAnimation(TranslateTransform.YProperty, null);
+                SelectionPill.BeginAnimation(HeightProperty, null);
+                SelectionPill.Height = SelectionPillHeight;
+                PillTransform.Y = targetY;
+                SelectionPill.Opacity = 1;
+                _lastPillY = targetY;
+                return;
+            }
+
+            var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
+            var duration = TimeSpan.FromMilliseconds(220);
+
+            var move = new DoubleAnimation(_lastPillY, targetY, duration) { EasingFunction = ease };
+            double stretch = Math.Min(36, SelectionPillHeight + Math.Abs(targetY - _lastPillY) * 0.25);
+            var stretchFrames = new DoubleAnimationUsingKeyFrames();
+            stretchFrames.KeyFrames.Add(new EasingDoubleKeyFrame(
+                stretch, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(90)), ease));
+            stretchFrames.KeyFrames.Add(new EasingDoubleKeyFrame(
+                SelectionPillHeight, KeyTime.FromTimeSpan(duration), ease));
+
+            SelectionPill.BeginAnimation(HeightProperty, stretchFrames);
+            PillTransform.BeginAnimation(TranslateTransform.YProperty, move);
+            _lastPillY = targetY;
+        }, DispatcherPriority.Loaded);
+    }
 
     private void SetNavPaneOpen(bool open, bool persist)
     {
@@ -718,6 +777,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
                 row.Children[1].Visibility = open ? Visibility.Visible : Visibility.Collapsed;
         }
         UpdateUpdatesBadgeVisibility();
+        MoveSelectionPill(SelectedNav() ?? NavHomeItem, animate: false);
         if (!persist || _initializing) return;
         _settings.NavigationPaneOpen = open;
         _settings.SaveFields(nameof(Settings.NavigationPaneOpen));
@@ -1711,38 +1771,70 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     {
         string iconPath = ResolveIconPath();
         _taskbarBadge = new TaskbarBadge(_hwnd);
-        _trayIcon = new TrayIcon(_hwnd, iconPath, "Instant Replay");
-        _trayIcon.MenuItemsProvider = () => new List<TrayMenuItem>
-        {
-            new() { Text = "Start with Windows", Glyph = "\uE7E8", IsCheckable = true,
-                    IsChecked = StartupManager.IsEnabled(), OnClick = () =>
-            {
-                bool newState = !StartupManager.IsEnabled();
-                StartupManager.SetEnabled(newState);
-                _dq.TryEnqueue(() => StartupToggle.IsChecked = newState);
-            }},
-            TrayMenuItem.Separator(),
-            new() { Text = "Save Replay", Glyph = "\uE74E", Shortcut = "Alt+S",
-                    OnClick = () => _ = SaveReplayAsync() },
-            new() { Text = "Open Window", Glyph = "\uE8A7", OnClick = ShowFromTray },
-            TrayMenuItem.Separator(),
-            new() { Text = "Restart App", Glyph = "\uE72C", OnClick = RestartApplication },
-            TrayMenuItem.Separator(),
-            new() { Text = "Exit", Glyph = "\uE8BB", OnClick = ExitApplicationAsync },
-        };
-        _trayIcon.DoubleClicked += ShowFromTray;
-        _trayIcon.BalloonClicked += () =>
-        {
-            if (_lastBalloonWasLeakWarning)
-            {
-                RestartApplication();
-                return;
-            }
 
-            if (_lastSavedReplayPath != null)
-                OpenContainingFolder(_lastSavedReplayPath);
+        try
+        {
+            // Pick the 16x16 frame from the multi-resolution .ico. Letting WPF
+            // decode the 256x256 frame and downscale it produces a mushy tray icon.
+            var decoder = BitmapDecoder.Create(new Uri(iconPath, UriKind.Absolute),
+                BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.OnLoad);
+            BitmapFrame? best = null;
+            int bestDelta = int.MaxValue;
+            foreach (BitmapFrame frame in decoder.Frames)
+            {
+                int delta = Math.Abs(frame.PixelWidth - 16);
+                if (delta < bestDelta) { bestDelta = delta; best = frame; }
+            }
+            if (best is not null) AppTrayIcon.Icon = best;
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"Tray icon image could not be loaded: {ex.Message}");
+        }
+        _defaultTrayIcon = LoadImageW(IntPtr.Zero, iconPath, 2, 16, 16, 0x10);
+
+        // The WPF-UI control owns the tray icon and its animated menu; the
+        // adapter adds balloon/badge support the control doesn't expose.
+        AppTrayIcon.Loaded += (_, _) =>
+        {
+            if (!AppTrayIcon.IsRegistered) AppTrayIcon.Register();
+            Logger.Info($"WPF-UI tray icon registered={AppTrayIcon.IsRegistered}.");
+            _trayIcon = new TrayIcon(AppTrayIcon, _defaultTrayIcon);
+            _trayIcon.BalloonClicked += OnTrayBalloonClicked;
         };
     }
+
+    private void OnTrayBalloonClicked()
+    {
+        if (_lastBalloonWasLeakWarning)
+        {
+            RestartApplication();
+            return;
+        }
+
+        if (_lastSavedReplayPath != null)
+            OpenContainingFolder(_lastSavedReplayPath);
+    }
+
+    private void TrayMenu_Opening(object sender, RoutedEventArgs e) =>
+        TrayStartupItem.IsChecked = StartupManager.IsEnabled();
+
+    private void TrayStartup_Click(object sender, RoutedEventArgs e)
+    {
+        bool newState = !StartupManager.IsEnabled();
+        StartupManager.SetEnabled(newState);
+        _dq.TryEnqueue(() => StartupToggle.IsChecked = newState);
+    }
+
+    private void TraySaveReplay_Click(object sender, RoutedEventArgs e) => _ = SaveReplayAsync();
+
+    private void TrayOpenWindow_Click(object sender, RoutedEventArgs e) => ShowFromTray();
+
+    private void TrayRestart_Click(object sender, RoutedEventArgs e) => RestartApplication();
+
+    private void TrayExit_Click(object sender, RoutedEventArgs e) => ExitApplicationAsync();
+
+    private void TrayLeftDoubleClick(Wpf.Ui.Tray.Controls.NotifyIcon sender, RoutedEventArgs e) => ShowFromTray();
 
     private static void OpenContainingFolder(string filePath)
     {
@@ -1855,6 +1947,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     {
         if (_badgeIcon != IntPtr.Zero) { DestroyIcon(_badgeIcon); _badgeIcon = IntPtr.Zero; }
         if (_trayBadgeIcon != IntPtr.Zero) { DestroyIcon(_trayBadgeIcon); _trayBadgeIcon = IntPtr.Zero; }
+        if (_defaultTrayIcon != IntPtr.Zero) { DestroyIcon(_defaultTrayIcon); _defaultTrayIcon = IntPtr.Zero; }
     }
 
     private void RestartApplication()
