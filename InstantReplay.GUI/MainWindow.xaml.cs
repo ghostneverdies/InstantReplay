@@ -800,6 +800,17 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         NavigateTo(target);
     }
 
+    private void SyncNavSelection(FrameworkElement page)
+    {
+        RadioButton nav =
+            ReferenceEquals(page, UpdatesPage) ? NavUpdatesItem
+            : ReferenceEquals(page, SettingsPage) ? NavSettingsItem
+            : ReferenceEquals(page, GamesPage) ? NavGamesItem
+            : ReferenceEquals(page, GalleryPage) || ReferenceEquals(page, ViewerPage) ? NavGalleryItem
+            : NavHomeItem;
+        SelectNav(nav);
+    }
+
     private void HideUpdatesBadge()
     {
         _updatesBadgeVisible = false;
@@ -898,6 +909,11 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
 
     private void NavigateTo(FrameworkElement newPage, bool fadeOnly = false)
     {
+        // Every navigation path (nav clicks, viewer back, update links, empty
+        // gallery) goes through here, so keep the shared pill in sync here
+        // instead of relying on individual call sites.
+        SyncNavSelection(newPage);
+
         if (ReferenceEquals(newPage, _currentPage)) return;
 
         if (_dirty) RevertPendingChanges();
