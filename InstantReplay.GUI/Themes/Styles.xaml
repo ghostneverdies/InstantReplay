@@ -71,7 +71,7 @@
     <Style x:Key="AccentButtonStyle" TargetType="ui:Button">
         <Setter Property="Background" Value="{DynamicResource AccentBrush}"/>
         <Setter Property="Foreground" Value="{DynamicResource AccentTextBrush}"/>
-        <Setter Property="FontFamily" Value="Segoe UI Variable"/>
+        <Setter Property="FontFamily" Value="{StaticResource AppFontFamily}"/>
         <Setter Property="FontSize" Value="14"/>
         <Setter Property="Padding" Value="{StaticResource ButtonPadding}"/>
         <Setter Property="HorizontalContentAlignment" Value="Center"/>
@@ -83,7 +83,7 @@
     <Style x:Key="BaseButtonStyle" TargetType="ui:Button">
         <Setter Property="Background" Value="{DynamicResource SurfaceBorderBrush}"/>
         <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}"/>
-        <Setter Property="FontFamily" Value="Segoe UI Variable"/>
+        <Setter Property="FontFamily" Value="{StaticResource AppFontFamily}"/>
         <Setter Property="FontSize" Value="14"/>
         <Setter Property="Padding" Value="{StaticResource ButtonPadding}"/>
         <Setter Property="HorizontalContentAlignment" Value="Center"/>
@@ -95,7 +95,7 @@
     <Style x:Key="DangerButtonStyle" TargetType="ui:Button">
         <Setter Property="Background" Value="{DynamicResource RecBrush}"/>
         <Setter Property="Foreground" Value="#FFFFFF"/>
-        <Setter Property="FontFamily" Value="Segoe UI Variable"/>
+        <Setter Property="FontFamily" Value="{StaticResource AppFontFamily}"/>
         <Setter Property="FontSize" Value="14"/>
         <Setter Property="Padding" Value="{StaticResource ButtonPadding}"/>
         <Setter Property="HorizontalContentAlignment" Value="Center"/>
@@ -209,7 +209,7 @@
         </Grid>
     </ControlTemplate>
     <Style x:Key="HomeActionButtonBase" TargetType="ui:Button">
-        <Setter Property="FontFamily" Value="Segoe UI Variable"/>
+        <Setter Property="FontFamily" Value="{StaticResource AppFontFamily}"/>
         <Setter Property="FontSize" Value="13"/>
         <Setter Property="FontWeight" Value="SemiBold"/>
         <Setter Property="Padding" Value="18,0"/>
@@ -256,8 +256,9 @@
                     <Grid x:Name="LayoutRoot" Background="Transparent">
                         <Border x:Name="HoverBorder" CornerRadius="4" Background="{DynamicResource SubtleFillColorSecondaryBrush}" Opacity="0" Margin="4,2,4,2"/>
                         <Border x:Name="CheckBackground" CornerRadius="4" Background="{DynamicResource SubtleFillColorSecondaryBrush}" Opacity="0" Margin="4,2,4,2"/>
+                        <!-- The static per-item pill is hidden; the shared animated pill in MainWindow owns selection. -->
                         <Border x:Name="AccentBar" Width="3" Height="16" HorizontalAlignment="Left" VerticalAlignment="Center" Margin="4,0,0,0"
-                                CornerRadius="1.5" Background="{DynamicResource AccentBrush}" Opacity="0"/>
+                                CornerRadius="1.5" Background="{DynamicResource NavigationViewSelectionIndicatorForeground}" Opacity="0"/>
                         <ContentPresenter x:Name="ContentPresenter" Content="{TemplateBinding Content}"
                                           Margin="{TemplateBinding Padding}" VerticalAlignment="Center"
                                           TextElement.Foreground="{TemplateBinding Foreground}"/>
@@ -277,25 +278,25 @@
     </Style>
 
     <Style x:Key="Title" TargetType="TextBlock">
-        <Setter Property="FontFamily" Value="Segoe UI Variable"/>
+        <Setter Property="FontFamily" Value="{StaticResource AppFontFamily}"/>
         <Setter Property="FontSize" Value="20"/>
         <Setter Property="FontWeight" Value="SemiBold"/>
         <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}"/>
     </Style>
     <Style x:Key="Caption" TargetType="TextBlock">
-        <Setter Property="FontFamily" Value="Segoe UI Variable"/>
+        <Setter Property="FontFamily" Value="{StaticResource AppFontFamily}"/>
         <Setter Property="FontWeight" Value="Normal"/>
         <Setter Property="FontSize" Value="{StaticResource CaptionFontSize}"/>
         <Setter Property="Foreground" Value="{DynamicResource TextMutedBrush}"/>
     </Style>
     <Style x:Key="Mono" TargetType="TextBlock">
-        <Setter Property="FontFamily" Value="Segoe UI Variable"/>
+        <Setter Property="FontFamily" Value="{StaticResource MonoFontFamily}"/>
         <Setter Property="FontWeight" Value="Normal"/>
         <Setter Property="FontSize" Value="{StaticResource BodyFontSize}"/>
         <Setter Property="Foreground" Value="{DynamicResource TextMutedBrush}"/>
     </Style>
     <Style x:Key="Helper" TargetType="TextBlock">
-        <Setter Property="FontFamily" Value="Segoe UI Variable"/>
+        <Setter Property="FontFamily" Value="{StaticResource AppFontFamily}"/>
         <Setter Property="FontWeight" Value="Normal"/>
         <Setter Property="FontSize" Value="{StaticResource HelperFontSize}"/>
         <Setter Property="Foreground" Value="{DynamicResource TextMutedBrush}"/>
@@ -324,7 +325,7 @@
         <Setter Property="Foreground" Value="{DynamicResource SettingsAreaTextBrush}"/>
     </Style>
     <Style TargetType="TextBlock">
-        <Setter Property="FontFamily" Value="Segoe UI Variable"/>
+        <Setter Property="FontFamily" Value="{StaticResource AppFontFamily}"/>
         <Setter Property="FontWeight" Value="Normal"/>
         <Setter Property="FontSize" Value="{StaticResource BodyFontSize}"/>
         <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}"/>
