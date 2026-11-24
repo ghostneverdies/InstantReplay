@@ -56,6 +56,12 @@ public sealed class ClipNotificationWindow : Window
         ShowInTaskbar = false;
         ShowActivated = false;
         Topmost = true;
+        UseLayoutRounding = true;
+        SnapsToDevicePixels = true;
+        TextOptions.SetTextFormattingMode(this, TextFormattingMode.Display);
+        TextOptions.SetTextRenderingMode(this, TextRenderingMode.ClearType);
+        RenderOptions.SetClearTypeHint(this, ClearTypeHint.Enabled);
+        RenderOptions.SetBitmapScalingMode(this, BitmapScalingMode.HighQuality);
         Background = new SolidColorBrush(Color.FromArgb(255, 36, 46, 64));
         _message = new TextBlock
         {
@@ -372,7 +378,7 @@ public sealed class ClipNotificationWindow : Window
         AddKeys(_checkBadge, OpacityProperty, (0, 0), (80, 1));
     }
 
-    private static void AddKeys(Animatable target, DependencyProperty property, params (int Ms, double Value)[] keys)
+    private static void AddKeys(IAnimatable target, DependencyProperty property, params (int Ms, double Value)[] keys)
     {
         var animation = new DoubleAnimationUsingKeyFrames();
         foreach (var key in keys)
