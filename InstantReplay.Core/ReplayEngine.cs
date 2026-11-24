@@ -181,11 +181,16 @@ public sealed class ReplayEngine : IDisposable
         }
     }
 
-    public bool SwitchSource(CaptureMethod method, int monitorIndex, IntPtr window, uint options)
+    public bool SwitchSource(CaptureMethod method, int monitorIndex, IntPtr window, uint options,
+                             int canvasWidth = 0, int canvasHeight = 0)
     {
         lock (_opLock)
         {
             if (_engine == IntPtr.Zero) return false;
+            // Update the capture canvas before restarting the native capture
+            // thread, so the new source is captured at its full resolution.
+            if (canvasWidth > 0 && canvasHeight > 0)
+                IrNative.IR_SetCanvasHint(_engine, canvasWidth, canvasHeight);
             int rc = IrNative.IR_SetCaptureSource(_engine, (int)method, monitorIndex, window, options);
             if (rc != IrNative.OK)
             {
